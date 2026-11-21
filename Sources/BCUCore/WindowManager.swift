@@ -567,6 +567,15 @@ public final class WindowManager {
         keyIsFullScreen && tabbingMode != "manual"
     }
 
+    /// The full-screen window of the app that a new window would be a tab
+    /// in, from its key window and its windows accessibility lists (the
+    /// ones on Spaces shown now) with whether each is full screen. nil:
+    /// none.
+    static func fullScreenTabHost(key: CGWindowID?, windows: [(id: CGWindowID, fullScreen: Bool)]) -> CGWindowID? {
+        guard let key, windows.contains(where: { $0.id == key && $0.fullScreen }) else { return nil }
+        return key
+    }
+
     /// The user's tab preference for an app: its own setting, else the
     /// system-wide one (System Settings, "Prefer tabs when opening documents").
     static func tabbingMode(bundleID: String?) -> String? {
@@ -655,9 +664,11 @@ public final class WindowManager {
         // tab in it, on the user's screen (see `opensAsTabInFullScreen`),
         // unless an agent window of the app can be made key first.
         if scripted == nil, !(placement.contains(.anchor) && anchorWindow(pid: pid) != nil),
-           let key = previousKey, let keyAX = AX.window(pid: pid, id: key),
-           Self.opensAsTabInFullScreen(keyIsFullScreen: AX.bool(keyAX, "AXFullScreen") == true,
-                                       tabbingMode: Self.tabbingMode(bundleID: bundleID)) {
+           Self.opensAsTabInFullScreen(
+               keyIsFullScreen: Self.fullScreenTabHost(key: previousKey, windows: AX.windows(pid).compactMap { ax in
+                   AX.windowID(ax).map { (id: $0, fullScreen: AX.bool(ax, "AXFullScreen") == true) }
+               }) != nil,
+               tabbingMode: Self.tabbingMode(bundleID: bundleID)) {
             throw ToolError("\(name)'s window on the user's screen is full screen, and \(name) would open a new window as a tab in it, where the user sees it. No window was opened. Ask the user to take \(name) out of full screen, then retry.")
         }
         if scripted == nil { hold?.start() }
