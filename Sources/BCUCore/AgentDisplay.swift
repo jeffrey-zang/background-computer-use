@@ -636,14 +636,11 @@ public final class AgentDisplay {
     /// does, with or without a display): one kept would leave the next
     /// agent waiting for a display no one is using.
     public func open(onMain: (@escaping () -> Void) throws -> Void) throws {
-        // One at a time (once on the main thread did that): two would
-        // each make a display.
-        openLock.lock(); defer { openLock.unlock() }
         // A new display rearranges them all; note the user's windows to see
         // which macOS moves (a stale tile's gets its tile replaced).
         let userWindows = Self.noteUserWindows()
         do {
-            try start()
+            try Self.making { try start() }
         } catch {
             try? onMain { self.stop(remove: true) }
             throw error
@@ -653,9 +650,19 @@ public final class AgentDisplay {
             try? onMain { self.stop(remove: true) }
             throw ToolError("virtual display never came online")
         }
-        finishStart()
+        Self.making { finishStart() }
     }
-    private let openLock = NSLock()
+
+    /// Displays are made and placed one at a time, for every session (the
+    /// main thread did that while they were made there). A display takes
+    /// the first free slot and holds it only once it's made: two made at
+    /// once would take the same slot, and two opens of one display would
+    /// each make one.
+    private static let makeLock = NSLock()
+    private static func making<T>(_ work: () throws -> T) rethrows -> T {
+        makeLock.lock(); defer { makeLock.unlock() }
+        return try work()
+    }
 
     /// Registered right away so a display starting at the same time
     /// (another session, while this one waits) takes another slot.
