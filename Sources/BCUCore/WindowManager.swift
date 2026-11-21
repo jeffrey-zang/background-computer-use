@@ -571,9 +571,15 @@ public final class WindowManager {
     /// in, from its key window and its windows accessibility lists (the
     /// ones on Spaces shown now) with whether each is full screen. nil:
     /// none.
+    ///
+    /// Not only the key window: right after the app relaunches, the
+    /// full-screen window it restored fills the user's screen while the
+    /// document it was opened with, a normal window, is key. AppKit still
+    /// makes the new window a tab in the full-screen one.
     static func fullScreenTabHost(key: CGWindowID?, windows: [(id: CGWindowID, fullScreen: Bool)]) -> CGWindowID? {
-        guard let key, windows.contains(where: { $0.id == key && $0.fullScreen }) else { return nil }
-        return key
+        let full = windows.filter(\.fullScreen).map(\.id)
+        if let key, full.contains(key) { return key }
+        return full.first
     }
 
     /// The user's tab preference for an app: its own setting, else the
@@ -660,9 +666,10 @@ public final class WindowManager {
         if scripted == nil, trigger != "key", Self.newWindowMenuItem(pid: pid) == nil {
             throw ToolError("\(name) has no menu item for a new window, so no window was opened. It may not support multiple windows: use list_windows with app=\"\(name)\" and borrow_window.")
         }
-        // An app whose key window is full screen opens the new window as a
-        // tab in it, on the user's screen (see `opensAsTabInFullScreen`),
-        // unless an agent window of the app can be made key first.
+        // An app with a full-screen window on a Space shown now opens the
+        // new window as a tab in it, on the user's screen (see
+        // `opensAsTabInFullScreen` and `fullScreenTabHost`), unless an
+        // agent window of the app can be made key first.
         if scripted == nil, !(placement.contains(.anchor) && anchorWindow(pid: pid) != nil),
            Self.opensAsTabInFullScreen(
                keyIsFullScreen: Self.fullScreenTabHost(key: previousKey, windows: AX.windows(pid).compactMap { ax in
