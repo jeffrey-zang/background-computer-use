@@ -184,7 +184,7 @@ public final class AgentDisplay {
     /// (`noteUserWindows`) and watch them after it (`startWatchingUserWindows`).
     /// A window macOS moves then is left where macOS put it. Putting it back
     /// through accessibility made it jump again at the next change: on
-    /// macOS 27 AppKit moves a window another process last moved through
+    /// macOS 15 and 27 AppKit moves a window another process last moved through
     /// accessibility back to its frame from before that move, once, at the
     /// next display change (`_displayChangedSoAdjustWindows:`), so a window
     /// put back jumped at every agent display add and removal. The one move
