@@ -1443,8 +1443,15 @@ public final class WindowManager {
     /// Whether the step of this session's that began before a new window
     /// of `pid` came up can still explain it, given the session's windows
     /// now (id: app) and the window the step was in.
+    ///
+    /// Only while that window is still the session's: a step in a window
+    /// the session has let go of (`release_window`, which opens nothing)
+    /// explains no window, even while the session holds other windows of
+    /// the app. A step opening a window has none yet: it explains one
+    /// while the session has a window in the app.
     static func stepExplainsNewWindow(sessionWindows: [CGWindowID: pid_t], pid: pid_t, stepWindow: CGWindowID?) -> Bool {
-        sessionWindows.values.contains(pid)
+        guard let stepWindow else { return sessionWindows.values.contains(pid) }
+        return sessionWindows[stepWindow] == pid
     }
 
     func stopWatchdog() {
