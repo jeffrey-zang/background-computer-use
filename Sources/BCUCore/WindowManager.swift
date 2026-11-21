@@ -44,8 +44,9 @@ public final class WindowManager {
     /// The watchdog leaves a window this new alone: an app launched hidden
     /// has windows accessibility sees before the window server lists them.
     static let newWindowGraceMs = 5000.0
-    /// The app's windows when this session last began acting on it, and when.
-    private var knownBefore: [pid_t: (ids: Set<CGWindowID>, ms: Double)] = [:]
+    /// The app's windows when this session last began acting on it, when,
+    /// and the window the step was in (nil: opening a new one).
+    private var knownBefore: [pid_t: (ids: Set<CGWindowID>, ms: Double, window: CGWindowID?)] = [:]
     private var nextSlot = 0
     private var watchdog: Timer?
 
@@ -610,7 +611,7 @@ public final class WindowManager {
             Self.sharedLock.lock(); Self.openingAnywhere.remove(pid); Self.sharedLock.unlock()
             Self.openLock.unlock()
         }
-        noteBefore(pid: pid)
+        noteBefore(pid: pid, window: nil)
         var notes: [String] = []
         // With the user's input held, this thread is what they're waiting
         // on: at default QoS it waits hundreds of ms for a core while the
@@ -976,7 +977,7 @@ public final class WindowManager {
         var borrowed = false
         defer { if !borrowed && !hadIt { Self.unclaim(id, for: sessionKey) } }
         // Every other window of the app is the user's, not one this spawned.
-        noteBefore(pid: info.pid)
+        noteBefore(pid: info.pid, window: id)
         focusGuard.beginAction(pid: info.pid, cause: "borrowing a window")
         defer { focusGuard.endAction(pid: info.pid) }
         moveToAgent(ax, size: original.size)
@@ -1014,7 +1015,7 @@ public final class WindowManager {
             throw ToolError("\(w.appName) isn't answering right now, so window \(id) is still open. It may be showing a dialog that has to be answered first (list_windows shows a dialog of yours). Try again in a moment.")
         }
         focusGuard.unpark(w.pid, window: id, reason: "window released")
-        noteBefore(pid: w.pid)
+        noteBefore(pid: w.pid, window: id)
         focusGuard.beginAction(pid: w.pid, cause: "releasing a window")
         defer { focusGuard.endAction(pid: w.pid) }
         switch w.kind {
@@ -1432,9 +1433,18 @@ public final class WindowManager {
 
     // MARK: Watchdog
 
-    func noteBefore(pid: pid_t) {
+    /// Note a step of this session's on `pid`, in `window` (nil: one
+    /// opening a new window).
+    func noteBefore(pid: pid_t, window: CGWindowID?) {
         let ids = Set(WindowList.of(pid: pid).map(\.id))
-        lock.lock(); knownBefore[pid] = (ids, nowMs()); lock.unlock()
+        lock.lock(); knownBefore[pid] = (ids, nowMs(), window); lock.unlock()
+    }
+
+    /// Whether the step of this session's that began before a new window
+    /// of `pid` came up can still explain it, given the session's windows
+    /// now (id: app) and the window the step was in.
+    static func stepExplainsNewWindow(sessionWindows: [CGWindowID: pid_t], pid: pid_t, stepWindow: CGWindowID?) -> Bool {
+        sessionWindows.values.contains(pid)
     }
 
     func stopWatchdog() {
@@ -1467,8 +1477,9 @@ public final class WindowManager {
     /// the user's screen; -1 once judged.
     private var seenOnUser: [CGWindowID: Double] = [:]
     /// For a window first seen on this display that wasn't there when this
-    /// session's last step on its app began: when that step began.
-    private var spawnedAfter: [CGWindowID: Double] = [:]
+    /// session's last step on its app began: when that step began, and the
+    /// window it was in.
+    private var spawnedAfter: [CGWindowID: (ms: Double, window: CGWindowID?)] = [:]
 
     /// Shrink and shift an agent window that sticks out past the agent
     /// display's edge (apps can undo the first resize while a new window
@@ -1557,7 +1568,7 @@ public final class WindowManager {
                 seenOnAgent[info.id] = firstSeen
                 // What this session was doing in the app when it showed up
                 // (the next step's note of the app's windows will include it).
-                if let known = knownBefore[info.pid], !known.ids.contains(info.id) { spawnedAfter[info.id] = known.ms }
+                if let known = knownBefore[info.pid], !known.ids.contains(info.id) { spawnedAfter[info.id] = (known.ms, known.window) }
             }
             let agentBegan = spawnedAfter[info.id]
             lock.unlock()
@@ -1569,8 +1580,8 @@ public final class WindowManager {
             guard age < Self.agentJudgeMs, info.bounds.width > 100, info.bounds.height > 100 else { continue }
             let cause = NewWindow.cause(NewWindow.Facts(
                 firstSeenMs: firstSeen, userInApp: info.pid == front && info.pid == focusGuard.userFront,
-                userOpenInputMs: focusGuard.lastUserOpenInputMs, agentBeganMs: agentBegan,
-                agentHasWindow: agent.values.contains { $0.pid == info.pid }))
+                userOpenInputMs: focusGuard.lastUserOpenInputMs, agentBeganMs: agentBegan?.ms,
+                agentHasWindow: Self.stepExplainsNewWindow(sessionWindows: agent.mapValues(\.pid), pid: info.pid, stepWindow: agentBegan?.window)))
             if cause == .agent {
                 // What this session's step opened (a sign-in popup, a second
                 // window) is the session's: its agent finds it in
@@ -1628,7 +1639,7 @@ public final class WindowManager {
             lock.lock()
             if seenOnUser[info.id] == nil, let known = knownBefore[info.pid] {
                 seenOnUser[info.id] = nowMs()
-                if !known.ids.contains(info.id) { spawnedAfter[info.id] = known.ms }
+                if !known.ids.contains(info.id) { spawnedAfter[info.id] = (known.ms, known.window) }
             }
             let firstSeen = seenOnUser[info.id], agentBegan = spawnedAfter[info.id]
             lock.unlock()
@@ -1636,8 +1647,8 @@ public final class WindowManager {
             let userInApp = info.pid == front && info.pid == focusGuard.userFront
             guard let cause = NewWindow.fromUserScreen(NewWindow.Facts(
                 firstSeenMs: firstSeen, userInApp: userInApp,
-                userOpenInputMs: focusGuard.lastUserOpenInputMs, agentBeganMs: agentBegan,
-                agentHasWindow: agent.values.contains { $0.pid == info.pid }), nowMs: nowMs()) else { continue }
+                userOpenInputMs: focusGuard.lastUserOpenInputMs, agentBeganMs: agentBegan?.ms,
+                agentHasWindow: Self.stepExplainsNewWindow(sessionWindows: agent.mapValues(\.pid), pid: info.pid, stepWindow: agentBegan?.window)), nowMs: nowMs()) else { continue }
             // Judged once: a window the user's input explains stays theirs.
             // The step's is looked at again until accessibility answers (an
             // app can be busy while it shows a dialog), for at most

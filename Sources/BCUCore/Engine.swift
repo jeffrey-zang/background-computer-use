@@ -1190,7 +1190,7 @@ public final class Engine {
         defer { appLock.unlock() }
         touched.insert(w.pid)
         focusGuard.beginAction(pid: w.pid, cause: cause)
-        windows.noteBefore(pid: w.pid)
+        windows.noteBefore(pid: w.pid, window: w.id)
         watchForLeave(w)
         defer { focusGuard.endAction(pid: w.pid) }
         let shared = userIsIn(w.pid)
@@ -1532,7 +1532,7 @@ public final class Engine {
         defer { appLock.unlock() }
         touched.insert(w.pid)
         focusGuard.beginAction(pid: w.pid, cause: cause)
-        windows.noteBefore(pid: w.pid)
+        windows.noteBefore(pid: w.pid, window: w.id)
         watchForLeave(w)
         defer { focusGuard.endAction(pid: w.pid) }
         return try body()
