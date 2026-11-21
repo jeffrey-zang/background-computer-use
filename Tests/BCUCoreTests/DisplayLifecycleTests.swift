@@ -28,6 +28,69 @@ final class DisplayLifecycleTests: XCTestCase {
         XCTAssertEqual(AgentDisplay.corner(of: [top, main]), CGPoint(x: 1440, y: 900))
     }
 
+    /// Making a virtual display rearranges every display, and macOS waits
+    /// (up to 0.25 s) for each app's main thread to hear of it, BCU's
+    /// included. Made on BCU's main thread, macOS waits on a thread that's
+    /// stuck in the very call, and every display add stalls for the whole
+    /// wait. The stand-in does what macOS does: tells the main thread and
+    /// waits up to 0.25 s for it to answer.
+    func testTheDisplayIsMadeWithTheMainThreadFree() {
+        let answered = Locked<[Bool]>([])
+        let saved = AgentDisplay.makeVirtualDisplay
+        defer { AgentDisplay.makeVirtualDisplay = saved }
+        AgentDisplay.makeVirtualDisplay = { _, _, _, _ in
+            let heard = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { heard.signal() }
+            let ok = heard.wait(timeout: .now() + 0.25) == .success
+            answered.mutate { $0.append(ok) }
+            return nil
+        }
+        func onMain(_ work: @escaping () -> Void) throws {
+            guard onMainUnlessQuitting(work) else { throw ToolError("quitting") }
+        }
+        let display = AgentDisplay()
+        let threw = Locked(false)
+        let done = expectation(description: "open returned")
+        DispatchQueue.global().async {
+            do { try display.open(onMain: onMain) } catch { threw.value = true }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertTrue(threw.value, "no display was made, so opening it fails")
+        XCTAssertFalse(answered.value.isEmpty)
+        XCTAssertEqual(answered.value.filter { !$0 }.count, 0, "made \(answered.value.count) times; the main thread didn't answer in 0.25 s \(answered.value.filter { !$0 }.count) times")
+    }
+
+    /// Two sessions opening displays at once: each display picks the
+    /// first free slot and only holds it once it's made, so two made at
+    /// the same time would take the same slot (and the same corner).
+    func testTwoDisplaysAreNotMadeAtOnce() {
+        let inside = Locked(0), most = Locked(0)
+        let saved = AgentDisplay.makeVirtualDisplay
+        defer { AgentDisplay.makeVirtualDisplay = saved }
+        AgentDisplay.makeVirtualDisplay = { _, _, _, _ in
+            inside.mutate { $0 += 1 }
+            most.mutate { $0 = max($0, inside.value) }
+            Thread.sleep(forTimeInterval: 0.05)
+            inside.mutate { $0 -= 1 }
+            return nil
+        }
+        func onMain(_ work: @escaping () -> Void) throws {
+            guard onMainUnlessQuitting(work) else { throw ToolError("quitting") }
+        }
+        let done = expectation(description: "both returned")
+        done.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            let display = AgentDisplay()
+            DispatchQueue.global().async {
+                try? display.open(onMain: onMain)
+                done.fulfill()
+            }
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(most.value, 1, "displays were being made at the same time")
+    }
+
     func testNoDisplayNoCorner() {
         XCTAssertNil(AgentDisplay.corner(of: []))
         XCTAssertNil(AgentDisplay.corner(of: [.null]))
