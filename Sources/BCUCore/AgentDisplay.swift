@@ -604,7 +604,7 @@ public final class AgentDisplay {
         let serials = [base + UInt32(slot)] + (1...8).map { base + UInt32(slot) + UInt32($0) * 16 }
         var made: BCUVirtualDisplay?
         for serial in serials {
-            made = BCUVirtualDisplay(name: name, width: UInt32(width), height: UInt32(height), ppi: 110, serial: serial)
+            made = Self.makeVirtualDisplay(name, width, height, serial)
             if made != nil {
                 if serial != serials[0] { Log.info("agent display serial \(String(serials[0], radix: 16)) taken; used \(String(serial, radix: 16))") }
                 break
@@ -616,6 +616,37 @@ public final class AgentDisplay {
         display = vd
         displayID = vd.displayID
         register()
+    }
+
+    /// Makes the virtual display (a stand-in in tests): nil if macOS refused it.
+    static var makeVirtualDisplay: (_ name: String, _ width: Int, _ height: Int, _ serial: UInt32) -> BCUVirtualDisplay? = { name, width, height, serial in
+        BCUVirtualDisplay(name: name, width: UInt32(width), height: UInt32(height), ppi: 110, serial: serial)
+    }
+
+    /// Not on the main thread. Make the display (`start`), wait for it to
+    /// come online and put it in place (`finishStart`). `onMain` runs work
+    /// on the main thread, and throws when it can't (BCU is quitting).
+    /// Every way out but success gives the display's place back (`stop`
+    /// does, with or without a display): one kept would leave the next
+    /// agent waiting for a display no one is using.
+    public func open(onMain: (@escaping () -> Void) throws -> Void) throws {
+        var failure: Error?
+        // A new display rearranges them all; note the user's windows to see
+        // which macOS moves (a stale tile's gets its tile replaced).
+        let userWindows = Self.noteUserWindows()
+        do {
+            try onMain { do { try self.start() } catch { failure = error } }
+            if let failure { throw failure }
+        } catch {
+            _ = onMainUnlessQuitting { self.stop(remove: true) }
+            throw error
+        }
+        if !reused { Self.startWatchingUserWindows(userWindows) }
+        guard waitUntilOnline() else {
+            _ = onMainUnlessQuitting { self.stop(remove: true) }
+            throw ToolError("virtual display never came online")
+        }
+        try onMain { self.finishStart() }
     }
 
     /// Registered right away so a display starting at the same time
