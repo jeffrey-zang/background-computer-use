@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 @testable import BCUCore
 
@@ -20,5 +21,23 @@ final class FullScreenTabTests: XCTestCase {
     func testWithNoFullScreenWindowItIsntATab() {
         XCTAssertFalse(WindowManager.opensAsTabInFullScreen(keyIsFullScreen: false, tabbingMode: nil))
         XCTAssertFalse(WindowManager.opensAsTabInFullScreen(keyIsFullScreen: false, tabbingMode: "fullscreen"))
+    }
+
+    /// Right after the app relaunched: it restored a full-screen window,
+    /// which fills the user's screen, and the document it was opened with
+    /// is key, a normal window. A new window is a tab in the full-screen one.
+    func testARestoredFullScreenWindowThatIsntKeyTakesTheTab() {
+        let windows: [(id: CGWindowID, fullScreen: Bool)] = [(231, false), (170, true)]
+        XCTAssertEqual(WindowManager.fullScreenTabHost(key: 231, windows: windows), 170)
+        XCTAssertEqual(WindowManager.fullScreenTabHost(key: nil, windows: windows), 170)
+    }
+
+    func testTheKeyWindowFirstWhenItIsFullScreen() {
+        XCTAssertEqual(WindowManager.fullScreenTabHost(key: 64, windows: [(51, true), (64, true)]), 64)
+    }
+
+    func testNoFullScreenWindowNoTab() {
+        XCTAssertNil(WindowManager.fullScreenTabHost(key: 231, windows: [(231, false), (52, false)]))
+        XCTAssertNil(WindowManager.fullScreenTabHost(key: nil, windows: []))
     }
 }
