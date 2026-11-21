@@ -572,10 +572,10 @@ public final class AgentDisplay {
         return id == 0 ? .zero : CGDisplayBounds(id)
     }
 
-    /// Must be called on the main thread. `slot` picks the display's place in
-    /// the staircase and its serial, which macOS keys remembered modes on.
+    /// Not on the main thread (see `open`). `slot` picks the display's place
+    /// in the staircase and its serial, which macOS keys remembered modes on.
     /// The display comes online asynchronously: follow with `waitUntilOnline`
-    /// and then `finishStart` on the main thread.
+    /// and then `finishStart`.
     public func start(slot: Int = AgentDisplay.freeSlot()) throws {
         guard display == nil else { return }
         // One a session before this left behind: nothing is added, so
@@ -624,30 +624,38 @@ public final class AgentDisplay {
     }
 
     /// Not on the main thread. Make the display (`start`), wait for it to
-    /// come online and put it in place (`finishStart`). `onMain` runs work
-    /// on the main thread, and throws when it can't (BCU is quitting).
+    /// come online and put it in place (`finishStart`), all on this thread.
+    /// macOS tells every app's main thread of each display change and waits
+    /// up to 0.25 s for its answer, BCU's too: made or placed on the main
+    /// thread, that thread is stuck in the call and every change stalls for
+    /// the whole wait (measured on macOS 27.0: about 280 ms per display
+    /// added, and WindowServer logged the timeout each time). `onMain` runs
+    /// work on the main thread (`stop`, on a failure), and throws when it
+    /// can't (BCU is quitting).
     /// Every way out but success gives the display's place back (`stop`
     /// does, with or without a display): one kept would leave the next
     /// agent waiting for a display no one is using.
     public func open(onMain: (@escaping () -> Void) throws -> Void) throws {
-        var failure: Error?
+        // One at a time (once on the main thread did that): two would
+        // each make a display.
+        openLock.lock(); defer { openLock.unlock() }
         // A new display rearranges them all; note the user's windows to see
         // which macOS moves (a stale tile's gets its tile replaced).
         let userWindows = Self.noteUserWindows()
         do {
-            try onMain { do { try self.start() } catch { failure = error } }
-            if let failure { throw failure }
+            try start()
         } catch {
-            _ = onMainUnlessQuitting { self.stop(remove: true) }
+            try? onMain { self.stop(remove: true) }
             throw error
         }
         if !reused { Self.startWatchingUserWindows(userWindows) }
         guard waitUntilOnline() else {
-            _ = onMainUnlessQuitting { self.stop(remove: true) }
+            try? onMain { self.stop(remove: true) }
             throw ToolError("virtual display never came online")
         }
-        try onMain { self.finishStart() }
+        finishStart()
     }
+    private let openLock = NSLock()
 
     /// Registered right away so a display starting at the same time
     /// (another session, while this one waits) takes another slot.
@@ -678,7 +686,7 @@ public final class AgentDisplay {
         return id != 0 && !CGDisplayBounds(id).isEmpty
     }
 
-    /// Main thread, once the display is online.
+    /// Not on the main thread (see `open`), once the display is online.
     public func finishStart() {
         place(mode: retinaModeNeeded())
         Log.info("agent display \(slot + 1) (\(displayID)) at \(bounds.short)\(reused ? " (kept from an earlier session)" : ""); user displays \(userBounds.short)")
