@@ -231,7 +231,9 @@ enum NewWindow {
         /// When the session's last step on the app began, if the window
         /// wasn't there before it. nil: no such step.
         var agentBeganMs: Double?
-        /// The session still has a window in the app.
+        /// The window the step was in is still the session's (for a step
+        /// opening a window: the session has a window in the app). See
+        /// `WindowManager.stepExplainsNewWindow`.
         var agentHasWindow = true
     }
 
@@ -242,8 +244,8 @@ enum NewWindow {
     /// user's, whatever app the guard takes them to be in: they may have
     /// opened it from another app (a link, the Dock), and on an agent
     /// display nobody would ever see it. Nor does a step explain a window
-    /// once the session has no window left in the app: releasing its last
-    /// one opens none, and it has nothing there to work in.
+    /// once the session has let go of the window the step was in:
+    /// releasing a window opens none.
     ///
     /// A window that wasn't there when the session's step on the app began,
     /// and came up within `agentMs` of it, is the step's: a sign-in popup
