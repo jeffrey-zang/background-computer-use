@@ -62,6 +62,7 @@ final class SettingsModel: ObservableObject {
     @Published var screenRecording = false
     /// Screen Recording is switched on, but works only once the app restarts.
     @Published var screenRecordingNeedsRestart = false
+    @Published var systemAudio = AudioAccess.unavailable
     @Published var launchAtLogin = false
     @Published var launchAtLoginProblem: String?
     @Published var hotKeysFailed: [String] = []
@@ -88,6 +89,7 @@ final class SettingsModel: ObservableObject {
         accessibility = AX.isTrusted
         screenRecording = Capture.hasPermission
         screenRecordingNeedsRestart = !screenRecording && OnboardingModel.screenRecordingSwitchedOn()
+        systemAudio = .current
         launchAtLogin = LaunchAtLogin.isEnabled
         if launchAtLoginProblem != LaunchAtLogin.problem { launchAtLoginProblem = LaunchAtLogin.problem }
         if hotKeysFailed != HotKeys.failed { hotKeysFailed = HotKeys.failed }
@@ -138,6 +140,15 @@ final class SettingsModel: ObservableObject {
     func requestScreenRecording() {
         if !CGRequestScreenCaptureAccess() {
             open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        }
+    }
+
+    /// macOS asks once; after a no it's switched on in System Settings.
+    func requestSystemAudio() {
+        if systemAudio == .notAsked {
+            AudioAccess.request { [weak self] in self?.refresh() }
+        } else {
+            open("x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture")
         }
     }
 
@@ -192,7 +203,11 @@ struct SettingsView: View {
         var id: String { rawValue }
     }
 
-    private var allowedCount: Int { (model.accessibility ? 1 : 0) + (model.screenRecording ? 1 : 0) }
+    private var showsAudio: Bool { model.systemAudio != .unavailable }
+    private var permissionCount: Int { showsAudio ? 3 : 2 }
+    private var allowedCount: Int {
+        (model.accessibility ? 1 : 0) + (model.screenRecording ? 1 : 0) + (model.systemAudio == .allowed ? 1 : 0)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -204,11 +219,15 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 4)
 
-            section("Permissions", trailing: allowedCount == 2 ? "All allowed" : "\(allowedCount) of 2 allowed") {
+            section("Permissions", trailing: allowedCount == permissionCount ? "All allowed" : "\(allowedCount) of \(permissionCount) allowed") {
                 SettingsCard {
                     permissionRow("Accessibility", granted: model.accessibility, action: model.requestAccessibility)
                     RowDivider(inset: 46)
                     permissionRow("Screen Recording", granted: model.screenRecording, action: model.requestScreenRecording)
+                    if showsAudio {
+                        RowDivider(inset: 46)
+                        permissionRow("System Audio Recording", granted: model.systemAudio == .allowed, action: model.requestSystemAudio)
+                    }
                 }
                 if model.screenRecordingNeedsRestart {
                     HStack {

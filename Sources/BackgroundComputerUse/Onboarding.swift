@@ -43,7 +43,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
 
 final class OnboardingModel: ObservableObject {
     enum Step: Int, CaseIterable {
-        case welcome, accessibility, screenRecording, browser, connect, done
+        case welcome, accessibility, screenRecording, systemAudio, browser, connect, done
     }
 
     static let doneKey = "onboardingDone"
@@ -73,6 +73,11 @@ final class OnboardingModel: ObservableObject {
     @Published var browser: (name: String, bundleID: String, url: URL)?
     @Published var browserPermission: BrowserAutomation.Permission = .notAsked
     @Published var askingBrowser = false
+    /// System Audio Recording, for capture_audio. Asked here so macOS's
+    /// prompt comes up on the user's screen, not mid-task where it opens on
+    /// whichever display has the key window (often the agent's).
+    @Published var systemAudio = AudioAccess.unavailable
+    @Published var askingAudio = false
 
     var onFinish: (() -> Void)?
     private var timer: Timer?
@@ -115,6 +120,7 @@ final class OnboardingModel: ObservableObject {
         screenRecordingOn = screenRecording || Self.screenRecordingSwitchedOn()
         browser = BrowserAutomation.defaultBrowser()
         if let b = browser, !askingBrowser { browserPermission = BrowserAutomation.permission(b.bundleID) }
+        if !askingAudio { systemAudio = .current }
         // ~/.claude.json can be several MB, so only read it where it's shown.
         if timer == nil || step == .connect || step == .done {
             installed = Set(AgentKind.allCases.filter(AgentSetup.isInstalled))
@@ -156,15 +162,37 @@ final class OnboardingModel: ObservableObject {
             guard let n = Step(rawValue: s.rawValue + 1) else { return }
             s = n
         } while (s == .accessibility && accessibility) || (s == .screenRecording && screenRecording)
-            || (s == .browser && !showsBrowserStep)
+            || (s == .systemAudio && !systemAudio.setupShows) || (s == .browser && !showsBrowserStep)
         go(s)
+    }
+
+    func requestAudio() {
+        guard !askingAudio else { return }
+        if systemAudio == .denied {
+            open("x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture")
+            return
+        }
+        askingAudio = true
+        AudioAccess.request { [weak self] in
+            guard let self else { return }
+            self.askingAudio = false
+            self.systemAudio = .current
+            if self.systemAudio == .allowed, self.step == .systemAudio {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { if self.step == .systemAudio { self.next() } }
+            }
+        }
     }
 
     /// Only for a Chromium default browser this app may not control yet.
     var showsBrowserStep: Bool { browser != nil && browserPermission != .allowed }
 
     /// The steps the dots count: done isn't one, nor a browser step that's skipped.
-    var dotSteps: [Step] { Step.allCases.filter { $0 != .done && ($0 != .browser || showsBrowserStep || step == .browser) } }
+    var dotSteps: [Step] {
+        Step.allCases.filter {
+            $0 != .done && ($0 != .browser || showsBrowserStep || step == .browser)
+                && ($0 != .systemAudio || systemAudio.setupShows || step == .systemAudio)
+        }
+    }
 
     func requestBrowser() {
         guard !askingBrowser else { return }
@@ -189,7 +217,7 @@ final class OnboardingModel: ObservableObject {
         repeat {
             guard let p = Step(rawValue: s.rawValue - 1) else { return }
             s = p
-        } while s == .browser && !showsBrowserStep
+        } while (s == .browser && !showsBrowserStep) || (s == .systemAudio && !systemAudio.setupShows)
         go(s)
     }
 
@@ -334,6 +362,8 @@ struct OnboardingView: View {
             PrivacyPaneArt(pane: .accessibility, isOn: model.accessibility)
         case .screenRecording:
             PrivacyPaneArt(pane: .screenRecording, isOn: model.screenRecordingOn)
+        case .systemAudio:
+            PrivacyPaneArt(pane: .systemAudio, isOn: model.systemAudio == .allowed)
         case .browser:
             PrivacyPaneArt(pane: .automation(browser: model.browser?.name ?? "Your browser"), isOn: model.browserPermission == .allowed)
         case .connect:
@@ -362,6 +392,7 @@ struct OnboardingView: View {
         case .screenRecording:
             if stillOff { return "Screen Recording is still off" }
             return needsRestart ? "Reopen the app" : "Let agents see their windows"
+        case .systemAudio: return "Keep agents' sound off your speakers"
         case .browser: return "Keep browser windows off your screen"
         case .connect: return "Connect your agents"
         case .done: return "You're ready"
@@ -378,6 +409,7 @@ struct OnboardingView: View {
             }
             if needsRestart { return "macOS won't let it record until it restarts." }
             return "Same thing, but in the Screen Recording list."
+        case .systemAudio: return "Allow it to record system audio so it can mute what agents play."
         case .browser: return "Allow it to control \(model.browser?.name ?? "your browser") so new windows open on the agent's screen."
         case .connect: return "Pick the agents you want to use this with."
         case .done: return "Ask an agent to use any app. You can watch it from the menu bar."
@@ -406,6 +438,8 @@ struct OnboardingView: View {
             StatusLine(on: model.accessibility)
         case .screenRecording:
             StatusLine(on: model.screenRecordingOn)
+        case .systemAudio:
+            StatusLine(on: model.systemAudio == .allowed)
         case .browser:
             StatusLine(on: model.browserPermission == .allowed)
         case .connect:
@@ -477,10 +511,15 @@ struct OnboardingView: View {
                     .buttonStyle(QuietButtonStyle())
                     .disabled(model.askingBrowser)
             }
+            if model.step == .systemAudio && model.systemAudio != .allowed {
+                Button("Skip", action: model.next)
+                    .buttonStyle(QuietButtonStyle())
+                    .disabled(model.askingAudio)
+            }
             Button(primaryTitle, action: primaryAction)
                 .buttonStyle(PrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(model.connecting
+                .disabled(model.connecting || model.askingAudio
                           || (model.step == .connect && model.temporaryLocation && !model.selected.isEmpty))
         }
         .padding(.horizontal, 24)
@@ -494,6 +533,13 @@ struct OnboardingView: View {
         case .screenRecording:
             if needsRestart { return "Quit & Reopen" }
             return model.screenRecording ? "Continue" : "Open System Settings"
+        case .systemAudio:
+            if model.askingAudio { return "Waiting…" }
+            switch model.systemAudio {
+            case .allowed, .unavailable: return "Continue"
+            case .denied: return "Open System Settings"
+            case .notAsked: return "Allow"
+            }
         case .browser:
             if model.askingBrowser { return "Waiting…" }
             switch model.browserPermission {
@@ -516,6 +562,7 @@ struct OnboardingView: View {
             if needsRestart { model.relaunch() }
             else if model.screenRecording { model.next() }
             else { model.requestScreenRecording() }
+        case .systemAudio: model.systemAudio.setupShows ? model.requestAudio() : model.next()
         case .browser: model.browserPermission == .allowed ? model.next() : model.requestBrowser()
         case .connect: model.connect()
         case .done: model.finish()

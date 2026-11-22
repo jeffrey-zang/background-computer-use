@@ -114,14 +114,14 @@ struct WelcomeArt: View {
 
 /// A small System Settings window showing the switch to turn on.
 struct PrivacyPaneArt: View {
-    enum Pane: Equatable { case accessibility, screenRecording, automation(browser: String) }
+    enum Pane: Equatable { case accessibility, screenRecording, systemAudio, automation(browser: String) }
     let pane: Pane
     let isOn: Bool
 
     private var title: String {
         switch pane {
         case .accessibility: return "Accessibility"
-        case .screenRecording: return "Screen & System Audio Recording"
+        case .screenRecording, .systemAudio: return "Screen & System Audio Recording"
         case .automation: return "Automation"
         }
     }
@@ -129,6 +129,7 @@ struct PrivacyPaneArt: View {
         switch pane {
         case .accessibility: return "Allow the applications below to control your computer."
         case .screenRecording: return "Allow the applications below to record the content of your screen and audio."
+        case .systemAudio: return "Allow the applications below to access and record your system audio."
         case .automation: return "Allow the applications below to control other applications."
         }
     }
@@ -136,6 +137,7 @@ struct PrivacyPaneArt: View {
         switch pane {
         case .accessibility: return [("Terminal", Color(hex: 0x3A3A3C)), ("Raycast", Color(hex: 0xFF6363))]
         case .screenRecording: return [("Zoom", Color(hex: 0x2D8CFF)), ("CleanShot X", Color(hex: 0x1F2A44))]
+        case .systemAudio: return [("Audio Hijack", Color(hex: 0x3F3D45)), ("Loopback", Color(hex: 0x6A5ACD))]
         case .automation: return [("Raycast", Color(hex: 0xFF6363)), ("Shortcuts", Color(hex: 0x5E5CE6))]
         }
     }
