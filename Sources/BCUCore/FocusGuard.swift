@@ -1582,7 +1582,8 @@ public final class FocusGuard {
                 if delivered { return passKey(event, type) }
             }
             lock.lock()
-            let alreadyHolding = holding || !holdTokens.isEmpty || draining || !held.isEmpty || replaysInFlight > 0
+            let alreadyHolding = Self.waitsBehind(holding: holding || !holdTokens.isEmpty, draining: draining, queued: !held.isEmpty,
+                                                  replaying: replaysInFlight > 0, panelHold: false)
             let anySwap = !swapping.isEmpty || !pidHeld.isEmpty || !parked.isEmpty || !arriving.isEmpty || !stranded.isEmpty
             let now = nowMs()
             let anyTaint = taints.values.contains { $0.count > 0 || $0.until >= now }
@@ -1624,6 +1625,12 @@ public final class FocusGuard {
         default:
             return event
         }
+    }
+
+    /// Whether a key the user types now waits in the queue, behind what's
+    /// held. Nothing typed later goes ahead of what was typed before.
+    static func waitsBehind(holding: Bool, draining: Bool, queued: Bool, replaying: Bool, panelHold: Bool) -> Bool {
+        holding || draining || queued || replaying
     }
 
     /// Why all the user's input is being held right now, for the log.

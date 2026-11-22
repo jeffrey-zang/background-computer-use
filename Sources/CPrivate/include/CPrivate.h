@@ -52,6 +52,10 @@ int BCUPostMakeKeyRecords(pid_t pid, uint32_t windowID);
 /// The pid WindowServer considers frontmost (0 if unknown). Unlike
 /// NSWorkspace, this doesn't wait for our run loop to see the change.
 pid_t BCUFrontProcessPID(void);
+/// The pid WindowServer sends keyboard input to right now (0 if unknown).
+/// Usually the front app's, but a helper process can take it (macOS 15's
+/// file panel helper does, see `PanelFocus`).
+pid_t BCUKeyFocusPID(void);
 /// The app responsible for a process (a WebKit GPU process plays an app's
 /// sound under its own pid): `pid` itself for an app, or 0 if unknown.
 pid_t BCUResponsiblePID(pid_t pid);

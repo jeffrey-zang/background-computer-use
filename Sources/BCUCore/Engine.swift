@@ -2029,6 +2029,12 @@ public final class Engine {
 
     /// Run several actions on a window in one call, in order, stopping at the
     /// first failure, then optionally read the window's state once.
+    /// Whether action `i` of a batch is the one that opens the file picker
+    /// its next action (waits aside) chooses from.
+    static func opensPicker(_ tools: [String], at i: Int) -> Bool {
+        false
+    }
+
     private func batch(_ args: Args) throws -> ToolResult {
         guard let steps = args.raw["actions"] as? [JSONObject], !steps.isEmpty else {
             throw ToolError("`actions` must be a non-empty array of objects like {\"tool\": \"click\", \"element\": 4}")
