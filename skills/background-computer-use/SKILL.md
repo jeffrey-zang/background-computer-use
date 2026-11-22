@@ -28,7 +28,7 @@ An element keeps its number for as long as it exists, even while it's scrolled o
 
 Popups that belong to your window (menus, dropdowns, address-bar suggestions) are listed after the window's own elements, with their own numbers.
 
-A sheet over your window, such as a file picker opened by an upload button, a save panel or an alert, is listed first, before the window behind it, which takes no input until the sheet closes. To upload or save a file, call `choose_file` with its path: it goes to the file's folder (any folder, ~/Library too), selects it and presses Open or Save. You can also click a file's row by number and then the panel's button.
+A sheet over your window, such as a file picker opened by an upload button, a save panel or an alert, is listed first, before the window behind it, which takes no input until the sheet closes. To upload or save a file, call `choose_file` with its path: it goes to the file's folder (any folder, ~/Library too), selects it and presses Open or Save. Send the click that opens the picker and `choose_file` in one `batch`: the user's typing can be lost while the picker is open. You can also click a file's row by number and then the panel's button.
 
 Pass `screenshot=false` when the text is enough. Take the screenshot when layout matters, when the tree is thin (canvas apps, images, games) or when an action didn't do what you expected. Coordinates for `click` and `scroll` are window points, which match the screenshot's pixels.
 
