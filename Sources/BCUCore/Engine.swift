@@ -2595,14 +2595,23 @@ public final class Engine {
         let from = CGPoint(x: f.minX + fx, y: f.minY + fy), to = CGPoint(x: f.minX + tx, y: f.minY + ty)
         try requireInside(from, x: fx, y: fy, frame: f, window: ax, of: w)
         point(from, .drag(to: to))
+        let dragCount = SystemDrag.onThisMac ? SystemDrag.changeCount : nil
         if let panel = remotePanel(w), panel.remote.frame.contains(from) {
             let target = Panel.window(of: panel.remote, at: from)
             try panelInput(w, cause: "dragging") { try Input.drag(pid: target.pid, windowID: target.window, from: from, to: to, origin: target.frame.origin) }
-            return ToolResult(text: "Dragged from (\(Int(fx)),\(Int(fy))) to (\(Int(tx)),\(Int(ty))).")
+        } else {
+            try keyed(w, cause: "dragging") { check, key in
+                try check()
+                try Input.drag(pid: w.pid, windowID: Self.clickTarget(w.id, key: key, at: from), from: from, to: to)
+            }
         }
-        try keyed(w, cause: "dragging") { check, key in
-            try check()
-            try Input.drag(pid: w.pid, windowID: Self.clickTarget(w.id, key: key, at: from), from: from, to: to)
+        if let before = dragCount {
+            // The app may still be working through the posted events.
+            var after = SystemDrag.changeCount
+            if after == before {
+                _ = waitUntil(300) { after = SystemDrag.changeCount; return after != before }
+            }
+            if SystemDrag.dropLost(before: before, after: after, osMajor: SystemDrag.osMajor) { throw ToolError(SystemDrag.refusal) }
         }
         return ToolResult(text: "Dragged from (\(Int(fx)),\(Int(fy))) to (\(Int(tx)),\(Int(ty))).")
     }
