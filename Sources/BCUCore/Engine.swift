@@ -2595,13 +2595,19 @@ public final class Engine {
         let from = CGPoint(x: f.minX + fx, y: f.minY + fy), to = CGPoint(x: f.minX + tx, y: f.minY + ty)
         try requireInside(from, x: fx, y: fy, frame: f, window: ax, of: w)
         point(from, .drag(to: to))
-        let dragCount = SystemDrag.onThisMac ? SystemDrag.changeCount : nil
+        // Read right before the drag, after any wait for the user or
+        // another agent: a drag of theirs meanwhile isn't this one.
+        var dragCount: Int?
         if let panel = remotePanel(w), panel.remote.frame.contains(from) {
             let target = Panel.window(of: panel.remote, at: from)
-            try panelInput(w, cause: "dragging") { try Input.drag(pid: target.pid, windowID: target.window, from: from, to: to, origin: target.frame.origin) }
+            try panelInput(w, cause: "dragging") {
+                dragCount = SystemDrag.onThisMac ? SystemDrag.changeCount : nil
+                try Input.drag(pid: target.pid, windowID: target.window, from: from, to: to, origin: target.frame.origin)
+            }
         } else {
             try keyed(w, cause: "dragging") { check, key in
                 try check()
+                dragCount = SystemDrag.onThisMac ? SystemDrag.changeCount : nil
                 try Input.drag(pid: w.pid, windowID: Self.clickTarget(w.id, key: key, at: from), from: from, to: to)
             }
         }
