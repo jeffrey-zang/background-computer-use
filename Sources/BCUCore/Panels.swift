@@ -53,17 +53,27 @@ public enum Panel {
 
     // MARK: Reading the panel
 
-    /// The panel's sheet nested in it, if one is up (Go to Folder).
+    /// The panel's sheet nested in it, if one is up (Go to Folder). Not
+    /// looked for inside the file lists: walking their rows took 250 ms
+    /// each time (on 15.8), and `chooseFile` asks every few ms.
     static func innerSheet(_ panel: AXUIElement) -> AXUIElement? {
         var queue = AX.children(panel)
         var seen = 0
         while !queue.isEmpty && seen < 400 {
             let el = queue.removeFirst()
             seen += 1
-            if AX.string(el, "AXRole") == "AXSheet" { return el }
+            let role = AX.string(el, "AXRole") ?? ""
+            if role == "AXSheet" { return el }
+            if isFileList(role) { continue }
             queue.append(contentsOf: AX.children(el))
         }
         return nil
+    }
+
+    /// A list of files or places: thousands of rows, and never a sheet or
+    /// a field the panel's steps look for.
+    static func isFileList(_ role: String) -> Bool {
+        role == "AXOutline" || role == "AXTable" || role == "AXList" || role == "AXBrowser"
     }
 
     /// The first element under `root` (breadth first, not inside a nested
@@ -78,7 +88,7 @@ public enum Panel {
             if match(el, role) { return el }
             if role == "AXSheet" { continue }
             // A file list can hold thousands of rows: nothing to find in there.
-            if role == "AXOutline" || role == "AXTable" || role == "AXList" || role == "AXBrowser" { continue }
+            if isFileList(role) { continue }
             queue.append(contentsOf: AX.children(el))
         }
         return nil

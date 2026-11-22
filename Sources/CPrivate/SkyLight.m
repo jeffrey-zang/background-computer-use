@@ -156,6 +156,21 @@ pid_t BCUFrontProcessPID(void) {
     return toPid(psn, &pid) == 0 ? pid : 0;
 }
 
+// SLPSGetKeyFocusProcess(ProcessSerialNumber *psn, Boolean *flag): the
+// second out-parameter is a byte, so it gets one.
+typedef int32_t (*GetKeyFocusProcessFn)(void *psn, uint8_t *flag);
+
+pid_t BCUKeyFocusPID(void) {
+    GetKeyFocusProcessFn keyFocus = (GetKeyFocusProcessFn)Sym("SLPSGetKeyFocusProcess");
+    GetProcessPIDFn toPid = (GetProcessPIDFn)Sym("GetProcessPID");
+    if (!keyFocus || !toPid) return 0;
+    uint8_t psn[8] = {0};
+    uint8_t flag = 0;
+    if (keyFocus(psn, &flag) != 0) return 0;
+    pid_t pid = 0;
+    return toPid(psn, &pid) == 0 ? pid : 0;
+}
+
 int BCUSetFrontProcess(pid_t pid, uint32_t windowID, uint32_t options) {
     SetFrontProcessFn setFront = (SetFrontProcessFn)Sym("SLPSSetFrontProcessWithOptions");
     if (!setFront) return -1;

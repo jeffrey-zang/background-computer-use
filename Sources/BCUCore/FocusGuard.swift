@@ -196,6 +196,14 @@ public final class FocusGuard {
     private var heldSinceMs = 0.0
     /// Holds of all the user's input in progress (see `beginHold`).
     private var holdTokens: Set<Int> = []
+    /// Keys held while an agent's file panel helper has the keyboard
+    /// (macOS 15, see `PanelFocus`), until it's back with the user's app.
+    private var panelHold: PanelFocus.Hold?
+    /// The helper whose hold ran out: keys go on to it until it lets go.
+    private var panelHoldSpent: pid_t = 0
+    /// `choose_file` steps running, and when the last one ended.
+    private var panelSteps = 0
+    private var panelStepEndMs = -1e9
     private var nextHoldToken = 1
     private var holdSinceMs = 0.0
     /// Each user key event is captured and replayed at most once. Copies keep
@@ -1501,7 +1509,7 @@ public final class FocusGuard {
             if Self.isKey(type) {
                 lock.lock()
                 replaysInFlight = max(0, replaysInFlight - 1)
-                let resume = replaysInFlight == 0 && !held.isEmpty && !draining && holdTokens.isEmpty && !holding
+                let resume = replaysInFlight == 0 && !held.isEmpty && !draining && holdTokens.isEmpty && !holding && panelHold == nil
                 lock.unlock()
                 if resume { DispatchQueue.global(qos: .userInteractive).async { self.drain() } }
             }
@@ -1582,12 +1590,20 @@ public final class FocusGuard {
                 if delivered { return passKey(event, type) }
             }
             lock.lock()
-            let alreadyHolding = holding || !holdTokens.isEmpty || draining || !held.isEmpty || replaysInFlight > 0
+            let alreadyHolding = Self.waitsBehind(holding: holding || !holdTokens.isEmpty, draining: draining, queued: !held.isEmpty,
+                                                  replaying: replaysInFlight > 0, panelHold: panelHold != nil)
             let anySwap = !swapping.isEmpty || !pidHeld.isEmpty || !parked.isEmpty || !arriving.isEmpty || !stranded.isEmpty
             let now = nowMs()
             let anyTaint = taints.values.contains { $0.count > 0 || $0.until >= now }
             lock.unlock()
             if alreadyHolding {
+                hold(event)
+                return nil
+            }
+            // On macOS 15 an agent's file panel can have the keyboard: hold
+            // the key until it's back with the user's app.
+            if PanelFocus.onThisMac, let helper = panelHelperWithKey() {
+                startPanelHold(helper)
                 hold(event)
                 return nil
             }
@@ -1624,6 +1640,14 @@ public final class FocusGuard {
         default:
             return event
         }
+    }
+
+    /// Whether a key the user types now waits in the queue, behind what's
+    /// held: while a hold is on, while held keys are being replayed or wait
+    /// to be, and while an agent's file panel has the keyboard (macOS 15).
+    /// Nothing typed later goes ahead of what was typed before.
+    static func waitsBehind(holding: Bool, draining: Bool, queued: Bool, replaying: Bool, panelHold: Bool) -> Bool {
+        holding || draining || queued || replaying || panelHold
     }
 
     /// Why all the user's input is being held right now, for the log.
@@ -1823,6 +1847,87 @@ public final class FocusGuard {
         }?.pid
     }
 
+    /// A `choose_file` step is choosing a file in a panel: on macOS 15 the
+    /// user's keys may be held meanwhile (see `PanelFocus`).
+    public func beginPanelStep() {
+        lock.lock(); panelSteps += 1; panelHoldSpent = 0; lock.unlock()
+    }
+
+    public func endPanelStep() {
+        lock.lock()
+        panelSteps = max(0, panelSteps - 1)
+        if panelSteps == 0 { panelStepEndMs = nowMs() }
+        lock.unlock()
+    }
+
+    private func panelChoosing() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return PanelFocus.choosing(steps: panelSteps, lastEndMs: panelStepEndMs, nowMs: nowMs())
+    }
+
+    /// The file panel helper that has the keyboard while a file is being
+    /// chosen, if the user's keys are to be held for it (macOS 15).
+    private func panelHelperWithKey() -> pid_t? {
+        lock.lock()
+        let choosing = PanelFocus.choosing(steps: panelSteps, lastEndMs: panelStepEndMs, nowMs: nowMs())
+        let spent = panelHoldSpent
+        lock.unlock()
+        guard choosing, let helper = PanelFocus.helperWithKey(front: BCUFrontProcessPID()) else { return nil }
+        return helper == spent ? nil : helper
+    }
+
+    /// Hold the user's keys from now until the helper lets go of the
+    /// keyboard (`PanelFocus.Hold`), then replay them.
+    private func startPanelHold(_ helper: pid_t) {
+        lock.lock()
+        let fresh = panelHold == nil
+        if fresh { panelHold = PanelFocus.Hold(helper: helper, sinceMs: nowMs()) }
+        lock.unlock()
+        guard fresh else { return }
+        Log.info("guard: holding your keys: the file panel of an agent's choose_file has the keyboard (helper pid \(helper))")
+        let watcher = Thread { [weak self] in self?.watchPanelHold() }
+        watcher.name = "bcu.guard.panel"
+        watcher.qualityOfService = .userInteractive
+        watcher.start()
+    }
+
+    /// Ask WindowServer where the keyboard is every 4 ms; replay the held
+    /// keys the moment it's back with the user's app (or the hold ran out).
+    private func watchPanelHold() {
+        while true {
+            usleep(4000)
+            lock.lock()
+            guard var h = panelHold else { lock.unlock(); return }
+            lock.unlock()
+            let end = h.sample(helperHasKey: BCUKeyFocusPID() == h.helper, choosing: panelChoosing(), nowMs: nowMs())
+            lock.lock()
+            guard let end else { panelHold = h; lock.unlock(); continue }
+            panelHold = nil
+            if end == .expired { panelHoldSpent = h.helper }
+            let waiting = held.count
+            lock.unlock()
+            let ms = Int(nowMs() - h.sinceMs)
+            switch end {
+            case .back:
+                Log.info("guard: the keyboard is back from an agent's file panel: held your keys \(ms) ms, replaying \(waiting) key events")
+            case .stepOver:
+                record("released your keys after \(ms) ms held for an agent's choose_file: it ended with its panel still holding the keyboard")
+            case .expired:
+                record("released your keys after \(ms) ms held for an agent's file panel, which still has the keyboard")
+            }
+            drain()
+            if end == .expired { waitForRelease(of: h.helper) }
+            return
+        }
+    }
+
+    /// After a hold ran out: once the helper lets go of the keyboard, its
+    /// next turn with it is held again.
+    private func waitForRelease(of helper: pid_t) {
+        while panelChoosing() && BCUKeyFocusPID() == helper { usleep(4000) }
+        lock.lock(); if panelHoldSpent == helper { panelHoldSpent = 0 }; lock.unlock()
+    }
+
     /// Hold the user's keys and clicks until `endHold`, then replay them in
     /// order. Used while the agent briefly owns an app's key window, so
     /// nothing the user types lands in the agent's window and no click of
@@ -1865,6 +1970,8 @@ public final class FocusGuard {
         var what: [String] = []
         if !holdTokens.isEmpty && now - holdSinceMs > Self.maxHoldMs { holdTokens.removeAll(); what.append("a key swap") }
         if holding && now - holdingSinceMs > Self.maxHoldMs { holding = false; what.append("a focus change") }
+        // Its own watcher ends it; this only if that watcher is gone.
+        if let p = panelHold, now - p.sinceMs > PanelFocus.maxHoldMs + 1000 { panelHold = nil; what.append("a file panel") }
         var inFlightLost = 0
         if replaysInFlight > 0 && now - replaysInFlightSinceMs > 500 {
             inFlightLost = replaysInFlight
@@ -1928,7 +2035,7 @@ public final class FocusGuard {
         var reclaims = ReclaimTries()
         while true {
             lock.lock()
-            if held.isEmpty || holding || !holdTokens.isEmpty { draining = false; lock.unlock(); break }
+            if held.isEmpty || holding || !holdTokens.isEmpty || panelHold != nil { draining = false; lock.unlock(); break }
             let (e, typedInto) = held[0]
             let swappingNow = swapping
             lock.unlock()
@@ -1945,6 +2052,13 @@ public final class FocusGuard {
                 }
             }
             if Self.isKey(e.type) && e.type != .flagsChanged {
+                // An agent's file panel took the keyboard again: replayed
+                // now, the keys would go to it.
+                if PanelFocus.onThisMac, let helper = panelHelperWithKey() {
+                    lock.lock(); draining = false; lock.unlock()
+                    startPanelHold(helper)
+                    break
+                }
                 let front = BCUFrontProcessPID()
                 if swappingNow[front] != nil {
                     // That app's key window is an agent's for now; its swap

@@ -2029,6 +2029,12 @@ public final class Engine {
 
     /// Run several actions on a window in one call, in order, stopping at the
     /// first failure, then optionally read the window's state once.
+    /// Whether action `i` of a batch is the one that opens the file picker
+    /// its next action (waits aside) chooses from.
+    static func opensPicker(_ tools: [String], at i: Int) -> Bool {
+        tools[i] != "choose_file" && tools[(i + 1)...].first { $0 != "wait" } == "choose_file"
+    }
+
     private func batch(_ args: Args) throws -> ToolResult {
         guard let steps = args.raw["actions"] as? [JSONObject], !steps.isEmpty else {
             throw ToolError("`actions` must be a non-empty array of objects like {\"tool\": \"click\", \"element\": 4}")
@@ -2058,6 +2064,8 @@ public final class Engine {
         }
         batching = true
         defer { closeCover(); batching = false }
+        var choosingAhead = false
+        defer { if choosingAhead { focusGuard.endPanelStep() } }
         var waitedNotes = 0
         for (i, step) in steps.enumerated() {
             let tool = step["tool"] as! String
@@ -2068,6 +2076,16 @@ public final class Engine {
                 lines.append(i + 1 == steps.count ? "Stopped (\(why)); action \(i + 1) didn't run." : "Stopped (\(why)); actions \(i + 1)–\(steps.count) didn't run.")
                 failed = true
                 break
+            }
+            // A step that opens a file picker for the next one to choose
+            // from: on macOS 15 the picker takes the keyboard as it opens
+            // (see `PanelFocus`), so choosing starts with it and lasts
+            // through the choose_file.
+            let endsChoosing = choosingAhead && tool == "choose_file"
+            defer { if endsChoosing { focusGuard.endPanelStep(); choosingAhead = false } }
+            if !choosingAhead, Self.opensPicker(steps.map { $0["tool"] as? String ?? "" }, at: i) {
+                focusGuard.beginPanelStep()
+                choosingAhead = true
             }
             defer {
                 // Keep the user's window covered only into a next step that
@@ -2589,21 +2607,34 @@ public final class Engine {
         return ToolResult(text: "Dragged from (\(Int(fx)),\(Int(fy))) to (\(Int(tx)),\(Int(ty))).")
     }
 
-    /// Poll `ok` every 50 ms for up to `ms`; whether it came true.
-    private func waitUntil(_ ms: Double, _ ok: () -> Bool) -> Bool {
+    /// Poll `ok` every `everyMs` for up to `ms`; whether it came true.
+    private func waitUntil(_ ms: Double, everyMs: Double = 50, _ ok: () -> Bool) -> Bool {
         let deadline = nowMs() + ms
         while true {
             if ok() { return true }
             if nowMs() >= deadline { return false }
-            sleepMs(50)
+            sleepMs(everyMs)
         }
     }
+
+    /// How often `chooseFile` looks at the panel once it's open. On macOS 15
+    /// the panel's helper has the keyboard for as long as it's open, with the
+    /// user's keys held meanwhile (see `PanelFocus`): each step goes the
+    /// moment the one before has landed. Elsewhere every 50 ms as before:
+    /// polled every 5 ms in a batch (click, then choose_file), Helium's
+    /// panel on 27.0 stopped taking keys.
+    private static let panelPollMs = PanelFocus.onThisMac ? 5.0 : 50.0
 
     /// Pick a file by path in the open or save panel over the window: Go to
     /// Folder with the path, then the panel's button. Works for any folder,
     /// including ones the panel's sidebar doesn't show (~/Library). Keys go
     /// to the panel's own process (see `Panel`), so nothing waits for the user.
     private func chooseFile(_ args: Args) throws -> ToolResult {
+        // On macOS 15 the panel's helper has the keyboard: the user's keys
+        // are held while it does (see `PanelFocus`). From the start: finding
+        // the window can take a while in an app whose panel is opening.
+        focusGuard.beginPanelStep()
+        defer { focusGuard.endPanelStep() }
         let (w, ax) = try agentWindow(args)
         let path = Panel.resolve(try args.requireString("path"))
         guard path.hasPrefix("/") else { throw ToolError("give an absolute path (or one starting with ~)") }
@@ -2635,6 +2666,11 @@ public final class Engine {
             goTo = path
         }
         point(remote.frame.center)
+        // Where the time in the panel goes, for the log.
+        let panelFrom = nowMs()
+        var marks: [String] = []
+        func mark(_ what: String) { marks.append("\(what) \(Int(nowMs() - panelFrom))") }
+        defer { Log.info("choose_file: ms into the panel: \(marks.joined(separator: ", "))\(marks.last?.hasPrefix("closed") == true ? "" : " (stopped there)")") }
         // The user can pause the agent or take over its display while this
         // waits on the panel: check before every step.
         func stillGoing() throws {
@@ -2664,23 +2700,33 @@ public final class Engine {
             }
             try panelInput(w, cause: "typing / in the file panel") { _ = try Input.typeText(pid: remote.pid, "/", windowID: remote.window) }
         }
-        let openers: [() throws -> Void] = saving ? [slash, { try press("g", ["cmd", "shift"]) }] : [{ try press("g", ["cmd", "shift"]) }, slash]
+        let goKeys = { try press("g", ["cmd", "shift"]) }
+        // A panel that has only just opened drops the keys (seen on 15.8 in
+        // a batch: click, then choose_file). Go to Folder comes up 320 to
+        // 400 ms after them otherwise, so on 15, where the user's keys are
+        // held meanwhile, they go again after 400 ms rather than 1.5 s.
+        let retries: [(open: () throws -> Void, ms: Double)] = PanelFocus.onThisMac && !saving ? [(goKeys, 400), (goKeys, 400)] : []
+        let openers: [(open: () throws -> Void, ms: Double)] =
+            retries + (saving ? [(slash, 1500), (goKeys, 1500)] : [(goKeys, 1500), (slash, 1500)])
         var field: AXUIElement? = goToField()
-        for open in openers where field == nil {
-            try open()
-            _ = waitUntil(1500) { field = goToField(); return field != nil }
+        for opener in openers where field == nil {
+            try opener.open()
+            mark("keys sent")
+            _ = waitUntil(opener.ms, everyMs: Self.panelPollMs) { field = goToField(); return field != nil }
         }
+        mark("go to folder open")
         guard let field else {
             throw ToolError("Go to Folder didn't open in the file panel, so nothing was chosen. Read the window and pick the file by clicking its row, then the panel's button.")
         }
         try stillGoing()
         let err = try guarded(w, cause: "entering the path") { AX.set(field, "AXValue", goTo as CFString) }
-        guard err == .success, waitUntil(500, { AX.string(field, "AXValue") == goTo }) else {
+        guard err == .success, waitUntil(500, everyMs: Self.panelPollMs, { AX.string(field, "AXValue") == goTo }) else {
             try? press("escape")
             throw ToolError("couldn't enter the path in Go to Folder (\(AX.errorName(err))), so nothing was chosen")
         }
+        mark("path in")
         try press("return")
-        guard waitUntil(3000, { Panel.innerSheet(panel.sheet) == nil }) else {
+        guard waitUntil(3000, everyMs: Self.panelPollMs, { Panel.innerSheet(panel.sheet) == nil }) else {
             try? press("escape")
             throw ToolError("the file panel didn't take \(goTo) (Go to Folder stayed open, so it may not be able to reach it); closed Go to Folder, nothing was chosen")
         }
@@ -2688,15 +2734,16 @@ public final class Engine {
             guard let nameField = Panel.nameField(panel.sheet) else { throw ToolError("went to \(goTo), but found no file name field in the save panel") }
             try stillGoing()
             let e = try guarded(w, cause: "entering the file name") { AX.set(nameField, "AXValue", name as CFString) }
-            guard e == .success, waitUntil(500, { AX.string(nameField, "AXValue") == name }) else {
+            guard e == .success, waitUntil(500, everyMs: Self.panelPollMs, { AX.string(nameField, "AXValue") == name }) else {
                 throw ToolError("went to \(goTo), but couldn't enter the name \"\(name)\" (\(AX.errorName(e)))")
             }
-        } else if !isDir.boolValue, !waitUntil(3000, { Panel.selectedNames(panel.sheet).contains(name) }) {
+        } else if !isDir.boolValue, !waitUntil(3000, everyMs: Self.panelPollMs, { Panel.selectedNames(panel.sheet).contains(name) }) {
             // (Go to Folder with a folder opens it, and a folder picker's
             // button then chooses the folder it's in: nothing to select.)
             let selected = Panel.selectedNames(panel.sheet)
             throw ToolError("went to \(goTo), but the panel selected \(selected.isEmpty ? "nothing" : selected.map { "\"\($0)\"" }.joined(separator: ", ")) instead of \"\(name)\". Read the window and pick the row yourself.")
         }
+        mark("selected")
         let what = saving ? "Entered \(path) in the save panel" : "Selected \(path) in the file picker"
         guard let button = Panel.defaultButton(panel.sheet) else {
             return ToolResult(text: "\(what), but found no button to finish with: read the window and press it.")
@@ -2709,10 +2756,11 @@ public final class Engine {
         try stillGoing()
         let e = try guarded(w, cause: "pressing \(title)") { AX.perform(button, "AXPress") }
         guard e == .success else { throw ToolError("\(what), but pressing \"\(title)\" failed (\(AX.errorName(e)))") }
-        let closed = waitUntil(3000) {
+        let closed = waitUntil(3000, everyMs: Self.panelPollMs) {
             guard let now = AX.window(pid: w.pid, id: w.id).flatMap(AX.sheet(of:)) else { return true }
             return !CFEqual(now, panel.sheet)
         }
+        mark("closed")
         if !closed { return ToolResult(text: "\(what) and pressed \"\(title)\", but the panel is still open: read the window.") }
         if AX.window(pid: w.pid, id: w.id).flatMap(AX.sheet(of:)) != nil {
             return ToolResult(text: "\(what) and pressed \"\(title)\"; another sheet is open now (a question, say \"Replace?\"): read the window.")
