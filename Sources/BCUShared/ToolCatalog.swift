@@ -33,7 +33,8 @@ public enum ToolCatalog {
     can't wait (a dialog or toast about to close, a hover then a click, a code about to expire).
     Popups your window opens (address-bar suggestions, menus, dropdowns) are listed after the window's \
     elements in `get_window_state`; click their rows by number. A sheet over your window (a file picker, a save \
-    panel, an alert) is listed first. To pick or save a file by path, use `choose_file`. \
+    panel, an alert) is listed first. To pick or save a file by path, use `choose_file`, sent in one `batch` \
+    with the click that opens the picker: the user's typing can be lost while the picker is open. \
     In a browser, to go to a URL use \
     `navigate` (it sends no keys, so it doesn't wait for the user to pause unless they're in that same browser); in a browser it doesn't support, \
     click the address bar, then `type_text` the URL followed by "\\n".
@@ -69,7 +70,7 @@ public enum ToolCatalog {
     static let macOnly: [JSONObject] = [
         [
             "name": "choose_file",
-            "description": "Pick a file by path in the file picker or save panel open over your window (opened by an upload button, File > Open or Save), then press its Open or Save button. Works for any folder, including ones the picker's sidebar doesn't show. For a save panel, give the path to save to. Waits up to 3 s for the picker to open.",
+            "description": "Pick a file by path in the file picker or save panel open over your window (opened by an upload button, File > Open or Save), then press its Open or Save button. Works for any folder, including ones the picker's sidebar doesn't show. For a save panel, give the path to save to. Waits up to 3 s for the picker to open. Send it in one `batch` with the click that opens the picker.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
