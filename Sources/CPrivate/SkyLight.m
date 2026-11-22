@@ -141,10 +141,13 @@ int BCUAudioCapturePreflight(void) {
     return preflight ? preflight(CFSTR("kTCCServiceAudioCapture"), NULL) : -1;
 }
 
-void BCUAudioCaptureRequest(void) {
+void BCUAudioCaptureRequestThen(void (^done)(bool granted)) {
     void (*request)(CFStringRef, CFDictionaryRef, void (^)(Boolean)) = TCCSym("TCCAccessRequest");
-    if (request) request(CFSTR("kTCCServiceAudioCapture"), NULL, ^(Boolean granted) { (void)granted; });
+    if (!request) { if (done) done(false); return; }
+    request(CFSTR("kTCCServiceAudioCapture"), NULL, ^(Boolean granted) { if (done) done(granted); });
 }
+
+void BCUAudioCaptureRequest(void) { BCUAudioCaptureRequestThen(NULL); }
 
 pid_t BCUFrontProcessPID(void) {
     GetFrontProcessFn front = (GetFrontProcessFn)Sym("_SLPSGetFrontProcess");

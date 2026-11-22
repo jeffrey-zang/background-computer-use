@@ -64,6 +64,8 @@ pid_t BCUResponsiblePID(pid_t pid);
 int BCUAudioCapturePreflight(void);
 /// Ask for System Audio Recording (macOS shows its prompt); doesn't wait.
 void BCUAudioCaptureRequest(void);
+/// The same, then `done` with the user's answer (on a TCC queue).
+void BCUAudioCaptureRequestThen(void (^done)(bool granted));
 
 /// SLPSSetFrontProcessWithOptions. Used only to give the front back to the
 /// user's app after another app activated itself. 0x200 = user generated.
