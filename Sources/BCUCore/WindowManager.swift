@@ -665,7 +665,7 @@ public final class WindowManager {
         // Without a New Window menu item there's nothing safe to press (see
         // below): say so before holding the user's input.
         if scripted == nil, trigger != "key", Self.newWindowMenuItem(pid: pid) == nil {
-            throw ToolError("\(name) has no menu item for a new window, so no window was opened. It may not support multiple windows: use list_windows with app=\"\(name)\" and borrow_window.")
+            throw ToolError("\(name) has no menu item for a new window, so no window was opened. It may not support multiple windows. Ask the user before borrowing one of theirs: if they agree, use list_windows with app=\"\(name)\" and borrow_window.")
         }
         // An app with a full-screen window on a Space shown now opens the
         // new window as a tab in it, on the user's screen (see
@@ -793,7 +793,7 @@ public final class WindowManager {
         }
         guard let id = caught else {
             if let key = unkeyedFullScreen, WindowList.info(key) != nil { KeyScope.postRecords(pid: pid, from: nil, to: key) }
-            throw ToolError("\(name) didn't open a new window (tried \(how)). It may not support multiple windows: use list_windows with app=\"\(name)\" and borrow_window.")
+            throw ToolError("\(name) didn't open a new window (tried \(how)). It may not support multiple windows. Ask the user before borrowing one of theirs: if they agree, use list_windows with app=\"\(name)\" and borrow_window.")
         }
         // Give the app's key window back to whatever had it, so switching to
         // the app lands the user on their own window.

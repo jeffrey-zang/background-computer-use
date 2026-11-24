@@ -671,6 +671,10 @@ public final class Engine {
         if let refusal = Self.lockedRefusal(tool: tool, window: windowID != nil, locked: Self.screenLocked()) {
             throw ToolError(refusal)
         }
+        if let refusal = Self.permissionRefusal(tool: tool, accessibility: AX.isTrusted,
+                                                screenRecording: Capture.hasPermission, process: Self.permissionHolder) {
+            throw ToolError(refusal)
+        }
         // Opening or borrowing a window is what needs a display.
         if tool == "open_window" || tool == "borrow_window" { try ensureDisplay() }
         return try dispatch(tool: tool, args: args)
@@ -692,6 +696,33 @@ public final class Engine {
     static func lockedRefusal(tool: String, window: Bool, locked: Bool) -> String? {
         guard locked, window || tool == "open_window" || tool == "borrow_window" else { return nil }
         return "the Mac's screen is locked, and until the user unlocks it macOS doesn't let this app reach any app's windows. Nothing was done. Try again later, or tell the user you're blocked."
+    }
+
+    /// Why `tool` can't run without this process's permissions, if it
+    /// can't. Opening or borrowing a window finds, moves and hands back key
+    /// through accessibility: without it the app's menu can't be read (so
+    /// open_window said the app "may not support multiple windows" and sent
+    /// the agent to borrow_window, which can't work either), and no input
+    /// may go to the app. Nothing is sent to it.
+    static func permissionRefusal(tool: String, accessibility: Bool, screenRecording: Bool, process: String) -> String? {
+        guard tool == "open_window" || tool == "borrow_window", !accessibility else { return nil }
+        let missing = screenRecording ? "Accessibility permission is" : "Accessibility and Screen Recording permissions are"
+        let panes = screenRecording ? "Accessibility" : "Accessibility and Screen Recording"
+        return "\(missing) missing for \(process), so it can't reach any app's windows. Nothing was done, and no input was sent to the app. Ask the user to grant \(screenRecording ? "it" : "them") in System Settings > Privacy & Security > \(panes), then retry." + (tool == "open_window" ? " Don't try borrow_window: it needs the same permission." : "")
+    }
+
+    /// What the user grants permissions to: the app this engine runs in
+    /// (Background Computer Use, or the host app whose `bcu` this is), else
+    /// the executable itself.
+    static var permissionHolder: String {
+        let exe = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath()
+        if let app = BCUCopy.app(containing: exe) {
+            let name = app.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                ?? app.object(forInfoDictionaryKey: "CFBundleName") as? String
+                ?? app.bundleURL.deletingPathExtension().lastPathComponent
+            return "\(name) (\(app.bundleURL.path))"
+        }
+        return "\(exe.path) (or the app that started it)"
     }
 
     /// Maintenance and test tools (`admin_*`) work only when the app was
