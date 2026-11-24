@@ -37,7 +37,8 @@ public enum ToolCatalog {
     with the click that opens the picker: the user's typing can be lost while the picker is open. \
     In a browser, to go to a URL use \
     `navigate` (it sends no keys, so it doesn't wait for the user to pause unless they're in that same browser); in a browser it doesn't support, \
-    click the address bar, then `type_text` the URL followed by "\\n".
+    click the address bar, then `type_text` the URL followed by "\\n" with `element` set to the address field \
+    (typed as keystrokes, a URL can merge with the bar's autocomplete and load the wrong page).
     5. When you already know the next few steps (fill a form and submit, type a URL and press Return), send \
     them in one `batch` call: it runs them in order, stops at the first failure, and returns the window's \
     state at the end. Otherwise check the result with `get_window_state` after each meaningful step.

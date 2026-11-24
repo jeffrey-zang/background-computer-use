@@ -2278,6 +2278,29 @@ public final class Engine {
         return ToolResult(text: "Performed \(action) on element \(n.index).")
     }
 
+    /// How `type_text` puts text into an element of a window the user isn't in.
+    enum TypingRoute: Equatable {
+        /// Inserted through accessibility (keystrokes if the field ignores it).
+        case accessibility
+        /// The text through accessibility, Return and Tab as keys.
+        case accessibilityAndKeys
+        /// Every character a keystroke.
+        case keystrokes
+    }
+
+    static func typingRoute(role: String?, selectedTextSettable: Bool, text: String) -> TypingRoute {
+        guard let role else { return .keystrokes }
+        let hasKeys = text.contains(where: { Input.isReturn($0) || $0 == "\t" })
+        if !hasKeys && selectedTextSettable { return .accessibility }
+        // A single-line field and Return (a URL and "\n"): typed key by key,
+        // an address bar's inline autocomplete takes over partway and the
+        // rest lands after its suggestion, so Return loads the wrong page
+        // (Safari's does). The text goes in at once, as with the user in the
+        // app; only Return and Tab are keys. In a text area Return is a line.
+        if hasKeys && textRoles.contains(role) && role != "AXTextArea" { return .accessibilityAndKeys }
+        return .keystrokes
+    }
+
     private func typeText(_ args: Args) throws -> ToolResult {
         let (w, _) = try agentWindow(args)
         let text = try args.requireString("text")
@@ -2300,8 +2323,15 @@ public final class Engine {
             return try typeShared(w, text: text, target: target)
         }
 
+        let route = Self.typingRoute(role: target?.role, selectedTextSettable: target.map { AX.isSettable($0.element, "AXSelectedText") } ?? false, text: text)
+        if route == .accessibilityAndKeys, let n = target {
+            // Focused first, so the text goes at its selection (a clicked
+            // address bar selects all of it), not after what it holds.
+            _ = try guarded(w, cause: "typing") { AX.set(n.element, "AXFocused", kCFBooleanTrue) }
+            return try typeShared(w, text: text, target: n)
+        }
         // Accessibility insertion first: no keyboard focus involved.
-        if let n = target, !text.contains(where: { Input.isReturn($0) || $0 == "\t" }), AX.isSettable(n.element, "AXSelectedText") {
+        if let n = target, route == .accessibility {
             let before = AX.string(n.element, "AXValue") ?? ""
             let err = try guarded(w, cause: "typing") { () -> AXError in
                 AX.set(n.element, "AXFocused", kCFBooleanTrue)
@@ -2783,6 +2813,11 @@ public final class Engine {
         return ToolResult(text: "\(saving ? "Saved as" : "Chose") \(path) and pressed \"\(title)\".")
     }
 
+    /// Where navigate can't load a URL. With `element`, the URL goes into
+    /// the address bar in one go: typed key by key, the bar's inline
+    /// autocomplete can take over partway and load the wrong page (#83).
+    static let typeURLHint = "click the address bar, then type_text the URL followed by \"\\n\" with element set to the address field (it goes in through accessibility; keystrokes can merge with the bar's autocomplete)"
+
     /// Load a URL in one of the agent's Chromium windows by Apple event: no
     /// keystrokes. With the user in another app that means no waiting for a
     /// pause in their input, only for a drag, a held key or an open menu to
@@ -2795,15 +2830,15 @@ public final class Engine {
         }
         guard let app = NSRunningApplication(processIdentifier: w.pid), let bundleURL = app.bundleURL, let bundleID = app.bundleIdentifier,
               BrowserAutomation.isScriptableChromium(bundleURL) else {
-            throw ToolError("navigate works in Chromium browsers only. In \(w.appName), click the address bar, type_text the URL and \"\\n\".")
+            throw ToolError("navigate works in Chromium browsers only. In \(w.appName), \(Self.typeURLHint).")
         }
         switch BrowserAutomation.permission(bundleID) {
         case .allowed: break
         case .denied:
-            throw ToolError("the user hasn't allowed this app to control \(w.appName) (System Settings > Privacy & Security > Automation). Click the address bar and type_text the URL and \"\\n\" instead.")
+            throw ToolError("the user hasn't allowed this app to control \(w.appName) (System Settings > Privacy & Security > Automation). Instead, \(Self.typeURLHint).")
         case .notAsked:
             BrowserAutomation.request(bundleID) { _ in }
-            throw ToolError("macOS is asking the user whether this app may control \(w.appName). Retry once they've answered, or click the address bar and type_text the URL and \"\\n\".")
+            throw ToolError("macOS is asking the user whether this app may control \(w.appName). Retry once they've answered, or \(Self.typeURLHint).")
         }
         // The browser's scripting knows its windows by its own ids. Which
         // one this window is gets proven once (`provenBrowserID`), and
@@ -2820,7 +2855,7 @@ public final class Engine {
             browserWindowIDs[w.id] = browserID
         }
         guard let browserID else {
-            throw ToolError("couldn't tell which of \(w.appName)'s windows this is. Click the address bar, type_text the URL and \"\\n\".")
+            throw ToolError("couldn't tell which of \(w.appName)'s windows this is. Instead, \(Self.typeURLHint).")
         }
         // Chromium shows the window it loads a URL in: it can make it key and
         // bring the app to the front. That would end a drag or close a menu
@@ -2875,7 +2910,7 @@ public final class Engine {
         if shared { focusGuard.scheduleReclaim(w.pid) }
         guard loaded else {
             browserWindowIDs[w.id] = nil
-            throw ToolError("\(w.appName) didn't take the URL. Click the address bar, type_text the URL and \"\\n\".")
+            throw ToolError("\(w.appName) didn't take the URL. Instead, \(Self.typeURLHint).")
         }
         // The window's accessibility tree is the old page's until the new
         // one takes its place, which can be a second later on a busy Mac: a
