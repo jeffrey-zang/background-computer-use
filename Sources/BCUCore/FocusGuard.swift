@@ -178,6 +178,7 @@ public final class FocusGuard {
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
     private var lastUserSwitchKeyMs = 0.0
+    private var cmdTabSwitch = CmdTabSwitch()
     private var lastUserKeyMs = 0.0
     /// The user's last key that could open or switch to an app: Return or
     /// Enter (a launcher, Terminal `open`, a link) or a shortcut with
@@ -1568,7 +1569,6 @@ public final class FocusGuard {
             if AgentDisplay.fenced(at: event.location) != nil { return nil }
             return event
         case .keyDown, .keyUp, .flagsChanged:
-            let cmdTab = type != .flagsChanged && event.flags.contains(.maskCommand) && event.getIntegerValueField(.keyboardEventKeycode) == 48
             if type == .keyDown {
                 let code = event.getIntegerValueField(.keyboardEventKeycode)
                 let opens = code == 36 || code == 76 || !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty
@@ -1576,10 +1576,16 @@ public final class FocusGuard {
                 lock.lock()
                 lastUserKeyMs = nowMs()
                 if opens { lastUserOpenKeyMs = nowMs() }
-                if cmdTab { lastUserSwitchKeyMs = nowMs() }
+                if cmdTabSwitch.keyDown(code: code, command: event.flags.contains(.maskCommand)) { lastUserSwitchKeyMs = nowMs() }
                 lock.unlock()
             }
-            if type == .flagsChanged { openGate(for: type, event) }
+            if type == .flagsChanged {
+                openGate(for: type, event)
+                // The switch is when command comes up, not when Tab went down.
+                lock.lock()
+                if cmdTabSwitch.flagsChanged(command: event.flags.contains(.maskCommand)) { lastUserSwitchKeyMs = nowMs() }
+                lock.unlock()
+            }
             if type == .keyUp {
                 let code = event.getIntegerValueField(.keyboardEventKeycode)
                 lock.lock()

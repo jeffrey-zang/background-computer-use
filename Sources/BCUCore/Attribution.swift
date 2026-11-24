@@ -83,6 +83,34 @@ enum Attribution {
     }
 }
 
+/// When the user's cmd+Tab switches apps, for `Facts.lastSwitchKeyMs`.
+///
+/// Tab going down opens the switcher, but macOS only switches when command
+/// comes up, however long the switcher was open. Counting only Tab-down
+/// made a cmd+Tab with command held past `Attribution.switchMs` the
+/// agent's, and the guard put the user's app back.
+struct CmdTabSwitch {
+    /// cmd+Tab went down and command hasn't come up since.
+    private(set) var open = false
+
+    /// A key went down. True for cmd+Tab: the switcher opened or moved on.
+    mutating func keyDown(code: Int64, command: Bool) -> Bool {
+        guard command else { return false }
+        if code == 48 { open = true; return true }
+        // Escape closes the switcher without switching.
+        if code == 53 { open = false }
+        return false
+    }
+
+    /// The modifiers changed. True when command came up after a cmd+Tab:
+    /// the switch happens now.
+    mutating func flagsChanged(command: Bool) -> Bool {
+        guard open, !command else { return false }
+        open = false
+        return true
+    }
+}
+
 /// Where a click of the user's landed, for whether it explains an app
 /// coming forward.
 enum ClickTarget: Equatable {

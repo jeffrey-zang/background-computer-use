@@ -146,6 +146,61 @@ final class AttributionTests: XCTestCase {
         XCTAssertTrue(Attribution.agentCaused(facts(step: strict, mouseDown: now - 50)))
         XCTAssertFalse(Attribution.agentCaused(facts(step: strict, switchKey: now - 50)))
     }
+
+    // MARK: A cmd+Tab switches when command comes up
+
+    private enum Key { case command(down: Bool), keyDown(Int64) }
+
+    /// The user's last cmd+Tab as the guard's tap records it, from keys at
+    /// times relative to `now`.
+    private func switchKey(_ keys: [(ms: Double, key: Key)]) -> Double {
+        var cmdTab = CmdTabSwitch()
+        var command = false
+        var last = -1e9
+        for (ms, key) in keys {
+            switch key {
+            case .command(let down):
+                command = down
+                if cmdTab.flagsChanged(command: down) { last = now + ms }
+            case .keyDown(let code):
+                if cmdTab.keyDown(code: code, command: command) { last = now + ms }
+            }
+        }
+        return last
+    }
+
+    /// Issue #86: an agent is typing into TextEdit. The user holds command,
+    /// presses Tab 905 ms before TextEdit comes forward and lets command go
+    /// 6 ms before. The switch was theirs, however long the switcher was open.
+    func testASlowCmdTabIsTheUsers() {
+        for held in [600.0, 905.0, 1500.0] {
+            let key = switchKey([(-held - 55, .command(down: true)), (-held, .keyDown(48)), (-6, .command(down: false))])
+            XCTAssertFalse(Attribution.agentCaused(facts(step: running, switchKey: key, openKey: now - held)), "command held \(Int(held)) ms after Tab")
+        }
+    }
+
+    /// A quick one too, and Tab pressed a few times while the switcher is open.
+    func testAQuickOrBrowsedCmdTabIsTheUsers() {
+        let quick = switchKey([(-180, .command(down: true)), (-127, .keyDown(48)), (-6, .command(down: false))])
+        XCTAssertFalse(Attribution.agentCaused(facts(step: running, switchKey: quick)))
+        let browsed = switchKey([(-2000, .command(down: true)), (-1900, .keyDown(48)), (-1200, .keyDown(48)), (-700, .keyDown(48)), (-6, .command(down: false))])
+        XCTAssertFalse(Attribution.agentCaused(facts(step: running, switchKey: browsed)))
+    }
+
+    /// Letting command go after another shortcut, or after Escape closed the
+    /// switcher, isn't a switch.
+    func testCommandComingUpWithoutASwitchSaysNothing() {
+        let copy = switchKey([(-1000, .command(down: true)), (-900, .keyDown(8)), (-6, .command(down: false))])
+        XCTAssertTrue(Attribution.agentCaused(facts(step: running, switchKey: copy)))
+        let cancelled = switchKey([(-1000, .command(down: true)), (-900, .keyDown(48)), (-300, .keyDown(53)), (-6, .command(down: false))])
+        XCTAssertTrue(Attribution.agentCaused(facts(step: running, switchKey: cancelled)))
+    }
+
+    /// Once the slow cmd+Tab has brought the user somewhere, it's used up.
+    func testASlowCmdTabIsUsedUpOnceTheUserArrives() {
+        let key = switchKey([(-960, .command(down: true)), (-905, .keyDown(48)), (-200, .command(down: false))])
+        XCTAssertTrue(Attribution.agentCaused(facts(step: running, switchKey: key, arrivedElsewhere: now - 150)))
+    }
 }
 
 /// Whose a window is that came up on an agent display unasked. Times are
