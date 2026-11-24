@@ -1564,11 +1564,20 @@ public final class Engine {
     }
 
     /// The panel service window behind the sheet over `w`, when that sheet
-    /// is an open or save panel (see `Panel`).
+    /// is an open or save panel (see `Panel`). With no sheet, a standalone
+    /// panel of the app's (File > Open in a document app): `w` itself, or
+    /// one on the agent's display (see `Panel.standalone`).
     private func remotePanel(_ w: AgentWindow) -> (sheet: AXUIElement, remote: Panel.Remote)? {
-        guard let ax = AX.window(pid: w.pid, id: w.id), let sheet = AX.sheet(of: ax), let sid = AX.windowID(sheet), sid != w.id,
-              let remote = Panel.remote(sheet: sid, appPid: w.pid) else { return nil }
-        return (sheet, remote)
+        guard let ax = AX.window(pid: w.pid, id: w.id) else { return nil }
+        if let sheet = AX.sheet(of: ax) {
+            guard let sid = AX.windowID(sheet), sid != w.id, let remote = Panel.remote(sheet: sid, appPid: w.pid) else { return nil }
+            return (sheet, remote)
+        }
+        let windows = AX.windows(w.pid)
+        let ids = windows.compactMap { AX.windowID($0) }
+        guard let found = Panel.standalone(window: w.id, appPid: w.pid, appWindows: ids, display: display.bounds),
+              let panel = found.panel == w.id ? ax : windows.first(where: { AX.windowID($0) == found.panel }) else { return nil }
+        return (panel, found.remote)
     }
 
     /// A keys or pixel step in an open or save panel: posted to the panel's
@@ -2664,6 +2673,7 @@ public final class Engine {
             throw ToolError("no file picker is open over window \(w.id). Open it first (click the page's upload button, or File > Open), then call choose_file.")
         }
         let remote = panel.remote
+        let standalone = AX.string(panel.sheet, "AXRole") != "AXSheet"
         let saving = Panel.isSavePanel(panel.sheet)
         let name = (path as NSString).lastPathComponent
         var isDir: ObjCBool = false
@@ -2772,6 +2782,9 @@ public final class Engine {
         let e = try guarded(w, cause: "pressing \(title)") { AX.perform(button, "AXPress") }
         guard e == .success else { throw ToolError("\(what), but pressing \"\(title)\" failed (\(AX.errorName(e)))") }
         let closed = waitUntil(3000, everyMs: Self.panelPollMs) {
+            // A standalone panel is a window of the app's: closed once it's
+            // no longer one.
+            if standalone { return !AX.windows(w.pid).contains { CFEqual($0, panel.sheet) } }
             guard let now = AX.window(pid: w.pid, id: w.id).flatMap(AX.sheet(of:)) else { return true }
             return !CFEqual(now, panel.sheet)
         }

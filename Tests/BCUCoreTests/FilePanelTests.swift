@@ -35,6 +35,60 @@ final class PanelMatchTests: XCTestCase {
         XCTAssertNil(Panel.match(sheet: sheet, appPid: app, candidates: candidates, isService: { $0 == self.service }))
     }
 
+    // MARK: Standalone panels (File > Open in a document app, issue #79)
+
+    private let agentDisplay = CGRect(x: 5000, y: 0, width: 1512, height: 982)
+    private let documentFrame = CGRect(x: 5100, y: 100, width: 586, height: 488)
+    private let panelFrame = CGRect(x: 5050, y: 60, width: 880, height: 448)
+
+    /// TextEdit's File > Open: the panel is a window of the app's own, not
+    /// a sheet on the document, with the service's window over it. Looked
+    /// for from the document window, it's found.
+    func testAStandalonePanelIsFoundFromTheDocumentWindow() {
+        let doc = window(29264, app, documentFrame), panel = window(29292, app, panelFrame)
+        let candidates = [panel, window(29293, service, panelFrame), doc]
+        let found = Panel.standalone(window: 29264, appPid: app, appWindows: [29292, 29264], display: agentDisplay,
+                                     candidates: candidates, isService: { $0 == self.service })
+        XCTAssertEqual(found?.panel, 29292)
+        XCTAssertEqual(found?.remote, Panel.Remote(pid: service, window: 29293, frame: panelFrame))
+    }
+
+    /// The panel window the agent caught, given as the window itself.
+    func testAStandalonePanelIsFoundFromItsOwnWindow() {
+        let doc = window(29264, app, documentFrame), panel = window(29292, app, panelFrame)
+        let candidates = [doc, panel, window(29293, service, panelFrame)]
+        let found = Panel.standalone(window: 29292, appPid: app, appWindows: [29264, 29292], display: agentDisplay,
+                                     candidates: candidates, isService: { $0 == self.service })
+        XCTAssertEqual(found?.panel, 29292)
+        XCTAssertEqual(found?.remote.window, 29293)
+    }
+
+    /// Safari's panel opens off its window, up and to the left: still the
+    /// panel, as long as it's on the agent's display.
+    func testAStandalonePanelOffItsWindowIsFound() {
+        let doc = window(29374, app, documentFrame), off = CGRect(x: 5000, y: 0, width: 880, height: 790)
+        let candidates = [window(29380, app, off), window(29381, service, off), doc]
+        let found = Panel.standalone(window: 29374, appPid: app, appWindows: [29380, 29374], display: agentDisplay,
+                                     candidates: candidates, isService: { $0 == self.service })
+        XCTAssertEqual(found?.panel, 29380)
+    }
+
+    /// A panel the user opened in the same app on their own display is
+    /// theirs: keys for the agent's window don't go to it.
+    func testAStandalonePanelOnTheUsersDisplayIsntTheAgents() {
+        let userPanel = CGRect(x: 200, y: 200, width: 880, height: 448)
+        let candidates = [window(400, app, userPanel), window(401, service, userPanel), window(29264, app, documentFrame)]
+        XCTAssertNil(Panel.standalone(window: 29264, appPid: app, appWindows: [400, 29264], display: agentDisplay,
+                                      candidates: candidates, isService: { $0 == self.service }))
+    }
+
+    /// An app window with nothing of the service's over it is no panel.
+    func testNoPanelServiceWindowMeansNoStandalonePanel() {
+        let candidates = [window(29264, app, documentFrame), window(29292, app, panelFrame), window(500, 999, panelFrame)]
+        XCTAssertNil(Panel.standalone(window: 29264, appPid: app, appWindows: [29292, 29264], display: agentDisplay,
+                                      candidates: candidates, isService: { $0 == self.service }))
+    }
+
     func testPathsAreResolved() {
         XCTAssertEqual(Panel.resolve("~/Library/../Library/x.png"), NSHomeDirectory() + "/Library/x.png")
         XCTAssertEqual(Panel.resolve("/tmp/./a/b/../c"), "/tmp/a/c")

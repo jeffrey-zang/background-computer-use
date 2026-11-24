@@ -28,6 +28,31 @@ public enum Panel {
         return Remote(pid: w.pid, window: w.id, frame: w.bounds)
     }
 
+    /// A standalone open or save panel of the app: File > Open in a document
+    /// app (TextEdit, Preview, Safari's Open File) shows the panel as a
+    /// window of its own, not a sheet, with the service's window laid over
+    /// it all the same. `window` itself when it's the panel (the agent caught
+    /// it), else the frontmost of the app's other windows (`appWindows`,
+    /// front to back) that's a panel on the agent's display: one on the
+    /// user's display is theirs.
+    public static func standalone(window: CGWindowID, appPid: pid_t, appWindows: [CGWindowID], display: CGRect) -> (panel: CGWindowID, remote: Remote)? {
+        let all = WindowList.all()
+        return standalone(window: window, appPid: appPid, appWindows: appWindows, display: display, candidates: all, isService: isPanelService)
+    }
+
+    static func standalone(window: CGWindowID, appPid: pid_t, appWindows: [CGWindowID], display: CGRect,
+                           candidates: [WindowInfo], isService: (pid_t) -> Bool) -> (panel: CGWindowID, remote: Remote)? {
+        // No panel service window anywhere: nothing to look for.
+        guard candidates.contains(where: { $0.pid != appPid && isService($0.pid) }) else { return nil }
+        let others = appWindows.filter { $0 != window }
+        for id in [window] + others {
+            guard let info = candidates.first(where: { $0.id == id && $0.pid == appPid }) else { continue }
+            if id != window && !display.intersects(info.bounds) { continue }
+            if let remote = match(sheet: info, appPid: appPid, candidates: candidates, isService: isService) { return (id, remote) }
+        }
+        return nil
+    }
+
     /// The window of the same service a click at `p` lands on: a sheet the
     /// panel put over itself (Go to Folder) has a window of its own.
     public static func window(of remote: Remote, at p: CGPoint) -> Remote {
