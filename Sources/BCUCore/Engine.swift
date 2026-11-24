@@ -501,7 +501,7 @@ public final class Engine {
         }
     }
 
-    static let readOnlyTools: Set<String> = ["status", "guard_report", "list_apps", "list_windows", "release_window", "screenshot", "get_window_state"]
+    static let readOnlyTools: Set<String> = ["status", "fgreport", "list_apps", "list_windows", "release_window", "screenshot", "get_window_state"]
 
     /// Why a call is turned away before it runs, if it is. `notes` gives the
     /// user's notes for the agent (taking them).
@@ -608,7 +608,7 @@ public final class Engine {
                 }
                 if let note = takeLeaveNotes() { result.text += note }
                 if let note = takeUserNotes() { result.text += note }
-                if tool != "status" && tool != "guard_report" {
+                if tool != "status" && tool != "fgreport" {
                     log("\(tool) (\(Int(nowMs() - startMs)) ms): \(result.text.split(separator: "\n").first.map(String.init) ?? "")")
                 }
                 return result
@@ -722,7 +722,7 @@ public final class Engine {
         case "choose_file": return try chooseFile(args)
         case "handoff": return try handoff(args)
         case "take_back": return try takeBack(args)
-        case "guard_report": return guardReport()
+        case "fgreport": return guardReport()
         case "capture_audio": return try captureAudio(args)
         case "batch": return try batch(args)
         // Maintenance, not in the agent tool catalog.
@@ -1007,7 +1007,7 @@ public final class Engine {
             return Chaos.shared.status()
         case "admin_chaos_stop":
             return Chaos.shared.stop()
-        case "admin_guard_events":
+        case "admin_fgevents":
             // Test: the guard's recent events, cleared after.
             let events = focusGuard.recentEvents.map(\.summary)
             if args.bool("clear") ?? true { focusGuard.clearEvents() }
@@ -1264,7 +1264,11 @@ public final class Engine {
             case .handTo(let user):
                 if BCUFrontProcessPID() != w.pid {
                     focusGuard.forgetParked(w.pid)
-                    if !scope.handOff(to: user) { Log.info("swap: COULD NOT hand key to the user's window \(user) in \(w.appName) after the step") }
+                    let agentKey = scope.heldBy
+                    if !scope.handOff(to: user) {
+                        Log.info("swap: COULD NOT hand key to the user's window \(user) in \(w.appName) after the step; trying again shortly")
+                        retryHandOff(w.pid, appName: w.appName, from: agentKey, to: user)
+                    }
                     return
                 }
             }
@@ -1286,6 +1290,41 @@ public final class Engine {
             Log.info("swap: COULD NOT give key back in \(w.appName) after \(Int(nowMs() - t0)) ms (key is \(AX.focusedWindowID(w.pid).map(String.init) ?? "unknown")); the user's keys stay held")
         } else if !confirmed {
             Log.info("swap: key back in \(w.appName) after a retry (\(Int(nowMs() - t0)) ms)")
+        }
+    }
+
+    /// A hand-off after a step in a background app didn't take: the agent's
+    /// window still has key there, and nothing else would move it until the
+    /// user came to the app (their first keys then wait for the guard). Try
+    /// again a few times, under the app's input lock so no swap is mid-way.
+    private func retryHandOff(_ pid: pid_t, appName: String, from agentKey: CGWindowID, to user: CGWindowID) {
+        let t0 = nowMs()
+        let fg = focusGuard
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        let state = NSLock()
+        var done = false
+        for ms in [150, 500, 1200] {
+            queue.asyncAfter(deadline: .now() + .milliseconds(ms)) {
+                state.lock(); let skip = done; state.unlock()
+                if skip { return }
+                let appLock = Engine.inputLock(pid)
+                appLock.lock()
+                defer { appLock.unlock() }
+                guard KeyScope.shouldRetryHandOff(appFront: BCUFrontProcessPID() == pid, swapping: fg.isSwapping(pid),
+                                                  parked: fg.parkedKey(pid) != nil, key: AX.focusedWindowID(pid),
+                                                  agentKey: agentKey, userWindowExists: WindowList.info(user) != nil) else {
+                    state.lock(); done = true; state.unlock()
+                    return
+                }
+                _ = KeyScope.postRecords(pid: pid, from: agentKey, to: user, settle: KeyScope.handOffSettles.last ?? 120)
+                KeyScope.awaitKey(pid: pid, target: user, budgetMs: 400)
+                if AX.focusedWindowID(pid) == user {
+                    state.lock(); done = true; state.unlock()
+                    Log.info("swap: key handed to the user's window \(user) in \(appName) on a later try (\(Int(nowMs() - t0)) ms after the step)")
+                } else if ms == 1200 {
+                    Log.info("swap: still could not hand key to the user's window \(user) in \(appName); the guard sorts it out when they come to the app")
+                }
+            }
         }
     }
 

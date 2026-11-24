@@ -191,9 +191,33 @@ public final class KeyScope {
     public func handOff(to user: CGWindowID) -> Bool {
         guard !exited else { return false }
         exited = true
-        Self.postRecords(pid: pid, from: heldBy, to: user, settle: 5)
-        Self.awaitKey(pid: pid, target: user, budgetMs: 250)
-        return AX.focusedWindowID(pid) == user
+        return Self.tryInTurn(Self.handOffSettles) { settle in
+            Self.postRecords(pid: pid, from: heldBy, to: user, settle: settle)
+            Self.awaitKey(pid: pid, target: user, budgetMs: settle < 50 ? 250 : 400)
+            return AX.focusedWindowID(pid) == user
+        }
+    }
+
+    /// The gaps between the records of each try at handing key to the
+    /// user's window after a step, as for giving it back (`exit`). A single
+    /// try 5 ms apart left key on the agent's window about half the time
+    /// (see `giveBackSettleMs`), and the user's window then had no key
+    /// until they came to the app. The app isn't in front here, so nothing
+    /// on screen repaints between records and there's no reason to rush.
+    static let handOffSettles: [Double] = [giveBackSettleMs, settleMs]
+
+    /// Run `attempt` with each settle in turn until one succeeds.
+    static func tryInTurn(_ settles: [Double], _ attempt: (Double) -> Bool) -> Bool {
+        for settle in settles where attempt(settle) { return true }
+        return false
+    }
+
+    /// After a failed `handOff`, whether to try again now: only while the
+    /// app is still in the background (the guard's arrival handling takes
+    /// over once the user is in it), no step is moving key in it, no agent
+    /// has parked key there since, and key is still where the step left it.
+    static func shouldRetryHandOff(appFront: Bool, swapping: Bool, parked: Bool, key: CGWindowID?, agentKey: CGWindowID, userWindowExists: Bool) -> Bool {
+        !appFront && !swapping && !parked && key == agentKey && userWindowExists
     }
 
     @discardableResult
