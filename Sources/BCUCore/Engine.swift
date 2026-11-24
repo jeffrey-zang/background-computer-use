@@ -609,7 +609,7 @@ public final class Engine {
                 if let note = takeLeaveNotes() { result.text += note }
                 if let note = takeUserNotes() { result.text += note }
                 if tool != "status" && tool != "guard_report" {
-                    log("\(tool) (\(Int(nowMs() - startMs)) ms): \(result.text.split(separator: "\n").first.map(String.init) ?? "")")
+                    log("\(tool) (\(Int(nowMs() - startMs)) ms): \(Self.summary(of: result))", error: result.isError)
                 }
                 return result
             } catch {
@@ -620,9 +620,20 @@ public final class Engine {
                 }
                 if let note = takeUserNotes() { text += note }
                 log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
+                recorder.captureFailure()
                 return .error(text)
             }
         }
+    }
+
+    /// A call's line in the activity log: its first line, or for a failed
+    /// batch the step that failed (its first line is the first step's).
+    static func summary(of result: ToolResult) -> String {
+        let lines = result.text.split(separator: "\n").map(String.init)
+        if result.isError, let failed = lines.first(where: { $0.contains(" FAILED: ") || $0.hasPrefix("Stopped (") }) {
+            return failed
+        }
+        return lines.first ?? ""
     }
 
     /// What this session's apps did to the user's front app since it last
@@ -2108,6 +2119,9 @@ public final class Engine {
                 if !waitNotes.isEmpty { line += " (\(waitNotes.joined(separator: "; ")))"; waitedNotes += waitNotes.count; waitNotes = [] }
                 lines.append(line)
             } catch {
+                // History gets the failed step too, flagged, and a frame of it.
+                recorder.note("\(tool) FAILED: \(error)", error: true)
+                recorder.captureFailure()
                 lines.append("\(i + 1). \(tool) FAILED: \(error)")
                 waitNotes = []
                 if i + 2 == steps.count { lines.append("Stopped; action \(i + 2) didn't run.") }

@@ -596,6 +596,11 @@ public final class SessionRecorder {
     private var lastThumb: [UInt8]?
     private var lastImage: CGImage?
     private var pendingForced = false
+    /// A frame wanted now, without waiting out `minGapMs`: a step just
+    /// failed. Cleared by the capture.
+    private var urgent = false
+    /// When the recorder itself last captured.
+    private var lastOwnCaptureMs = 0.0
     private var lastPreviewMs = 0.0
     /// The agent display's windows at the recorder's last capture.
     private var lastSpots: [WindowSpot]?
@@ -605,6 +610,8 @@ public final class SessionRecorder {
     static let sampleInterval: TimeInterval = 0.5
     /// The least time between the app's last capture and one of the recorder's own.
     static let minGapMs = 4000.0
+    /// The least time between two of the recorder's frames taken without that gap.
+    static let urgentGapMs = 1000.0
     /// Recorded width per point of the agent display: sharper than the
     /// display's points, smaller than its Retina pixels.
     static let pixelsPerPoint: CGFloat = 1.5
@@ -725,6 +732,17 @@ public final class SessionRecorder {
         }
     }
 
+    /// A call or batch step just failed: take a frame of it soon, without
+    /// waiting for the app's other captures to pause. What was on screen
+    /// when it failed is what History is opened to find.
+    func captureFailure() {
+        queue.asyncAfter(deadline: .now() + 0.15) {
+            self.pendingForced = true
+            self.urgent = true
+            self.tick()
+        }
+    }
+
     /// The agent took a screenshot of its window (`image`, as captured):
     /// drawn over the last frame where the window is, that's a new frame
     /// with no capture of our own.
@@ -769,20 +787,42 @@ public final class SessionRecorder {
     private func tick() {
         guard writer != nil, display.isRunning else { return }
         let spots = Self.windowSpots(WindowList.all(onScreenOnly: true), on: display.bounds, me: getpid())
+        let urgentNow = urgent || Self.windowAppeared(spots, since: lastSpots)
         guard Self.wantsCapture(pending: pendingForced, sinceLastCaptureMs: nowMs() - Capture.lastCaptureMs,
-                                windowsChanged: spots != lastSpots) else { return }
+                                windowsChanged: spots != lastSpots, urgent: urgentNow,
+                                sinceOwnCaptureMs: nowMs() - lastOwnCaptureMs) else { return }
         // A capture that failed (ScreenCaptureKit timed out) is tried again
         // on a later tick: the frame is still wanted.
-        guard capture(force: pendingForced) else { return }
+        guard capture(force: pendingForced || urgentNow) else { return }
         lastSpots = spots
         pendingForced = false
+        urgent = false
     }
 
     /// Whether a tick takes a frame: `pending` when a frame is wanted (the
     /// run's first, or one after a call), `windowsChanged` when the agent
-    /// display's windows aren't where they were at the last frame.
-    static func wantsCapture(pending: Bool, sinceLastCaptureMs: Double, windowsChanged: Bool) -> Bool {
-        (pending || windowsChanged) && sinceLastCaptureMs >= minGapMs
+    /// display's windows aren't where they were at the last frame. Frames
+    /// wait until nothing in the app has captured for `minGapMs`, except an
+    /// `urgent` one (a step failed, or a window or panel just opened): the
+    /// agent's own screenshots and a window's live preview can keep that gap
+    /// from ever opening, and the frames that matter most were skipped. The
+    /// recorder's captures are one-shot ScreenCaptureKit screenshots, which
+    /// macOS doesn't count toward its purple indicator (see `Shot`), and
+    /// failures and new windows are rare; still, the recorder takes urgent
+    /// frames at most every `urgentGapMs` (`sinceOwnCaptureMs`), so popups
+    /// opening one after another don't make a stream of them.
+    static func wantsCapture(pending: Bool, sinceLastCaptureMs: Double, windowsChanged: Bool,
+                             urgent: Bool = false, sinceOwnCaptureMs: Double = .infinity) -> Bool {
+        if urgent && sinceOwnCaptureMs >= urgentGapMs { return true }
+        return (pending || windowsChanged) && sinceLastCaptureMs >= minGapMs
+    }
+
+    /// A window is on the agent display that wasn't at the last frame (a
+    /// file picker, a dialog, a new window). Not for the run's first frame.
+    static func windowAppeared(_ spots: [WindowSpot], since last: [WindowSpot]?) -> Bool {
+        guard let last else { return false }
+        let before = Set(last.map(\.id))
+        return spots.contains { !before.contains($0.id) }
     }
 
     /// What the window list says about the agent display (no capture): its
@@ -812,6 +852,7 @@ public final class SessionRecorder {
         let w = Int((b.width * Self.pixelsPerPoint).rounded())
         // Window by window through SkyLight, wallpaper and menu bar included.
         guard let image = Capture.composite(display: display, width: w, wholeDisplay: true) else { return false }
+        lastOwnCaptureMs = nowMs()
         record(image, force: force)
         return true
     }

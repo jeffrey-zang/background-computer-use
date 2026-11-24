@@ -20,6 +20,25 @@ final class RecorderIdleTests: XCTestCase {
         XCTAssertFalse(SessionRecorder.wantsCapture(pending: true, sinceLastCaptureMs: 1000, windowsChanged: true))
     }
 
+    func testAFailureOrANewWindowDoesNotWaitForTheGap() {
+        // The agent's screenshots or a live window preview keep the gap shut.
+        XCTAssertTrue(SessionRecorder.wantsCapture(pending: true, sinceLastCaptureMs: 200, windowsChanged: false, urgent: true))
+        XCTAssertTrue(SessionRecorder.wantsCapture(pending: false, sinceLastCaptureMs: 0, windowsChanged: true, urgent: true,
+                                                   sinceOwnCaptureMs: SessionRecorder.urgentGapMs))
+        // But not one right after another.
+        XCTAssertFalse(SessionRecorder.wantsCapture(pending: false, sinceLastCaptureMs: 200, windowsChanged: true, urgent: true,
+                                                    sinceOwnCaptureMs: 300))
+    }
+
+    func testANewWindowCountsAsAppearedButAMoveDoesNot() {
+        func spot(_ id: CGWindowID, x: CGFloat = 0) -> SessionRecorder.WindowSpot {
+            SessionRecorder.WindowSpot(id: id, bounds: CGRect(x: x, y: 0, width: 100, height: 100), title: "", alpha: 1)
+        }
+        XCTAssertFalse(SessionRecorder.windowAppeared([spot(1)], since: nil))
+        XCTAssertFalse(SessionRecorder.windowAppeared([spot(1, x: 50)], since: [spot(1), spot(2)]))
+        XCTAssertTrue(SessionRecorder.windowAppeared([spot(1), spot(3)], since: [spot(1)]))
+    }
+
     func testWindowSpotsSeeMovesAndTitlesButNotTheMenuBarOrTheAppItself() {
         let display = CGRect(x: 3000, y: 0, width: 1440, height: 900)
         func win(_ id: CGWindowID, pid: pid_t = 50, owner: String = "TextEdit", title: String = "Untitled",
