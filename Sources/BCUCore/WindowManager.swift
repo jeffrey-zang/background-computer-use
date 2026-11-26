@@ -1834,9 +1834,11 @@ public final class WindowManager {
                 Log.info("tabs: the tab's menu didn't come up, and Move Tab to New Window stayed disabled in \(w.appName) with the agent's window \(w.id) key; the tab stays")
                 return .failed
             }
-            // The menu bar acts on whichever tab is selected: still this one
-            // (another link may have come and been selected meanwhile)?
-            guard AX.bool(tab, "AXValue") == true else {
+            // The menu bar acts on the key window's selected tab: still the
+            // agent's window with this one selected (another link may have
+            // come and been selected meanwhile, or a window of the user's
+            // taken key, where selection is its own)?
+            guard Self.menuBarMoveMayPress(selected: AX.bool(tab, "AXValue"), keyNow: AX.focusedWindowID(w.pid), source: w.id) else {
                 entered.exit()
                 return .later
             }
@@ -2141,6 +2143,13 @@ public final class WindowManager {
     static func lateRestoreTarget(tracked: CGWindowID?, snapshot: CGWindowID?, made: CGWindowID, exists: (CGWindowID) -> Bool) -> CGWindowID? {
         if let tracked, tracked != made, exists(tracked) { return tracked }
         return snapshot
+    }
+
+    /// Right before the menu bar's Move Tab to New Window is pressed: only
+    /// with the agent's window key and the tab selected in it. A tab's
+    /// selection is per window, so it alone doesn't say whose tab moves.
+    static func menuBarMoveMayPress(selected: Bool?, keyNow: CGWindowID?, source: CGWindowID) -> Bool {
+        selected == true && keyNow == source
     }
 
     /// What keeps the automatic handout from starting now, if anything.

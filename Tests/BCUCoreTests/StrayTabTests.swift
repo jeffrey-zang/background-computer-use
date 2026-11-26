@@ -290,6 +290,17 @@ final class StrayTabTests: XCTestCase {
         XCTAssertNil(WindowManager.lateRestoreTarget(tracked: nil, snapshot: nil, made: 9) { _ in true })
     }
 
+    /// The menu bar's move is pressed only with the agent's window key and
+    /// the tab selected: a user's window that took key has its own
+    /// selected tab, which would move instead.
+    func testTheMenuBarMoveNeedsTheAgentsWindowKey() {
+        XCTAssertTrue(WindowManager.menuBarMoveMayPress(selected: true, keyNow: 7, source: 7))
+        XCTAssertFalse(WindowManager.menuBarMoveMayPress(selected: true, keyNow: 8, source: 7))
+        XCTAssertFalse(WindowManager.menuBarMoveMayPress(selected: true, keyNow: nil, source: 7))
+        XCTAssertFalse(WindowManager.menuBarMoveMayPress(selected: false, keyNow: 7, source: 7))
+        XCTAssertFalse(WindowManager.menuBarMoveMayPress(selected: nil, keyNow: 7, source: 7))
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {
