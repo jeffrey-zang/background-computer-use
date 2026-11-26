@@ -82,4 +82,13 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: true, opening: false, pending: pending, nowMs: seen))
         XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: true, pending: pending, nowMs: seen))
     }
+
+    /// One pending handout claims one window: a second new window in the
+    /// same sweep (an agent's popup), or another session's sweep, gets none.
+    func testALateHandoutIsTakenOnce() {
+        let pid: pid_t = 999_902
+        WindowManager.setLateHandoutForTesting(pid: pid, before: [1], untilMs: seen)
+        XCTAssertTrue(WindowManager.takeLateHandout(pid: pid, untilMs: seen))
+        XCTAssertFalse(WindowManager.takeLateHandout(pid: pid, untilMs: seen))
+    }
 }

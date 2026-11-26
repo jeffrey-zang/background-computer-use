@@ -1624,10 +1624,13 @@ public final class WindowManager {
             guard let self else { return }
             var seen: [CGWindowID: (tabs: [AXUIElement], ms: Double)] = [:]
             for w in agent.values where !w.handedOff && Self.isChromium(w.pid) {
-                guard let ax = AX.window(pid: w.pid, id: w.id) else { continue }
-                let readMs = nowMs()
-                guard let tabs = Self.tabs(of: ax) else { continue }
                 lock.lock(); let before = knownTabs[w.id]; lock.unlock()
+                // A read that fails (the browser busy a moment) isn't the
+                // window's tabs gone: the last look stays the baseline, or a
+                // tab opened meanwhile would be taken in as known.
+                guard let ax = AX.window(pid: w.pid, id: w.id) else { seen[w.id] = before; continue }
+                let readMs = nowMs()
+                guard let tabs = Self.tabs(of: ax) else { seen[w.id] = before; continue }
                 seen[w.id] = (tabs, readMs)
                 guard let before else { continue }
                 guard let stray = tabs.first(where: { t in AX.bool(t, "AXValue") == true && !before.tabs.contains { CFEqual($0, t) } }),
@@ -1763,6 +1766,19 @@ public final class WindowManager {
         return standard && !registered && !opening
     }
 
+    static func setLateHandoutForTesting(pid: pid_t, before: Set<CGWindowID>, untilMs: Double) {
+        sharedLock.lock(); lateHandouts[pid] = (before, untilMs); sharedLock.unlock()
+    }
+
+    /// Remove the pending handout for `pid` if it's still the one with this
+    /// deadline: true for the one caller that gets it.
+    static func takeLateHandout(pid: pid_t, untilMs: Double) -> Bool {
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        guard lateHandouts[pid]?.untilMs == untilMs else { return false }
+        lateHandouts[pid] = nil
+        return true
+    }
+
     /// Mark a handout's late window the user's (`keep`) before the sweep
     /// judges new windows: otherwise it's taken for one the agent's step
     /// opened, caught, and closed with the agent's windows.
@@ -1777,8 +1793,11 @@ public final class WindowManager {
             let standard = AX.window(pid: info.pid, id: info.id).flatMap { AX.string($0, "AXSubrole") } == "AXStandardWindow"
             guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
                                      pending: late[info.pid], nowMs: nowMs()) else { continue }
+            // Taken once: the same pending handout (still there, the one
+            // this sweep saw) can't also claim another window, in this
+            // sweep or another session's.
+            guard Self.takeLateHandout(pid: info.pid, untilMs: late[info.pid]!.untilMs) else { continue }
             Self.keep(info.id)
-            Self.sharedLock.lock(); Self.lateHandouts[info.pid] = nil; Self.sharedLock.unlock()
             focusGuard.record("another app opened a tab in your agent's \(info.owner) window; it's in a window of yours now")
             Log.info("tabs: window \(info.id) of \(info.owner) came late from Move Tab to New Window; it's the user's")
         }
