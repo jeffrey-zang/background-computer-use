@@ -1784,12 +1784,13 @@ public final class WindowManager {
         }
         var made: CGWindowID?
         let deadline = nowMs() + 2000
-        // The new standard window: the browser shows other new windows a
-        // moment while the tab moves.
+        // The new standard window showing the moved tab: the browser shows
+        // other new windows a moment while the tab moves, and a popup an
+        // earlier step of the agent's opened can come up meanwhile.
         while made == nil && nowMs() < deadline {
             made = AX.windows(w.pid).first { ax in
-                guard let id = AX.windowID(ax), !before.contains(id) else { return false }
-                return AX.string(ax, "AXSubrole") == "AXStandardWindow"
+                guard let id = AX.windowID(ax), !before.contains(id), AX.string(ax, "AXSubrole") == "AXStandardWindow" else { return false }
+                return Self.windowShowsTab(windowTitle: AX.string(ax, "AXTitle"), tabTitle: tabTitle)
             }.flatMap(AX.windowID)
             if made == nil { sleepMs(10) }
         }
@@ -1842,8 +1843,15 @@ public final class WindowManager {
                               pending: (before: Set<CGWindowID>, untilMs: Double, title: String)?, nowMs: Double) -> Bool {
         guard let pending, nowMs < pending.untilMs, !pending.before.contains(id), standard, !registered, !opening else { return false }
         guard stepSince else { return true }
-        guard !pending.title.isEmpty, let windowTitle else { return false }
-        return windowTitle == pending.title || windowTitle.hasPrefix(pending.title + " - ")
+        return !pending.title.isEmpty && windowShowsTab(windowTitle: windowTitle, tabTitle: pending.title)
+    }
+
+    /// Whether a browser window shows this tab: Chromium titles a window
+    /// "<tab> - <browser>". A tab with no title matches any window.
+    static func windowShowsTab(windowTitle: String?, tabTitle: String) -> Bool {
+        if tabTitle.isEmpty { return true }
+        guard let windowTitle else { return false }
+        return windowTitle == tabTitle || windowTitle.hasPrefix(tabTitle + " - ")
     }
 
     /// When a tab was last moved out of each agent window.

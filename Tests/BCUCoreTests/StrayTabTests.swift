@@ -151,4 +151,13 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(Engine.staleAfterTabMovedOut(movedMs: seen, readMs: seen + 10))
         XCTAssertFalse(Engine.staleAfterTabMovedOut(movedMs: nil, readMs: seen))
     }
+
+    /// The moved tab's window is the one showing it, not a popup an
+    /// earlier step opened that comes up while the tab moves.
+    func testTheMovedTabsWindowShowsTheTab() {
+        XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "TAB OPENED BY CODEX - Google Chrome", tabTitle: "TAB OPENED BY CODEX"))
+        XCTAssertFalse(WindowManager.windowShowsTab(windowTitle: "Sign in - Google Accounts - Google Chrome", tabTitle: "TAB OPENED BY CODEX"))
+        XCTAssertFalse(WindowManager.windowShowsTab(windowTitle: nil, tabTitle: "TAB OPENED BY CODEX"))
+        XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "Anything", tabTitle: ""))
+    }
 }
