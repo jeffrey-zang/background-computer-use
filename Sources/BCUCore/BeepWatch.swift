@@ -249,7 +249,8 @@ public final class BeepWatch {
         if open.isEmpty, steps.count > 200 || steps.first.map({ $0.end < cutoff }) == true {
             steps = steps.filter { $0.end >= cutoff }.suffix(200)
         }
-        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 } }
+        // The last 200, and any for a call still under way (it hasn't looked).
+        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 || calls[$0.value.owner] != nil } }
     }
 
     /// Which input each beep was put down to, once some session has: later

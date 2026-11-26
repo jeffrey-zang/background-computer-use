@@ -155,6 +155,26 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertFalse(w.beeps(after: start).contains { $0.app == "TextEdit" })
     }
 
+    /// Its assignment is kept too, however many other agents' beeps are
+    /// assigned meanwhile.
+    func testAPendingAssignmentOutlivesTheCache() {
+        let w = BeepWatch()
+        let t0 = Date()
+        w.beginCall("a", at: t0.addingTimeInterval(-1))
+        w.record(BeepWatch.Step(start: t0.addingTimeInterval(-0.1), end: t0.addingTimeInterval(0.2), key: "escape", pids: [62902], owner: "a", call: t0.addingTimeInterval(-1)))
+        let start = w.lastSeq
+        w.inject((t0, 62902, "TextEdit", 4096))
+        // Another agent's input to another app, beeping 250 times.
+        for _ in 0..<250 {
+            let now = Date()
+            let id = w.begin(BeepWatch.Step(start: now, end: .distantFuture, key: nil, pids: [77], owner: "b", call: now))
+            w.inject((Date(), 77, "Finder", 4096))
+            w.finish(id)
+        }
+        w.forgetSteps()
+        XCTAssertEqual(w.attribute(w.beeps(after: start), owner: "a").count, 1)
+    }
+
     /// Completed input is pruned on the begin/finish path too.
     func testFinishPrunes() {
         let w = BeepWatch()
