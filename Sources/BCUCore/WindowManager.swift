@@ -1375,7 +1375,10 @@ public final class WindowManager {
             let after = windows(on: bounds)
             let late = Set(lateDialogs(after.map(\.id), present: present, registered: isRegistered))
             for info in after where late.contains(info.id) {
-                guard let ax = AX.window(pid: info.pid, id: info.id), !isFullScreen(ax), answerLeave(ax) else { continue }
+                // Asked again for each: answering one waits 400 ms, and a
+                // session can borrow or catch the next one meanwhile.
+                guard leftoverStillUnowned(info.id, registered: isRegistered),
+                      let ax = AX.window(pid: info.pid, id: info.id), !isFullScreen(ax), answerLeave(ax) else { continue }
                 sleepMs(400)
             }
         }
