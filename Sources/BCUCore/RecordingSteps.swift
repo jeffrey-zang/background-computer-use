@@ -262,7 +262,8 @@ public enum RecordingText {
     static func forms(of secret: String) -> [String] {
         let oneLine = secret.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         var out = [secret, oneLine]
-        for n in [160, 100] where oneLine.count > n { out.append(String(oneLine.prefix(n - 1))) }
+        // 160 for a value, 100 for a name in a read, 80 for a target's label.
+        for n in [160, 100, 80] where oneLine.count > n { out.append(String(oneLine.prefix(n - 1))) }
         // Longest first, so a shorter form doesn't leave part of a longer one.
         return Array(Set(out.filter { redactsLater($0) })).sorted { $0.count > $1.count }
     }
@@ -405,8 +406,10 @@ public final class StepLog {
                     for part in RecordingText.partsTyped(secret, result: result) where RecordingText.redactsLater(part) {
                         hiddenTexts += RecordingText.forms(of: part)
                     }
-                    hiddenTexts.sort { $0.count > $1.count }
                 }
+                // Longest first, every time: a shorter secret replaced first
+                // would break up a longer one that holds it ("Ada" in "Ada Lovelace").
+                hiddenTexts.sort { $0.count > $1.count }
             }
         }
         s.original = [:]

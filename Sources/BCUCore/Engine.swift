@@ -655,8 +655,11 @@ public final class Engine {
             if let note = takeLeaveNotes() { result.text += note }
             if let note = takeUserNotes() { result.text += note }
             if tool != "status" && tool != "guard_report" {
-                let line = "\(tool) (\(Int(nowMs() - startMs)) ms): \(Self.summary(of: result))"
-                log(result.isError ? Self.loggable(line) : line, error: result.isError)
+                // A failure is made safe whole, before one line is picked from
+                // it: what was typed can run over several lines.
+                var safe = result
+                if result.isError { safe.text = String(Self.loggable("\(tool): " + result.text).dropFirst(tool.count + 2)) }
+                log("\(tool) (\(Int(nowMs() - startMs)) ms): \(Self.summary(of: safe))", error: result.isError)
             }
             return result
         } catch {

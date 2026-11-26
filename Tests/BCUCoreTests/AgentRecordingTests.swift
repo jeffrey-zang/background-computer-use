@@ -336,6 +336,23 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(r.result.contains("Lov"), r.result)
     }
 
+    func testAShorterSecretDoesntBreakUpALongerOne() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let a = log.begin(tool: "set_value", args: ["value": "Ada", "element": 3]); log.end(a, result: "ok", isError: false)
+        let b = log.begin(tool: "set_value", args: ["value": "Ada Lovelace", "element": 3]); log.end(b, result: "ok", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "value=\"Ada Lovelace\"", isError: false)
+        XCTAssertFalse(r.result.contains("Lovelace"), r.result)
+        XCTAssertTrue(RecordingText.forms(of: String(repeating: "f", count: 90) + ".txt").contains(String(repeating: "f", count: 79)), "a target label is clipped at 80")
+    }
+
+    func testABatchFailureIsLoggedSafelyBeforeItsLineIsPicked() {
+        var r = ToolResult(text: "1. click: ok\n2. type_text FAILED: Typed 9 of 19 characters (\"alpha\nbra\"), nothing after that.")
+        r.isError = true
+        var safe = r
+        safe.text = Engine.loggable("batch: " + r.text)
+        XCTAssertFalse(Engine.summary(of: safe).contains("alpha"), Engine.summary(of: safe))
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))
