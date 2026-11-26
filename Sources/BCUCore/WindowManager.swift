@@ -1258,6 +1258,13 @@ public final class WindowManager {
     /// Whether a leftover cleanup found is still nobody's, just before
     /// cleanup acts on it: a session may have borrowed it while cleanup
     /// waited on the app.
+    /// Windows `closeLeftovers` may answer a late Leave dialog in: ones
+    /// that appeared after its closes (not in `present`, the snapshot taken
+    /// before anything was filtered out) and no session has.
+    static func lateDialogs(_ now: [CGWindowID], present: Set<CGWindowID>, registered: (CGWindowID) -> Bool) -> [CGWindowID] {
+        now.filter { !present.contains($0) && !registered($0) }
+    }
+
     static func leftoverStillUnowned(_ id: CGWindowID, registered: (CGWindowID) -> Bool) -> Bool { !registered(id) }
 
     /// A borrowed window went back to the user (`release`): theirs again,
@@ -1333,10 +1340,14 @@ public final class WindowManager {
         // moves it to its own. It counts as left, so the display stays
         // until it's gone.
         // Never a full-screen window (see `isFullScreen`): the user's.
-        let found = windows(on: bounds).filter { !isRegistered($0.id) }
+        let before = windows(on: bounds)
+        let found = before.filter { !isRegistered($0.id) }
             .compactMap { info in AX.window(pid: info.pid, id: info.id).map { (info, $0) } }
             .filter { !isFullScreen($0.1) }
-        let present = Set(found.map(\.0.id))
+        // Everything that was here before any close, full-screen windows
+        // included: the late-dialog pass below answers only what appeared
+        // after, never one of the user's own pages.
+        let present = Set(before.map(\.id))
         let toClose = found.filter { leftoverFate($0.0.id, agentMade: wasAgentMade($0.0.id), kept: kept) == .close }
         for (info, ax) in found where !toClose.contains(where: { $0.0.id == info.id }) {
             guard leftoverStillUnowned(info.id, registered: isRegistered) else { continue }
@@ -1357,8 +1368,11 @@ public final class WindowManager {
         // A page that only now asks whether to leave, about a window closed
         // here: nobody is left to say no.
         if !toClose.isEmpty {
-            for info in windows(on: bounds) where !isRegistered(info.id) && !present.contains(info.id) {
-                if let ax = AX.window(pid: info.pid, id: info.id), answerLeave(ax) { sleepMs(400) }
+            let after = windows(on: bounds)
+            let late = Set(lateDialogs(after.map(\.id), present: present, registered: isRegistered))
+            for info in after where late.contains(info.id) {
+                guard let ax = AX.window(pid: info.pid, id: info.id), !isFullScreen(ax), answerLeave(ax) else { continue }
+                sleepMs(400)
             }
         }
         let left = windows(on: bounds)

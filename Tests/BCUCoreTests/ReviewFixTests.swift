@@ -116,6 +116,14 @@ final class ReviewFixTests: XCTestCase {
         XCTAssertTrue(WindowManager.isKept(id))
     }
 
+    func testLateLeaveDialogsSkipWindowsThatWereThereBefore() {
+        // 5: the user's full-screen window, left out of what cleanup moves
+        // or closes but still in the snapshot; 9: a dialog that appeared
+        // after the closes; 11: one a session has.
+        let late = WindowManager.lateDialogs([5, 9, 11], present: [5, 7], registered: { $0 == 11 })
+        XCTAssertEqual(late, [9])
+    }
+
     func testCleanupLeavesALeftoverASessionHasSince() {
         XCTAssertTrue(WindowManager.leftoverStillUnowned(7, registered: { _ in false }))
         // Borrowed while cleanup waited on the app.
