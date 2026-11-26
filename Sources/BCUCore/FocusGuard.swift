@@ -197,6 +197,8 @@ public final class FocusGuard {
     private var gateClickOn: pid_t?
     /// When the gate last kept each app back for a click in another app's window.
     private var keptOnClick: [pid_t: Double] = [:]
+    /// When macOS last said the active Space changed (or a display came or went).
+    private var spaceChangedMs = -Double.infinity
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
@@ -704,8 +706,14 @@ public final class FocusGuard {
                     if front || inputSince { return }
                     continue
                 }
-                // Never ahead of the user's held input.
-                self.lock.lock(); let holding = !self.holdTokens.isEmpty || self.draining || !self.held.isEmpty; self.lock.unlock()
+                // Never ahead of the user's held input; and not once they've
+                // switched apps or Spaces since (windows that show up then
+                // aren't the click's).
+                self.lock.lock()
+                let holding = !self.holdTokens.isEmpty || self.draining || !self.held.isEmpty
+                let movedOn = self.lastUserSwitchKeyMs > click.ms || self.arrivals.contains { $0.ms > click.ms } || self.spaceChangedMs > click.ms
+                self.lock.unlock()
+                if kept && movedOn { return }
                 if kept && holding { continue }
                 self.lock.lock(); self.putBackOnClick[pid] = nil; self.lock.unlock()
                 // Theirs: the switch the guard makes for them counts as their cmd+Tab.
@@ -1164,6 +1172,7 @@ public final class FocusGuard {
     /// there is one the gate was keeping back, macOS couldn't bring it
     /// forward: do that for them.
     private func spaceChanged() {
+        lock.lock(); spaceChangedMs = nowMs(); lock.unlock()
         // Adding or removing a display posts this too. Nothing to do then,
         // and the gate stays shut: bringing forward whatever window is on
         // top would hand the keyboard to an app the user wasn't in.
@@ -1747,7 +1756,8 @@ public final class FocusGuard {
             openGate(for: type, event)
             lock.lock(); lastUserMouseDownMs = nowMs(); let holdAll = !holdTokens.isEmpty || draining; let anySwap = !swapping.isEmpty; lock.unlock()
             noteClick(at: event.location)
-            lookLateForKept(at: event.location)
+            // Only a plain left click opens a link; a right or control click asks for a menu.
+            if type == .leftMouseDown && !event.flags.contains(.maskControl) { lookLateForKept(at: event.location) }
             if AgentDisplay.fenced(at: event.location) != nil {
                 Log.info("guard: dropped a click on an agent display at \(Int(event.location.x)),\(Int(event.location.y))")
                 return nil
