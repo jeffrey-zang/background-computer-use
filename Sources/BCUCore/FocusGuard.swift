@@ -566,7 +566,8 @@ public final class FocusGuard {
     /// The user asked to switch apps from BCU's own UI (opening a window an
     /// agent handed them), so the activation that follows is theirs.
     public func noteUserSwitch() {
-        lock.lock(); lastUserSwitchKeyMs = nowMs(); lock.unlock()
+        // An explicit switch: whatever command is doing, the switcher isn't it.
+        lock.lock(); lastUserSwitchKeyMs = nowMs(); switcherUp = false; lock.unlock()
         gate.lift(ms: Self.keyLiftMs)
     }
 
@@ -693,7 +694,11 @@ public final class FocusGuard {
     /// nothing says the click was meant to bring it: only a link, or a
     /// window that's new (not a title that changed, which an inbox's
     /// unread count does by itself), counts (`LateLook.keptOpened`).
-    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false, clickedIn: pid_t? = nil, keptAtClick: Bool = false) {
+    /// `cancelOnMove`: give up once the user has switched apps or Spaces
+    /// since the click (always so for `kept`).
+    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false, clickedIn: pid_t? = nil, keptAtClick: Bool = false,
+                          cancelOnMove: Bool = false, movesSinceMs: Double? = nil) {
+        let since = movesSinceMs ?? click.ms
         let name = { (p: pid_t) in NSRunningApplication(processIdentifier: p)?.localizedName ?? "pid \(p)" }
         DispatchQueue.global(qos: .userInitiated).async {
             // For the kept path: the gate kept it back at some point (an
@@ -730,10 +735,10 @@ public final class FocusGuard {
                 self.lock.lock()
                 let holding = !self.holdTokens.isEmpty || self.draining || !self.held.isEmpty
                 // (The click itself may bring the app it was in forward: not that.)
-                let movedOn = self.lastUserSwitchKeyMs > click.ms || self.arrivals.contains { $0.ms > click.ms && $0.pid != clickedIn }
-                    || self.spaceChangedMs > click.ms
+                let movedOn = self.lastUserSwitchKeyMs > since || self.arrivals.contains { $0.ms > since && $0.pid != clickedIn }
+                    || self.spaceChangedMs > since
                 self.lock.unlock()
-                if kept && movedOn { return }
+                if (kept || cancelOnMove) && movedOn { return }
                 if kept && (holding || !wasKept) { continue }
                 self.lock.lock(); self.putBackOnClick[pid] = nil; self.lock.unlock()
                 // Theirs: the switch the guard makes for them counts as their cmd+Tab.
@@ -1106,7 +1111,8 @@ public final class FocusGuard {
                 // The click may still have opened something there after all
                 // (a link, during a lift that let the app through): bring it
                 // forward with that, as for any app put back on a click.
-                if credit == .click { self.lookLate(at: pid, click: now, putBackMs: nowMs()) }
+                // (Moves count from the put-back on: the app's coming forward was before it.)
+                if credit == .click { self.lookLate(at: pid, click: now, putBackMs: nowMs(), clickedIn: user, cancelOnMove: true, movesSinceMs: nowMs()) }
             }
         }
         look(0)
