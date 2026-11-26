@@ -160,6 +160,14 @@ final class DisplayFightTests: XCTestCase {
         XCTAssertEqual(AgentDisplay.removable([1], rects: rects), [])
     }
 
+    /// A spare that mirrors another display isn't laid out: it holds
+    /// nothing up and goes when its time is up.
+    func testAMirroredSpareCanExpire() {
+        XCTAssertFalse(AgentDisplay.holdsLayout(9, laidOut: [1, 5], removable: []))
+        XCTAssertTrue(AgentDisplay.holdsLayout(5, laidOut: [1, 5], removable: []))
+        XCTAssertFalse(AgentDisplay.holdsLayout(5, laidOut: [1, 5], removable: [1]))
+    }
+
     // MARK: MoveBudget
 
     func testMovesAreBounded() {

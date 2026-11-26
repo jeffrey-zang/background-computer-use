@@ -453,7 +453,7 @@ public final class AgentDisplay {
             // where the displays are, not by slot: they stay wherever macOS
             // leaves them, in any order (#110).
             let ok = removable(gone.compactMap { g in ids.firstIndex(of: g.id) }, rects: rects)
-            gone.removeAll { g in !(ids.firstIndex(of: g.id).map(ok.contains) ?? false) }
+            gone.removeAll { g in holdsLayout(g.id, laidOut: ids, removable: ok) }
             for b in busy {
                 let bounds = CGDisplayBounds(b.id)
                 DispatchQueue.global(qos: .utility).async { WindowManager.closeLeftovers(on: bounds) }
@@ -522,6 +522,14 @@ public final class AgentDisplay {
             }
         }
         return taken
+    }
+
+    /// Display `id` has to stay: it's in the layout (`laidOut`) and not
+    /// `removable`. One that isn't laid out (mirroring another display)
+    /// holds nothing up, and goes when its time is up.
+    static func holdsLayout(_ id: CGDirectDisplayID, laidOut: [CGDirectDisplayID], removable: Set<Int>) -> Bool {
+        guard let i = laidOut.firstIndex(of: id) else { return false }
+        return !removable.contains(i)
     }
 
     /// Spare displays there are (for the status line and tests).
@@ -735,7 +743,7 @@ public final class AgentDisplay {
 
     /// Not on the main thread (see `open`), once the display is online.
     public func finishStart() {
-        place(mode: retinaModeNeeded())
+        place(mode: retinaModeNeeded(), keepIfAcceptable: reused)
         Log.info("agent display \(slot + 1) (\(displayID)) at \(bounds.short)\(reused ? " (kept from an earlier session)" : ""); user displays \(userBounds.short)")
     }
 
@@ -1041,11 +1049,23 @@ public final class AgentDisplay {
 
     /// Put the display at its place, and into `mode` if given, in one
     /// configuration: each one macOS completes rearranges every display.
-    fileprivate func place(mode: CGDisplayMode? = nil) {
+    /// `keepIfAcceptable`: a spare taken up again stays where it is if
+    /// that's `acceptable`. It's where it was while it waited, and another
+    /// display may reach the user's through it: moved to its staircase
+    /// place, that one would move too.
+    fileprivate func place(mode: CGDisplayMode? = nil, keepIfAcceptable: Bool = false) {
         unmirror()
         userBounds = computeUserBounds()
-        let origin = anchor().flatMap { abs($0.x) < 1e6 && abs($0.y) < 1e6 ? $0 : nil }
         let current = CGDisplayBounds(displayID)
+        if keepIfAcceptable, mode == nil {
+            let layout = Self.layout(excluding: displayID)
+            if Self.acceptable(current, user: layout.user, others: layout.others) {
+                bounds = current
+                onChange?()
+                return
+            }
+        }
+        let origin = anchor().flatMap { abs($0.x) < 1e6 && abs($0.y) < 1e6 ? $0 : nil }
         if origin == nil { Log.info("agent display not placed: no user display") }
         // Placed once a user display shows up (see `reconfigured`).
         guard mode != nil || (origin != nil && origin != current.origin) else {
