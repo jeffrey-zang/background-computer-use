@@ -1792,9 +1792,17 @@ public final class Engine {
     /// to tell the agent.
     private func unmuteForRecording(_ w: AgentWindow, mute: AXNode?) -> String {
         guard mutedTabs.contains(w.id) else { return "" }
+        // Only once the tap mutes it and the recorder reads it: before
+        // Safari opens its audio (or if tapping it failed), the tab is all
+        // that keeps it off the speakers.
+        let app = NSRunningApplication(processIdentifier: w.pid)
+        let muting = { [audio, audioClaims] in audioClaims.has(w.id) && app.map { audio.state(of: $0) == .muted } == true }
+        guard muting() else {
+            return " Your tab stays muted for now, so it isn't recorded yet: once it plays, call this again and it's unmuted for the recording."
+        }
         switch tabMuted(w) {
         case true?:
-            guard unmuteTab(w, while: { [audioClaims] in audioClaims.has(w.id) }) else { return "" }
+            guard unmuteTab(w, while: muting) else { return "" }
             // The toggle it named may read otherwise now ("Mute This Tab"):
             // what it reads while the sound plays is what giving the app back
             // compares with. Only a claim still there: the user may have
@@ -1936,7 +1944,10 @@ public final class Engine {
             guard let name = mine.first?.appName else { return nil }
             let shared = onAgent[pid] != true || mine.contains(where: \.withUser)
             let states = mine.map { ($0, tabMuted($0)) }
-            return Self.soundNote(appName: name, routed: routed.contains(pid), shared: shared,
+            // Routed is not enough: the tap mutes only while the recorder
+            // reads it, and the recorder can fail after the tap is made.
+            let muting = routed.contains(pid) && NSRunningApplication(processIdentifier: pid).map { audio.state(of: $0) == .muted } == true
+            return Self.soundNote(appName: name, routed: muting, shared: shared,
                                   mutedTabs: states.filter { $0.1 == true }.map(\.0.id),
                                   unmutedWindows: states.filter { $0.1 != true }.count,
                                   told: { id in !self.toldMutedTab.insert(id).inserted },
