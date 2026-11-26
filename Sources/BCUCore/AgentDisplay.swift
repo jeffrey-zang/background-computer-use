@@ -854,9 +854,57 @@ public final class AgentDisplay {
         return retina
     }
 
+    /// What to change so the agent display mirrors nothing and nothing
+    /// mirrors it, as (display, what it should mirror now; 0: nothing).
+    /// `mirrorOf` is what each online display mirrors (0: none). The agent
+    /// display mirroring a user display stops. User displays mirroring the
+    /// agent display stop too, but when there are two or more the mirroring
+    /// among them is the user's: one of them (`main` if it's one, else the
+    /// lowest ID) stops and becomes the source the others mirror, so only
+    /// the agent display leaves the set.
+    static func unmirrorPlan(agent: CGDirectDisplayID, main: CGDirectDisplayID,
+                             mirrorOf: [CGDirectDisplayID: CGDirectDisplayID]) -> [(display: CGDirectDisplayID, source: CGDirectDisplayID)] {
+        var plan: [(display: CGDirectDisplayID, source: CGDirectDisplayID)] = []
+        if let of = mirrorOf[agent], of != 0 { plan.append((agent, 0)) }
+        let mirroringAgent = mirrorOf.filter { id, of in id != agent && of == agent }.map(\.key).sorted()
+        guard let source = mirroringAgent.contains(main) ? main : mirroringAgent.first else { return plan }
+        plan.append((source, 0))
+        for id in mirroringAgent where id != source { plan.append((id, source)) }
+        return plan
+    }
+
+    /// A user display mirroring the agent display (Control Center's Screen
+    /// Mirroring, a mirroring shortcut, or a mirror set macOS remembered)
+    /// takes on its 1600x1000 mode: the user's screen shrinks to that, at the
+    /// wrong shape on a screen that isn't 16:10 (measured on macOS 26.1: the
+    /// built-in display went from 1680x1050 to 1600x1000 and stayed so while
+    /// the agent display was there), and macOS fits the user's windows to it.
+    /// The other way round, the agent display sits on top of the user's
+    /// screen. Undo it before anything else; a mode set while mirrored is
+    /// the whole mirror set's.
+    private func unmirror() {
+        var mirrorOf: [CGDirectDisplayID: CGDirectDisplayID] = [:]
+        for id in Self.onlineDisplayIDs() { mirrorOf[id] = CGDisplayMirrorsDisplay(id) }
+        let plan = Self.unmirrorPlan(agent: displayID, main: CGMainDisplayID(), mirrorOf: mirrorOf)
+        guard !plan.isEmpty else { return }
+        let targets = plan.map(\.display)
+        var config: CGDisplayConfigRef?
+        CGBeginDisplayConfiguration(&config)
+        for step in plan { CGConfigureDisplayMirrorOfDisplay(config, step.display, step.source) }
+        let err = CGCompleteDisplayConfiguration(config, .forSession)
+        Self.noteChange()
+        // (A failure repeated every second is logged once.)
+        if err == .success || err != lastUnmirrorError {
+            Log.info("agent display \(slot + 1) (\(displayID)) was mirrored (displays \(targets.map(String.init).joined(separator: ", "))); \(err == .success ? "stopped the mirroring" : "stopping it failed: \(err.rawValue)")")
+        }
+        lastUnmirrorError = err
+    }
+    private var lastUnmirrorError: CGError = .success
+
     /// Put the display at its place, and into `mode` if given, in one
     /// configuration: each one macOS completes rearranges every display.
     fileprivate func place(mode: CGDisplayMode? = nil) {
+        unmirror()
         userBounds = computeUserBounds()
         let origin = anchor().flatMap { abs($0.x) < 1e6 && abs($0.y) < 1e6 ? $0 : nil }
         let current = CGDisplayBounds(displayID)
@@ -964,7 +1012,9 @@ public final class AgentDisplay {
             return
         }
         let accepted = adjusted.map { $0.wanted == wanted && $0.got == b.origin } ?? false
-        if unplaced || user != userBounds || (b.origin != wanted && !accepted) {
+        // Mirrored since it was placed (see `unmirror`).
+        let mirrored = CGDisplayIsInMirrorSet(displayID) != 0
+        if unplaced || mirrored || user != userBounds || (b.origin != wanted && !accepted) {
             let was = unplaced
             unplaced = false
             place()

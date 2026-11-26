@@ -1,4 +1,5 @@
 import XCTest
+import CoreGraphics
 @testable import BCUCore
 
 /// Where the agent display is anchored, and waiting on the main thread while BCU quits.
@@ -89,6 +90,36 @@ final class DisplayLifecycleTests: XCTestCase {
         }
         wait(for: [done], timeout: 10)
         XCTAssertEqual(most.value, 1, "displays were being made at the same time")
+    }
+
+    /// A user display mirroring the agent display takes its 1600x1000 mode
+    /// (issue #97): that display is taken out of the mirroring.
+    func testAUserDisplayMirroringTheAgentDisplayIsFreed() {
+        XCTAssertEqual(plan(agent: 50, main: 1, [1: 50, 50: 0]), ["1->0"])
+    }
+
+    /// The agent display mirroring the user's sits on their screen: it's freed.
+    func testTheAgentDisplayMirroringAUserDisplayIsFreed() {
+        XCTAssertEqual(plan(agent: 50, main: 1, [1: 0, 50: 1]), ["50->0"])
+    }
+
+    /// Mirroring between the user's own displays is theirs: left alone.
+    func testTheUsersOwnMirroringIsLeftAlone() {
+        XCTAssertEqual(plan(agent: 50, main: 1, [1: 0, 2: 1, 50: 0]), [])
+        // The agent display joined their set as a mirror: only it leaves.
+        XCTAssertEqual(plan(agent: 50, main: 1, [1: 0, 2: 1, 50: 1]), ["50->0"])
+    }
+
+    /// The agent display is the source two user displays mirror: they keep
+    /// mirroring each other, with the main display as the new source.
+    func testTheUsersDisplaysKeepMirroringEachOtherWhenTheAgentWasTheSource() {
+        XCTAssertEqual(plan(agent: 50, main: 2, [1: 50, 2: 50, 50: 0]), ["2->0", "1->2"])
+        // Main isn't one of them (asleep, or an agent's): the lowest ID.
+        XCTAssertEqual(plan(agent: 50, main: 50, [3: 50, 1: 50, 2: 50, 50: 0]), ["1->0", "2->1", "3->1"])
+    }
+
+    private func plan(agent: CGDirectDisplayID, main: CGDirectDisplayID, _ mirrorOf: [CGDirectDisplayID: CGDirectDisplayID]) -> [String] {
+        AgentDisplay.unmirrorPlan(agent: agent, main: main, mirrorOf: mirrorOf).map { "\($0.display)->\($0.source)" }
     }
 
     func testNoDisplayNoCorner() {
