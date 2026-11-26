@@ -98,6 +98,29 @@ final class DisplayFightTests: XCTestCase {
                                                 user: [user], others: [user]))
     }
 
+    /// macOS put it elsewhere the last time it was asked for this spot:
+    /// not asked again, unless the user's displays changed since (a corner
+    /// contact can have become a shared edge).
+    func testARefusalIsRetriedOnlyWhenTheUsersDisplaysChanged() {
+        XCTAssertFalse(AgentDisplay.tryPlacing(needed: true, refusedBefore: true, userChanged: false))
+        XCTAssertTrue(AgentDisplay.tryPlacing(needed: true, refusedBefore: true, userChanged: true))
+        XCTAssertTrue(AgentDisplay.tryPlacing(needed: true, refusedBefore: false, userChanged: false))
+        XCTAssertFalse(AgentDisplay.tryPlacing(needed: false, refusedBefore: false, userChanged: true))
+    }
+
+    /// Where macOS once put it, meeting the user's display at its top-right
+    /// corner: fine. A monitor added above the user's makes that a shared
+    /// edge, and it has to move.
+    func testAMonitorAddedAlongItMakesItMove() {
+        let agent = at(1680, -1000)
+        XCTAssertTrue(AgentDisplay.acceptable(agent, user: [user], others: [user]))
+        let above = CGRect(x: 0, y: -1050, width: 1680, height: 1050)
+        XCTAssertTrue(AgentDisplay.needsPlacing(agent, wanted: CGPoint(x: 1680, y: 1050), userChanged: true,
+                                                user: [user, above], others: [user, above]))
+        XCTAssertTrue(AgentDisplay.needsPlacing(agent, wanted: agent.origin, userChanged: true,
+                                                user: [user, above], others: [user, above]))
+    }
+
     // MARK: MoveBudget
 
     func testMovesAreBounded() {

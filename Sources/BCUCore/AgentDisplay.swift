@@ -1115,8 +1115,9 @@ public final class AgentDisplay {
         // Mirrored since it was placed (see `unmirror`).
         let mirrored = CGDisplayIsInMirrorSet(displayID) != 0
         let layout = Self.layout(excluding: displayID)
-        let move = Self.needsPlacing(b, wanted: wanted, userChanged: user != userBounds, user: layout.user, others: layout.others)
-        guard unplaced || mirrored || (move && !accepted) else {
+        let userChanged = user != userBounds
+        let move = Self.needsPlacing(b, wanted: wanted, userChanged: userChanged, user: layout.user, others: layout.others)
+        guard unplaced || mirrored || Self.tryPlacing(needed: move, refusedBefore: accepted, userChanged: userChanged) else {
             userBounds = user
             if b != bounds {
                 bounds = b
@@ -1160,6 +1161,15 @@ public final class AgentDisplay {
     static func needsPlacing(_ rect: CGRect, wanted: CGPoint, userChanged: Bool, user: [CGRect], others: [CGRect]) -> Bool {
         if userChanged && rect.origin != wanted { return true }
         return !acceptable(rect, user: user, others: others)
+    }
+
+    /// Whether to ask macOS to place a display that `needsPlacing`. Not
+    /// again where it already said no (`refusedBefore`: it put the display
+    /// somewhere else last time it was asked for the same spot), unless the
+    /// user's displays changed since: a spot that was fine can now be along
+    /// their edge, and macOS may answer differently.
+    static func tryPlacing(needed: Bool, refusedBefore: Bool, userChanged: Bool) -> Bool {
+        needed && (!refusedBefore || userChanged)
     }
 
     /// Every online display and where it is, for the log.
