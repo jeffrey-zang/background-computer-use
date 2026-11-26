@@ -739,9 +739,13 @@ public final class Engine {
             // out), which leaves no trace: any password field in the window
             // counts.
             if tool == "type_text", (args.string("text") ?? "").contains("\t"), let rec = recordingSteps,
-               let id = windowID, let w = windows.window(id),
-               passwordFieldFocused(w) || (snapshots[w.id]?.nodes.values.contains { $0.secure } ?? false) {
-                rec.setFocusSecure()
+               let id = windowID, let w = windows.window(id) {
+                if passwordFieldFocused(w) || (snapshots[w.id]?.nodes.values.contains { $0.secure } ?? false) { rec.setFocusSecure() }
+                // It may have filled other fields: the video covers the window.
+                if let bounds = WindowList.info(w.id)?.bounds {
+                    let b = display.bounds
+                    rec.setCover(bounds.offsetBy(dx: -b.minX, dy: -b.minY))
+                }
             }
             // A character key pressed into a password field (a PIN typed key
             // by key) is hidden like typed text.
@@ -3160,6 +3164,16 @@ public final class Engine {
     }
 
     private func stopRecording(_ args: Args) throws -> ToolResult {
+        // Routed from a subagent (`Hub`): only the recording it started, checked
+        // here on the session's queue, where nothing can stop it in between.
+        if let want = args.string("_recording_dir") {
+            stateLock.lock()
+            let have = _recording?.dir.path ?? _savingDir ?? (try? endedRecording?.get())?.dir.path
+            stateLock.unlock()
+            guard have == want else {
+                throw ToolError("the recording you started was already stopped by the session whose window it shows; ask that agent for it.")
+            }
+        }
         stateLock.lock()
         let rec = _recording, withAudio = _recordingAudio
         _recording = nil

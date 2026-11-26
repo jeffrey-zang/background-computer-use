@@ -48,6 +48,9 @@ public final class RecordedStep {
     public internal(set) var isError = false
     public internal(set) var waits: [String] = []
     public internal(set) var steps: [RecordedStep] = []
+    /// Display points its typing may have reached beyond its target (a Tab
+    /// moves on to other fields): the video covers it too when typing is hidden.
+    public internal(set) var cover: CGRect?
     /// The focused field was a password field when text was typed without `element`.
     var focusSecure = false
     /// Its text (or key) was taken out of its arguments when it ended.
@@ -302,7 +305,10 @@ public enum RecordingText {
     /// ("…confidenti…"), that start of it too.
     public static func redact(_ text: String, secrets: [String]) -> String {
         var out = text
-        // Clipped first: a shorter secret replaced first could break up the
+        // A secret that holds an ellipsis itself first, whole, so the
+        // clipped pass doesn't take its own ellipsis for a cut.
+        for s in secrets where s.contains("…") { out = out.replacingOccurrences(of: s, with: "(hidden)") }
+        // Clipped next: a shorter secret replaced first could break up the
         // start of a longer one just before the ellipsis.
         if out.contains("…") { out = redactClipped(out, secrets: secrets.filter(redactsLater)) }
         for s in secrets where !s.isEmpty { out = out.replacingOccurrences(of: s, with: "(hidden)") }
@@ -366,6 +372,9 @@ public final class StepLog {
     /// result too (a read of the window shows what's in its fields). Never
     /// written anywhere.
     private var hiddenTexts: [String] = []
+    /// Characters hidden one press_key at a time, in a row: together they're
+    /// what went into the field.
+    private var keyRun = ""
     public let redactAll: Bool
     private let clock: () -> Double
 
@@ -388,6 +397,7 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         var a = args
         a["_session"] = nil
+        a["_recording_dir"] = nil
         var original: [String: String] = [:]
         for key in ["text", "value", "key"] { if let v = a[key] as? String { original[key] = v } }
         // Text hidden earlier can come back in a later call (a path with the
@@ -431,6 +441,11 @@ public final class StepLog {
     }
 
     /// Where typing without `element` goes was looked at: `secure` if a password field.
+    public func setCover(_ rect: CGRect) {
+        lock.lock(); defer { lock.unlock() }
+        current?.cover = rect
+    }
+
     public func setFocus(secure: Bool) {
         lock.lock(); defer { lock.unlock() }
         current?.focusChecked = true
@@ -476,6 +491,16 @@ public final class StepLog {
                 // would break up a longer one that holds it ("Ada" in "Ada Lovelace").
                 hiddenTexts.sort { $0.count > $1.count }
             }
+        }
+        // Keys pressed one by one add up to text in a field.
+        if s.tool == "press_key" && s.textHidden, let key = s.secret {
+            keyRun += key
+            if RecordingText.redactsLater(keyRun) {
+                hiddenTexts += RecordingText.forms(of: keyRun)
+                hiddenTexts.sort { $0.count > $1.count }
+            }
+        } else if s.tool != "batch" && s.tool != "status" {
+            keyRun = ""
         }
         s.original = [:]
         if s.tool == "batch" {

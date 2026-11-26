@@ -417,6 +417,37 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertTrue(out.contains("logo…"))
     }
 
+    func testASecretWithAnEllipsisIsHiddenWhole() {
+        XCTAssertEqual(RecordingText.redact("value=\"alpha…bravo\"", secrets: ["alpha…bravo"]), "value=\"(hidden)\"")
+    }
+
+    func testKeysPressedOneByOneAreHiddenFromLaterReads() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        for ch in "confidential" {
+            let k = log.begin(tool: "press_key", args: ["key": String(ch)]); log.setFocus(secure: false)
+            log.end(k, result: "Pressed \(ch).", isError: false)
+        }
+        let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "value=\"confidential\"", isError: false)
+        XCTAssertFalse(r.result.contains("confidential"), r.result)
+    }
+
+    func testTabbedTypingCoversTheWindow() throws {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let s = log.begin(tool: "type_text", args: ["text": "left\tright", "element": 1])
+        log.setTarget(StepTarget(element: 1, role: "AXTextField", label: "A", frame: CGRect(x: 10, y: 10, width: 50, height: 20), secure: false))
+        log.setCover(CGRect(x: 0, y: 0, width: 400, height: 300))
+        log.end(s, result: "Typed.", isError: false)
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
+        RecordingOverlay.draw(in: ctx, size: CGSize(width: 800, height: 500), t: 60_000, flat: log.all, total: 1,
+                              mapping: FrameMapping(scale: 1, offset: .zero), label: "A", redactAll: true)
+        let image = try XCTUnwrap(ctx.makeImage())
+        let data = try XCTUnwrap(image.dataProvider?.data) as Data
+        let i = 250 * image.bytesPerRow + 300 * 4  // far from the first field, inside the window
+        XCTAssertGreaterThan(data[i + 1], 100)
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))

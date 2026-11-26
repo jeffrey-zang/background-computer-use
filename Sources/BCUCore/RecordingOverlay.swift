@@ -74,8 +74,8 @@ public enum RecordingOverlay {
         // from then on (a password field shows only dots anyway).
         if redactAll {
             for s in flat where s.t <= t && s.hidesText(redactAll: true) {
-                guard let target = s.target, !target.secure else { continue }
-                let r = flip(mapping.rect(target.frame).insetBy(dx: -2 * u, dy: -2 * u))
+                guard let target = s.target, !target.secure || s.cover != nil else { continue }
+                let r = flip(mapping.rect(s.cover ?? target.frame).insetBy(dx: -2 * u, dy: -2 * u))
                 ctx.setFillColor(CGColor(gray: 0.55, alpha: 1))
                 ctx.addPath(CGPath(roundedRect: r, cornerWidth: 5 * u, cornerHeight: 5 * u, transform: nil)); ctx.fillPath()
                 let l = line("hidden", font(min(18 * u, r.height * 0.6), bold: true), CGColor(gray: 1, alpha: 1))

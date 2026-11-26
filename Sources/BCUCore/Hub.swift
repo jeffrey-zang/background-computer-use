@@ -299,7 +299,12 @@ public final class Hub {
             lock.unlock()
             // Only to the recording it started: the owner may have stopped
             // that one and started another since.
-            if let at, let route, Self.routeHolds(dir: route.dir, current: at.recordingDir) { return at.call(tool: tool, args: args) }
+            if let at, let route, Self.routeHolds(dir: route.dir, current: at.recordingDir) {
+                // Checked again on that session's queue, right before it stops.
+                var routed = args
+                routed["_recording_dir"] = route.dir
+                return at.call(tool: tool, args: routed)
+            }
         }
         // An agent can hand a window to its subagent (or back): the call goes
         // to the session that owns the window, on that session's display.
