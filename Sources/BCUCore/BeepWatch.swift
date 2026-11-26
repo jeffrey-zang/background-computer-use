@@ -100,6 +100,10 @@ public final class BeepWatch {
             guard let b = Self.parse(line: Data(line), seq: nextSeq) else { continue }
             nextSeq += 1
             recent.append(b)
+            // Put down to its input now, while that input is listed: the
+            // call it belongs to may run on (a long batch) past the list's
+            // 60 s before it looks.
+            if let step = Self.agents([b], steps: steps, owner: nil).first?.step { assigned[b.seq] = step }
         }
         // A minute is plenty: steps take seconds at most.
         let cutoff = Date().addingTimeInterval(-60)
@@ -120,8 +124,16 @@ public final class BeepWatch {
     /// Test hook: as if `systemsoundserverd` had logged this.
     func inject(_ b: (at: Date, pid: pid_t, app: String, action: Int)) {
         lock.lock(); defer { lock.unlock() }
-        recent.append(Beep(at: b.at, pid: b.pid, app: b.app, action: b.action, seq: nextSeq))
+        let beep = Beep(at: b.at, pid: b.pid, app: b.app, action: b.action, seq: nextSeq)
+        recent.append(beep)
         nextSeq += 1
+        if let step = Self.agents([beep], steps: steps, owner: nil).first?.step { assigned[beep.seq] = step }
+    }
+
+    /// Test hook: drop every listed input, as `prune` does once it's old.
+    func forgetSteps() {
+        lock.lock(); defer { lock.unlock() }
+        steps = []
     }
 
     // MARK: Parsing

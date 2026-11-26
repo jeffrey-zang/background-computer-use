@@ -107,6 +107,20 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertEqual(BeepWatch.agents([beep(t0, 0.31)], steps: [step(t0, 0, 0.2, owner: "a"), step(t0, 0.32, 0.5, owner: "b")], owner: nil).first?.step.owner, "a")
     }
 
+    /// A beep is put down to its input as it arrives: the input can be
+    /// pruned (a long batch) before the call looks, and the beep is kept.
+    func testABeepKeepsItsInputPastPruning() {
+        let w = BeepWatch()
+        let t0 = Date()
+        w.record(step(t0, -0.1, 0.2, owner: "a"))
+        let start = w.lastSeq
+        w.inject((t0.addingTimeInterval(0.1), 62902, "TextEdit", 4096))
+        w.forgetSteps()
+        let found = w.attribute(w.beeps(after: start), owner: "a")
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found.first?.step.key, "escape")
+    }
+
     /// Completed input is pruned on the begin/finish path too.
     func testFinishPrunes() {
         let w = BeepWatch()
