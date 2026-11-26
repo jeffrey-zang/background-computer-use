@@ -221,6 +221,16 @@ public enum RecordingText {
         return out
     }
 
+    /// The ways a window read can show `secret`: as typed, on one line, and
+    /// cut short where a read clips a value (160 characters) or a name (100).
+    static func forms(of secret: String) -> [String] {
+        let oneLine = secret.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        var out = [secret, oneLine]
+        for n in [160, 100] where oneLine.count > n { out.append(String(oneLine.prefix(n - 1))) }
+        // Longest first, so a shorter form doesn't leave part of a longer one.
+        return Array(Set(out.filter { redactsLater($0) })).sorted { $0.count > $1.count }
+    }
+
     /// Whether hidden text is also taken out of later results: not a key or
     /// two ("\n", "a"), which would blank half of every read.
     static func redactsLater(_ secret: String) -> Bool {
@@ -348,7 +358,7 @@ public final class StepLog {
                 s.args[key] = "(hidden, \(secret.count) characters)"
                 s.secret = secret
                 s.textHidden = true
-                if RecordingText.redactsLater(secret) { hiddenTexts.append(secret) }
+                if RecordingText.redactsLater(secret) { hiddenTexts += RecordingText.forms(of: secret) }
             }
         }
         if s.tool == "batch" {

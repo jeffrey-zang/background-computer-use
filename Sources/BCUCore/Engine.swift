@@ -3116,7 +3116,8 @@ public final class Engine {
         if args.int("window_id") != nil { windowID = try agentWindow(args).0.id }
         let rec = try AgentRecording(display: display, windowID: windowID, fps: args.int("fps") ?? AgentRecording.defaultFPS,
                                      label: label, redactAll: args.bool("hide_typing") ?? false,
-                                     owns: { [weak self] in self?.windows.window($0) != nil },
+                                     // Not one handed to the user, or that they have now.
+                                     owns: { [weak self] in self?.windows.window($0).map { !$0.handedOff && !$0.withUser } ?? false },
                                      onDisplayFrame: { [weak self] in self?.recordPreview($0) })
         let what = windowID.map { "window \($0)" } ?? "your display"
         let text = "Recording \(what) at up to \(rec.fps) fps. Every tool call from now on is drawn on the video and listed, failures included. Call stop_recording when you're done: it saves recording.mp4 with actions.md and actions.json into \(rec.dir.path)."
@@ -3180,7 +3181,10 @@ public final class Engine {
         _recording = nil
         stateLock.unlock()
         guard let rec else { return }
+        // Quitting waits for this save too (see `finishShutdown`).
+        exporting.enter()
         let result = Result { try rec.finish(audio: withAudio ? audio.url : nil) }
+        exporting.leave()
         stateLock.lock(); endedRecording = result; stateLock.unlock()
         if case .success(let out) = result { Log.info("recording saved as the display went away: \(out.video.path)") }
     }

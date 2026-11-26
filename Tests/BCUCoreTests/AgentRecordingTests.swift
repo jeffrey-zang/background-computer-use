@@ -286,6 +286,17 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(c.args["list"] as? [String], ["a", "(hidden)"])
     }
 
+    /// A read clips long values: the clipped form is taken out too.
+    func testALongHiddenValueIsTakenOutOfAClippedRead() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let secret = String(repeating: "confidential-", count: 20)
+        let t = log.begin(tool: "type_text", args: ["text": secret, "element": 3])
+        log.end(t, result: "Typed.", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[3] TextArea value=\"\(secret.prefix(159))…\" @(0,0 10x10)", isError: false)
+        XCTAssertFalse(r.result.contains("confidential-confidential"), r.result)
+    }
+
     func testTypingFailuresAreLoggedWithoutWhatWasTyped() {
         XCTAssertEqual(Engine.loggable("type_text FAILED: Typed 4 of 7 characters (\"hunt\"), nothing after that."),
                        "type_text FAILED: Typed 4 of 7 characters (\"(hidden)\"), nothing after that.")
