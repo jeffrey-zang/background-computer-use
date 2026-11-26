@@ -742,7 +742,8 @@ public final class Engine {
             // counts.
             if tool == "type_text", (args.string("text") ?? "").contains("\t"), let rec = recordingSteps,
                let id = windowID, let w = windows.window(id) {
-                if passwordFieldFocused(w) || (snapshots[w.id]?.nodes.values.contains { $0.secure } ?? false) { rec.setFocusSecure() }
+                // With no read of the window, whether it has one isn't known: hidden.
+                if passwordFieldFocused(w) || (snapshots[w.id]?.nodes.values.contains { $0.secure } ?? true) { rec.setFocusSecure() }
                 // It may have filled other fields: the video covers the window.
                 if let bounds = WindowList.info(w.id)?.bounds {
                     let b = display.bounds
@@ -3143,6 +3144,8 @@ public final class Engine {
 
     /// The folder a start_recording result names (it ends "… into <folder>.").
     static func recordingDir(fromStart text: String) -> String? {
+        // Its first line: notes for the agent can follow.
+        let text = text.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? text
         guard let r = text.range(of: " into /", options: .backwards) else { return nil }
         var dir = String(text[text.index(after: r.lowerBound)...].dropFirst(5))
         if dir.hasSuffix(".") { dir.removeLast() }

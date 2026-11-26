@@ -528,6 +528,10 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertTrue(r.result.contains("@(0,0 10x10) [settable]"), r.result)
     }
 
+    func testTheStartResultsFirstLineNamesItsFolder() {
+        XCTAssertEqual(Engine.recordingDir(fromStart: "… into /tmp/r/1.\n[user] Done with the window you handed over."), "/tmp/r/1")
+    }
+
     func testTheStartResultNamesItsFolder() {
         XCTAssertEqual(Engine.recordingDir(fromStart: "Recording your display at up to 12 fps. … actions.json into /tmp/x/agent-recordings/20261126-1."),
                        "/tmp/x/agent-recordings/20261126-1")

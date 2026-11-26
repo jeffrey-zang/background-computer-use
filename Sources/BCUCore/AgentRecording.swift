@@ -205,7 +205,8 @@ public final class AgentRecording {
 
     /// A frame of what's recorded, and the display points it shows.
     private func grab() -> (image: CGImage, source: CGRect)? {
-        let b = display.bounds
+        let live = display.liveBounds
+        let b = live.isEmpty ? display.bounds : live
         if let windowID {
             // Released (handed back to the user, or left open for them): not
             // the session's to film any more, wherever it is.
@@ -242,7 +243,10 @@ public final class AgentRecording {
         if adaptor.append(buffer, withPresentationTime: CMTime(value: pts, timescale: 1000)) {
             let scale = fit.width / max(source.width, 1)
             let map = FrameMapping(scale: scale, offset: CGPoint(x: fit.minX - source.minX * scale, y: fit.minY - source.minY * scale))
-            let b = display.bounds
+            // The display's origin as macOS has it now (the cached bounds lag
+            // a rearrangement), the same moment as the windows' places.
+            let live = display.liveBounds
+            let b = live.isEmpty ? display.bounds : live
             var covers: [CGWindowID: CGRect] = [:]
             for id in steps.coverWindows() {
                 if let wb = WindowList.info(id)?.bounds { covers[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
