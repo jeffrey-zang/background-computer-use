@@ -310,6 +310,44 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(r.result.contains("confid"), r.result)
     }
 
+    /// What was typed can run over several lines in an error.
+    func testAMultilineFragmentIsHidden() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "alpha\nbravo\ncharlie", "element": 3])
+        log.end(t, result: "stopped typing: Typed 9 of 19 characters (\"alpha\nbra\"), nothing after that.", isError: true)
+        XCTAssertFalse(t.result.contains("alpha") || t.result.contains("bra\""), t.result)
+        let b = log.begin(tool: "batch", args: [:])
+        let c = log.begin(tool: "type_text", args: ["text": "alpha\nbravo", "element": 3], inBatch: true)
+        log.end(c, result: "x", isError: true)
+        log.end(b, result: "1. type_text FAILED: Typed 8 of 11 characters (\"alpha\nbr\"), nothing after that.\nStopped.", isError: true)
+        XCTAssertFalse(b.result.contains("alpha") || b.result.contains("br\""), b.result)
+        XCTAssertTrue(b.result.hasSuffix("\nStopped."))
+    }
+
+    /// A step's text is hidden and tracked as given, not as redacted against earlier steps.
+    func testPartlyTypedTextUsesWhatWasAskedFor() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let a = log.begin(tool: "type_text", args: ["text": "Ada", "element": 3]); log.end(a, result: "ok", isError: false)
+        let b = log.begin(tool: "type_text", args: ["text": "Ada Lovelace", "element": 3])
+        log.end(b, result: "Typed 7 of 12 characters (\"Ada Lov\")", isError: true)
+        XCTAssertEqual(b.args["text"] as? String, "(hidden, 12 characters)")
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "value=\"Ada Lov\"", isError: false)
+        XCTAssertFalse(r.result.contains("Lov"), r.result)
+    }
+
+    func testShiftSpellingsCountAsTyping() {
+        XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
+        XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))
+        XCTAssertFalse(RecordedStep.typesACharacter(["key": "a", "modifiers": ["cmd"]]))
+    }
+
+    func testARefusedLongInputIsQuick() {
+        XCTAssertEqual(RecordingText.partsTyped(String(repeating: "x", count: 8000), result: "Paused by the user. Nothing was typed."), [])
+        let parts = RecordingText.partsTyped(String(repeating: "x", count: 8000), result: "it failed")
+        XCTAssertLessThanOrEqual(parts.count, RecordingText.maxPartsTyped)
+    }
+
     func testTypingFailuresAreLoggedWithoutWhatWasTyped() {
         XCTAssertEqual(Engine.loggable("type_text FAILED: Typed 4 of 7 characters (\"hunt\"), nothing after that."),
                        "type_text FAILED: Typed 4 of 7 characters (\"(hidden)\"), nothing after that.")

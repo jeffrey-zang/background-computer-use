@@ -52,6 +52,10 @@ public final class RecordedStep {
     var focusSecure = false
     /// Its text (or key) was taken out of its arguments when it ended.
     var textHidden = false
+    /// What it was asked to type, as given (later arguments are redacted
+    /// when it starts, but what's hidden and what went in come from this).
+    /// Never written anywhere.
+    var original: [String: String] = [:]
     /// Where its typing goes was looked at (an element, or the focus).
     var focusChecked = false
     /// What it typed that's hidden, to take out of its batch's result too. Never written anywhere.
@@ -88,8 +92,9 @@ public final class RecordedStep {
     /// A press_key of one printable character, with no modifier but shift.
     static func typesACharacter(_ args: JSONObject) -> Bool {
         guard let key = args["key"] as? String, key.count == 1, let ch = key.first, !ch.isWhitespace else { return false }
-        let mods = (args["modifiers"] as? [Any] ?? []).compactMap { ($0 as? String)?.lowercased() }
-        return mods.allSatisfy { $0 == "shift" }
+        // Every spelling press_key takes for shift ("⇧", " Shift ").
+        let mods = (args["modifiers"] as? [Any] ?? []).map { "\($0)".trimmingCharacters(in: .whitespaces).lowercased() }
+        return mods.allSatisfy { KeyMap.modifierNames[$0] == .maskShift }
     }
 
     /// Its arguments as written out: typed text that's to be hidden and
@@ -208,12 +213,10 @@ public enum RecordingText {
     /// step whose text is hidden, which can quote part of it ("Typed 4 of 7
     /// characters ("hunt")").
     public static func hideQuoted(_ text: String) -> String {
-        // From the first quote to the last on each line: what was typed can
-        // hold quotes itself, so the quotes don't say where it ends.
-        text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
-            guard let first = line.firstIndex(of: "\""), let last = line.lastIndex(of: "\""), first < last else { return String(line) }
-            return String(line[...first]) + "(hidden)" + String(line[last...])
-        }.joined(separator: "\n")
+        // From the first quote to the last: what was typed can hold quotes
+        // and line breaks itself, so neither says where it ends.
+        guard let first = text.firstIndex(of: "\""), let last = text.lastIndex(of: "\""), first < last else { return text }
+        return String(text[...first]) + "(hidden)" + String(text[last...])
     }
 
     /// What of `secret` may be in the field after typing it failed: the
@@ -224,7 +227,34 @@ public enum RecordingText {
            let n = Int(result[r].split(separator: " ")[1]) {
             return [String(secret.prefix(n))]
         }
-        return (3..<max(3, secret.count)).map { String(secret.prefix($0)) }
+        // Turned away before typing anything: nothing went in.
+        if result.localizedCaseInsensitiveContains("nothing was typed") || result.localizedCaseInsensitiveContains("nothing was done") { return [] }
+        // Otherwise every start of it, up to a bound (a long document
+        // refused for another reason mustn't take seconds and megabytes).
+        return (3..<max(3, min(secret.count, maxPartsTyped))).map { String(secret.prefix($0)) }
+    }
+    static let maxPartsTyped = 64
+
+    /// `hideQuoted` on each hidden batch step's part of a batch result: from
+    /// its line ("2. type_text FAILED: …") to the next step's, since what
+    /// it quotes can run over several lines.
+    static func hideQuotedInSteps(_ result: String, _ steps: Set<Int>) -> String {
+        guard !steps.isEmpty else { return result }
+        var lines = result.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        func stepNumber(_ l: String) -> Int? {
+            guard let dot = l.firstIndex(of: "."), let k = Int(l[..<dot]) else { return nil }
+            return k
+        }
+        var i = 0
+        while i < lines.count {
+            guard let k = stepNumber(lines[i]), steps.contains(k) else { i += 1; continue }
+            var j = i + 1
+            while j < lines.count, stepNumber(lines[j]) == nil, !lines[j].hasPrefix("Stopped"), !lines[j].isEmpty { j += 1 }
+            let part = hideQuoted(lines[i..<j].joined(separator: "\n")).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            lines.replaceSubrange(i..<j, with: part)
+            i += part.count
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// The ways a window read can show `secret`: as typed, on one line, and
@@ -297,11 +327,14 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         var a = args
         a["_session"] = nil
+        var original: [String: String] = [:]
+        for key in ["text", "value", "key"] { if let v = a[key] as? String { original[key] = v } }
         // Text hidden earlier can come back in a later call (a path with the
         // file name that was typed): it's taken out of the arguments too.
         if !hiddenTexts.isEmpty { a = Self.redacted(a, hiddenTexts) as? JSONObject ?? a }
         if inBatch, let parent = open.last(where: { $0.sub == nil && $0.tool == "batch" }) {
             let s = RecordedStep(n: parent.n, sub: parent.steps.count + 1, tool: tool, args: a, t: clock())
+            s.original = original
             parent.steps.append(s)
             open.append(s)
             return s
@@ -310,6 +343,7 @@ public final class StepLog {
         // hidden where it has to be: its arguments keep only how many.
         if tool == "batch" { a["actions"] = (a["actions"] as? [Any])?.count ?? 0 }
         let s = RecordedStep(n: steps.count + 1, sub: nil, tool: tool, args: a, t: clock())
+        s.original = original
         steps.append(s)
         if tracked { open.append(s) }
         return s
@@ -359,7 +393,7 @@ public final class StepLog {
         var result = RecordingText.redact(result, secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
-            if let secret = s.args[key] as? String {
+            if s.args[key] is String, let secret = s.original[key] ?? s.args[key] as? String {
                 result = RecordingText.hideQuoted(RecordingText.redact(result, secrets: [secret]))
                 s.args[key] = "(hidden, \(secret.count) characters)"
                 s.secret = secret
@@ -375,17 +409,14 @@ public final class StepLog {
                 }
             }
         }
+        s.original = [:]
         if s.tool == "batch" {
             result = RecordingText.redact(result, secrets: s.steps.compactMap(\.secret))
             // A step's line may quote part of what it typed (typing that
             // stopped partway says what went in): hide the quotes in the
             // lines of steps whose text is hidden.
             let hiddenSteps = Set(s.steps.filter { $0.secret != nil }.compactMap(\.sub))
-            result = result.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
-                let l = String(line)
-                guard let dot = l.firstIndex(of: "."), let k = Int(l[..<dot]), hiddenSteps.contains(k) else { return l }
-                return RecordingText.hideQuoted(l)
-            }.joined(separator: "\n")
+            result = RecordingText.hideQuotedInSteps(result, hiddenSteps)
             for c in s.steps { c.secret = nil }
         }
         if s.sub == nil { s.secret = nil }
