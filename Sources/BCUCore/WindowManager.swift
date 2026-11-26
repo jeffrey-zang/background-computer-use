@@ -1720,7 +1720,10 @@ public final class WindowManager {
     /// with the agent's window key, then the new window goes to the user's
     /// screen and stays theirs.
     private func handOutSelectedTab(_ w: AgentWindow, tab: AXUIElement, sinceMs: Double) -> HandOut {
-        guard let item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window") else {
+        // Whether the browser has the item at all; whether it's enabled
+        // depends on the key window (another window of the browser with one
+        // tab disables it), so that's asked once the agent's window has key.
+        guard Self.menuItem(pid: w.pid, titled: "Move Tab to New Window", enabledOnly: false) != nil else {
             Log.info("tabs: another app opened a tab in the agent's \(w.appName) window \(w.id), and \(w.appName) has no Move Tab to New Window item; it stays")
             return .failed
         }
@@ -1758,6 +1761,14 @@ public final class WindowManager {
             scope.exit()
             Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, a step came first, or the window went to the user; left it")
             return .later
+        }
+        var item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window")
+        let itemBy = nowMs() + 300
+        while item == nil && nowMs() < itemBy { sleepMs(20); item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window") }
+        guard let item else {
+            scope.exit()
+            Log.info("tabs: Move Tab to New Window stayed disabled in \(w.appName) with the agent's window \(w.id) key; the tab stays")
+            return .failed
         }
         let tabTitle = AX.string(tab, "AXTitle") ?? ""
         let pressed = AX.perform(item.element, "AXPress")
@@ -1864,16 +1875,20 @@ public final class WindowManager {
     /// Mark a handout's late window the user's (`keep`) before the sweep
     /// judges new windows: otherwise it's taken for one the agent's step
     /// opened, caught, and closed with the agent's windows.
-    private func claimLateHandouts(_ onScreen: [WindowInfo]) {
+    /// Returns the windows that could be the late one but couldn't be read
+    /// this time: the sweep leaves them alone until a later look can tell.
+    private func claimLateHandouts(_ onScreen: [WindowInfo]) -> Set<CGWindowID> {
         Self.sharedLock.lock()
         Self.lateHandouts = Self.lateHandouts.filter { nowMs() < $0.value.untilMs }
         let late = Self.lateHandouts
         Self.sharedLock.unlock()
-        guard !late.isEmpty else { return }
+        var unread: Set<CGWindowID> = []
+        guard !late.isEmpty else { return unread }
         for info in onScreen where info.layer == 0 && late[info.pid] != nil && !Self.isKept(info.id) {
-            guard !late[info.pid]!.before.contains(info.id) else { continue }
+            guard !late[info.pid]!.before.contains(info.id), !Self.isRegistered(info.id) else { continue }
             let ax = AX.window(pid: info.pid, id: info.id)
-            let standard = ax.flatMap { AX.string($0, "AXSubrole") } == "AXStandardWindow"
+            guard let subrole = ax.flatMap({ AX.string($0, "AXSubrole") }) else { unread.insert(info.id); continue }
+            let standard = subrole == "AXStandardWindow"
             guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
                                      windowTitle: ax.flatMap { AX.string($0, "AXTitle") },
                                      stepSince: (focusGuard.lastActionMs(info.pid) ?? -.infinity) >= late[info.pid]!.untilMs - Self.lateHandoutMs,
@@ -1893,6 +1908,7 @@ public final class WindowManager {
                 Log.info("tabs: window \(id) of \(owner) came late from Move Tab to New Window; it's the user's\(placed ? ", on their screen" : " (couldn't move it to the user's screen)")")
             }
         }
+        return unread
     }
 
     /// The browser shows a moved tab's window where its last one was, then
@@ -1916,11 +1932,11 @@ public final class WindowManager {
     }
 
     /// The enabled menu bar item with this title, in any top-level menu.
-    static func menuItem(pid: pid_t, titled title: String) -> MenuItemRef? {
+    static func menuItem(pid: pid_t, titled title: String, enabledOnly: Bool = true) -> MenuItemRef? {
         guard let bar = AX.element(AX.app(pid), "AXMenuBar") else { return nil }
         for top in AX.children(bar) {
             for menu in AX.children(top) {
-                for item in AX.children(menu) where AX.string(item, "AXTitle") == title && AX.bool(item, "AXEnabled") != false {
+                for item in AX.children(menu) where AX.string(item, "AXTitle") == title && (!enabledOnly || AX.bool(item, "AXEnabled") != false) {
                     return MenuItemRef(element: item, title: title)
                 }
             }
@@ -1942,14 +1958,14 @@ public final class WindowManager {
 
         let onScreen = WindowList.all(onScreenOnly: true)
         // Before new windows are judged: a moved tab's late window is the user's.
-        claimLateHandouts(onScreen)
+        let unreadLate = claimLateHandouts(onScreen)
 
         // Reverse catch: apps place new windows next to their last window, so
         // after the agent used an app, a window the USER opens in it can land on
         // the agent display. A new, unregistered window there, from the app the
         // user is in, is theirs: move it to their screen.
         let front = BCUFrontProcessPID()
-        for info in onScreen where info.layer == 0 && agent[info.id] == nil && display.holds(info.bounds) {
+        for info in onScreen where info.layer == 0 && agent[info.id] == nil && display.holds(info.bounds) && !unreadLate.contains(info.id) {
             // Asked afresh, and in this order: `agent` is from the start of
             // this sweep, and an open that finished since has registered its
             // window before saying it's done. Reading the older copy and the
@@ -2018,7 +2034,7 @@ public final class WindowManager {
         // "Leave site?", a save or permission dialog) sits above ordinary
         // windows, comes up on the user's screen, and takes the app's key
         // window. Missed, it stays there, and every agent in the app is stuck.
-        for info in onScreen where info.layer >= 0 && info.layer <= 8 {
+        for info in onScreen where info.layer >= 0 && info.layer <= 8 && !unreadLate.contains(info.id) {
             if let w = agent[info.id] {
                 // `agent` is from the start of this sweep: asked afresh.
                 lock.lock(); let registeredNow = registry[info.id] != nil; lock.unlock()
