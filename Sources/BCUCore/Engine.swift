@@ -58,6 +58,9 @@ public final class Engine {
     private var endedRecording: Result<AgentRecording.Output, Error>?
     /// A recording being saved by stop_recording; shutdown waits for it.
     private let exporting = DispatchGroup()
+    /// The folder of the recording under way, which `Hub` routes a
+    /// subagent's stop_recording by.
+    var recordingDir: String? { stateLock.lock(); defer { stateLock.unlock() }; return _recording?.dir.path }
     var currentRecording: AgentRecording? { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
     /// Test support: a list of steps kept as a recording would, with no video.
     var testStepLog: StepLog?
@@ -233,6 +236,8 @@ public final class Engine {
     public func isDormant(idleMs: Double) -> Bool {
         guard !display.isRunning, windows.windows.isEmpty, !userInControl else { return false }
         stateLock.lock(); defer { stateLock.unlock() }
+        // A recording saved without stop_recording waits for the agent to collect it.
+        guard _recording == nil, endedRecording == nil else { return false }
         return _busy == nil && nowMs() - lastCallMs > idleMs
     }
 
@@ -646,7 +651,8 @@ public final class Engine {
             if let note = takeLeaveNotes() { result.text += note }
             if let note = takeUserNotes() { result.text += note }
             if tool != "status" && tool != "guard_report" {
-                log("\(tool) (\(Int(nowMs() - startMs)) ms): \(Self.summary(of: result))", error: result.isError)
+                let line = "\(tool) (\(Int(nowMs() - startMs)) ms): \(Self.summary(of: result))"
+                log(result.isError ? Self.loggable(line) : line, error: result.isError)
             }
             return result
         } catch {
@@ -656,10 +662,18 @@ public final class Engine {
                 text += "\n[focus guard] \(focusNote)"
             }
             if let note = takeUserNotes() { text += note }
-            log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
+            log(Self.loggable("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)"), error: true)
             recorder.captureFailure()
             return .error(text)
         }
+    }
+
+    /// A failure's line for History and the log: one about typing has its
+    /// quoted text taken out (typing that stops partway says what went in,
+    /// and it may have been a password).
+    static func loggable(_ line: String) -> String {
+        let typing = ["type_text", "set_value", "press_key"].contains { line.contains($0) }
+        return typing ? RecordingText.hideQuoted(line) : line
     }
 
     /// A call's line in the activity log: its first line, or for a failed
@@ -2205,7 +2219,7 @@ public final class Engine {
             } catch {
                 if let recStep { rec?.end(recStep, result: "\(error)", isError: true) }
                 // History gets the failed step too, flagged, and a frame of it.
-                recorder.note("\(tool) FAILED: \(error)", error: true)
+                recorder.note(Self.loggable("\(tool) FAILED: \(error)"), error: true)
                 recorder.captureFailure()
                 lines.append("\(i + 1). \(tool) FAILED: \(error)")
                 waitNotes = []

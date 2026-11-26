@@ -266,6 +266,18 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(RecordingText.caption(tool: "scroll", args: ["dy": Int.min], target: nil, hidden: false), "scroll up 9223372036854775808")
     }
 
+    func testTypingFailuresAreLoggedWithoutWhatWasTyped() {
+        XCTAssertEqual(Engine.loggable("type_text FAILED: Typed 4 of 7 characters (\"hunt\"), nothing after that."),
+                       "type_text FAILED: Typed 4 of 7 characters (\"(hidden)\"), nothing after that.")
+        XCTAssertEqual(Engine.loggable("click FAILED: no \"Save\" button"), "click FAILED: no \"Save\" button")
+    }
+
+    func testASubagentsStopFollowsOnlyItsOwnRecording() {
+        XCTAssertTrue(Hub.routeHolds(dir: "/r/a", current: "/r/a"))
+        XCTAssertFalse(Hub.routeHolds(dir: "/r/a", current: "/r/b"), "the owner stopped it and started another")
+        XCTAssertFalse(Hub.routeHolds(dir: "/r/a", current: nil))
+    }
+
     func testHugeNumbersInArgumentsDontCrashCaptions() {
         XCTAssertEqual(RecordingText.caption(tool: "click", args: ["x": 1e300, "y": 5], target: nil, hidden: false), "click at (1e+300, 5)")
         XCTAssertEqual(RecordingText.caption(tool: "wait", args: ["ms": Double.infinity], target: nil, hidden: false), "wait inf ms")

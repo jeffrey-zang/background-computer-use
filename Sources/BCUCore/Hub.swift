@@ -49,7 +49,8 @@ public final class Hub {
     /// A session whose `start_recording` named a window of another session
     /// (its parent's, or its subagent's) and so went to that session: its
     /// `stop_recording`, which names no window, goes there too.
-    private var recordingAt: [String: String] = [:]
+    /// With the recording's folder: a route only holds while that recording does.
+    private var recordingAt: [String: (owner: String, dir: String)] = [:]
     /// A session whose agent went away keeps its windows this long, in case
     /// the agent's connection comes back (its `bcu mcp` restarting).
     public static let orphanGraceMs: Double = 30_000
@@ -273,6 +274,10 @@ public final class Hub {
         return "\(base) \(n)"
     }
 
+    /// A subagent's stop_recording goes to the session that took its
+    /// start_recording only while that recording (`dir`) is still the one under way.
+    static func routeHolds(dir: String, current: String?) -> Bool { current == dir }
+
     /// A tool call from the socket. `_session` and `_client` say which
     /// session it's for; `_parent`, that it's a subagent's of that session.
     public func call(tool: String, args: JSONObject) -> ToolResult {
@@ -289,9 +294,12 @@ public final class Hub {
         var caller = engine(for: id, client: client, label: label, host: host)
         if tool == "stop_recording" {
             lock.lock()
-            let at = recordingAt.removeValue(forKey: id).flatMap { byID[$0] }
+            let route = recordingAt.removeValue(forKey: id)
+            let at = route.flatMap { byID[$0.owner] }
             lock.unlock()
-            if let at { return at.call(tool: tool, args: args) }
+            // Only to the recording it started: the owner may have stopped
+            // that one and started another since.
+            if let at, let route, Self.routeHolds(dir: route.dir, current: at.recordingDir) { return at.call(tool: tool, args: args) }
         }
         // An agent can hand a window to its subagent (or back): the call goes
         // to the session that owns the window, on that session's display.
@@ -299,8 +307,8 @@ public final class Hub {
             if let (ownerID, owner) = relative(of: id, owning: windowID) {
                 lock.lock(); usedBy[ownerID, default: []].insert(id); lock.unlock()
                 let result = owner.call(tool: tool, args: args)
-                if tool == "start_recording" && !result.isError {
-                    lock.lock(); recordingAt[id] = ownerID; lock.unlock()
+                if tool == "start_recording" && !result.isError, let dir = owner.recordingDir {
+                    lock.lock(); recordingAt[id] = (ownerID, dir); lock.unlock()
                 }
                 return result
             }
