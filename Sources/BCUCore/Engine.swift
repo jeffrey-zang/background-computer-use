@@ -1315,7 +1315,8 @@ public final class Engine {
                     shouldRetry: {
                         KeyScope.shouldRetryHandOff(appFront: BCUFrontProcessPID() == pid, swapping: false,
                                                     parked: fg.parkedKey(pid) != nil, key: AX.focusedWindowID(pid),
-                                                    agentKey: agentKey, userWindowExists: WindowList.info(user) != nil)
+                                                    agentKey: agentKey, userWindowExists: WindowList.info(user) != nil,
+                                                    userInControl: self.userInControl)
                     },
                     attempt: {
                         _ = KeyScope.postRecords(pid: pid, from: agentKey, to: user, settle: KeyScope.handOffSettles.last ?? 120)

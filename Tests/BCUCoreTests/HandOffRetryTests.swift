@@ -61,6 +61,13 @@ final class HandOffRetryTests: XCTestCase {
         XCTAssertFalse(KeyScope.shouldRetryHandOff(appFront: false, swapping: false, parked: false, key: 7, agentKey: 7, userWindowExists: false))
     }
 
+    /// The user took over an agent window from the preview: key stays on
+    /// it for their keystrokes, so queued tries do nothing (review of #90).
+    func testNoLaterTryWhileTheUserControlsAnAgentWindow() {
+        XCTAssertFalse(KeyScope.shouldRetryHandOff(appFront: false, swapping: false, parked: false, key: 7, agentKey: 7, userWindowExists: true,
+                                                   userInControl: true))
+    }
+
     // MARK: Later tries run as a swap (review of #90)
 
     /// The records of a later try are sent inside the guard's swap, so a
