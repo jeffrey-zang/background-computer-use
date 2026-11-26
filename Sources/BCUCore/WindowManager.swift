@@ -56,6 +56,10 @@ public final class WindowManager {
     private var releaseWhenAnswering: [CGWindowID: Bool] = [:]
     private var lastReleaseRetryMs = 0.0
     private var retryingReleases = false
+    /// Windows whose finish is queued on the engine's queue and hasn't run
+    /// yet: not probed or queued again until it has (a long call can hold
+    /// the queue for many sweeps).
+    private var finishing: Set<CGWindowID> = []
     private static let releaseRetryQueue = DispatchQueue(label: "bcu.release-retry", qos: .utility)
     /// What became of a deferred release that the agent has to hear about
     /// (the app answered with a dialog): given with its next call's result.
@@ -169,6 +173,9 @@ public final class WindowManager {
                 register(w)
                 if let keepOpen = pending { deferRelease(w.id, keepOpen: keepOpen) }
             }
+            // And what became of releases the agent still has to hear about.
+            let notes = other.takeReleaseNotes()
+            if !notes.isEmpty { lock.lock(); releaseNotes += notes; lock.unlock() }
             count = theirs.count
         }
         return count
@@ -184,6 +191,10 @@ public final class WindowManager {
         lock.lock(); releaseWhenAnswering[id] = keepOpen; lock.unlock()
         // Recorded, so a keep_open survives BCU quitting or crashing first.
         persist()
+    }
+
+    func noteRelease(_ note: String) {
+        lock.lock(); releaseNotes.append(note); lock.unlock()
     }
 
     /// What deferred releases came to that the agent has to act on, once.
@@ -1212,7 +1223,7 @@ public final class WindowManager {
             guard let self else { return }
             defer { self.lock.lock(); self.retryingReleases = false; self.lock.unlock() }
             for id in pending.keys {
-                guard let w = self.window(id), !w.handedOff else { continue }
+                guard let w = self.window(id), !w.handedOff, !self.isFinishing(id) else { continue }
                 let listed = WindowList.info(id) != nil
                 let reachable = listed && AX.window(pid: w.pid, id: id) != nil
                 switch Self.deferredReleaseStep(listed: listed, reachable: reachable, userInControl: self.userArranging) {
@@ -1221,10 +1232,20 @@ public final class WindowManager {
                     self.unregister(id)
                     Log.info("\(w.appName) window \(id), released while \(w.appName) wasn't answering, is gone")
                 case .finish:
-                    self.serialize { [weak self] in self?.finishDeferredRelease(id) }
+                    self.lock.lock(); self.finishing.insert(id); self.lock.unlock()
+                    self.serialize { [weak self] in
+                        guard let self else { return }
+                        defer { self.lock.lock(); self.finishing.remove(id); self.lock.unlock() }
+                        self.finishDeferredRelease(id)
+                    }
                 }
             }
         }
+    }
+
+    func isFinishing(_ id: CGWindowID) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return finishing.contains(id)
     }
 
     /// Whether the sweep may still finish a deferred release, checked again

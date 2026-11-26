@@ -147,4 +147,18 @@ final class DeferredReleaseTests: XCTestCase {
         XCTAssertEqual(order, ["finish", "takeover"])
         XCTAssertNotNil(b.window(id))
     }
+
+    /// A note the old session holds (a release that stopped at a dialog)
+    /// goes with its windows to the session that takes them over.
+    func testTakeOverCarriesReleaseNotes() {
+        let a = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-n-\(UUID().uuidString)")
+        let b = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-o-\(UUID().uuidString)")
+        let id: CGWindowID = 4_000_000_008
+        a.register(AgentWindow(id: id, pid: 1, appName: "TextEdit", bundleID: nil, kind: .opened))
+        defer { b.unregister(id) }
+        a.noteRelease("Window 8 didn't close")
+        _ = b.takeOver(from: a)
+        XCTAssertEqual(b.takeReleaseNotes(), ["Window 8 didn't close"])
+        XCTAssertEqual(a.takeReleaseNotes(), [])
+    }
 }
