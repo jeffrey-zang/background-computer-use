@@ -300,11 +300,13 @@ public final class AgentRecording {
             }
             var fields: [String: CGRect] = [:]
             lock.lock(); let fieldsBefore = self.fieldsBefore; lock.unlock()
+            let firstFields = steps.firstFieldFrames()
             for (key, el) in steps.coverFields() {
                 // Before and after the capture together: it may have scrolled meanwhile.
                 if let f = AX.frame(el), f.width > 0 {
                     let now = f.offsetBy(dx: -b.minX, dy: -b.minY)
-                    fields[key] = fieldsBefore[key].map { $0.union(now) } ?? now
+                    // Newly followed while it was taken: where it was typed into, too.
+                    fields[key] = (fieldsBefore[key] ?? firstFields[key]).map { $0.union(now) } ?? now
                 } else if let then = fieldsBefore[key] {
                     fields[key] = then
                 }

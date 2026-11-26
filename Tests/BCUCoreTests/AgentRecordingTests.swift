@@ -813,6 +813,10 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(st.result.contains("confidentia"), st.result)
     }
 
+    func testACutOffQuoteInABatchSummaryIsHidden() {
+        XCTAssertEqual(RecordingText.hideQuotedInSteps("1. set_value: Set element 3 to \"42", [1]), "1. set_value: Set element 3 to \"(hidden)")
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

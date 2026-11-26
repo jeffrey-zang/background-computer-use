@@ -319,7 +319,12 @@ public enum RecordingText {
             guard let k = stepNumber(lines[i]), steps.contains(k) else { i += 1; continue }
             var j = i + 1
             while j < lines.count, stepNumber(lines[j]) == nil, !lines[j].hasPrefix("Stopped"), !lines[j].isEmpty { j += 1 }
-            let part = hideQuoted(lines[i..<j].joined(separator: "\n")).split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let part = hideQuoted(lines[i..<j].joined(separator: "\n")).split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+                // A quote cut off (a batch keeps a result's first line): the rest of the line.
+                let l = String(line)
+                guard l.filter({ $0 == "\"" }).count % 2 == 1, let q = l.lastIndex(of: "\"") else { return l }
+                return String(l[..<q]) + "\"(hidden)"
+            }
             lines.replaceSubrange(i..<j, with: part)
             i += part.count
         }
@@ -635,6 +640,14 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         current?.cover = rect
         if let window { current?.coverWindow = window }
+    }
+
+    /// Where each followed password field was when it was typed into.
+    public func firstFieldFrames() -> [String: CGRect] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [String: CGRect] = [:]
+        for s in Self.flatten(steps) { if let f = s.target?.frame, f.width > 0 { out[s.number] = f } }
+        return out
     }
 
     /// Where each covered window was when its typing started (the first cover).
