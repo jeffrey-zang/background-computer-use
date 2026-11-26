@@ -1688,11 +1688,12 @@ public final class WindowManager {
                 }
                 switch handOutSelectedTab(w, tab: stray, sinceMs: before.ms) {
                 case .handedOut:
-                    // The tabs as they were before the handout, less the one
-                    // moved: a tab that came while it ran is still new next
-                    // time, not taken in as known.
+                    // The tabs known at the last look, less the one moved: a
+                    // tab that came while it ran, or came with the moved one
+                    // and wasn't judged (two links between looks), is still
+                    // new next time, not taken in as known.
                     let now = Self.tabs(of: ax) ?? tabs
-                    seen[w.id] = (Self.knownAfterHandout(before: tabs, after: now, moved: stray), readMs)
+                    seen[w.id] = (Self.knownAfterHandout(before: before.tabs, after: now, moved: stray), readMs)
                 case .later: seen[w.id] = before
                 case .failed: break
                 }
@@ -1893,6 +1894,12 @@ public final class WindowManager {
         return !pending.title.isEmpty && windowShowsTab(windowTitle: windowTitle, tabTitle: pending.title)
     }
 
+    /// A late window can be told only by its title (a step ran since the
+    /// handout) and the title couldn't be read.
+    static func lateHandoutNeedsTitle(stepSince: Bool, title: String?) -> Bool {
+        stepSince && title == nil
+    }
+
     /// Whether a browser window shows this tab: Chromium titles a window
     /// "<tab> - <browser>". A tab with no title matches any window.
     static func windowShowsTab(windowTitle: String?, tabTitle: String) -> Bool {
@@ -1944,9 +1951,18 @@ public final class WindowManager {
             let ax = AX.window(pid: info.pid, id: info.id)
             guard let subrole = ax.flatMap({ AX.string($0, "AXSubrole") }) else { unread.insert(info.id); continue }
             let standard = subrole == "AXStandardWindow"
+            let title = ax.flatMap { AX.string($0, "AXTitle") }
+            let stepSince = (focusGuard.lastActionMs(info.pid) ?? -.infinity) >= late[info.pid]!.untilMs - Self.lateHandoutMs
+            // Its title decides it and couldn't be read: left alone until a
+            // later look can tell, not attributed as the agent's meanwhile.
+            if Self.lateHandoutNeedsTitle(stepSince: stepSince, title: title),
+               Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
+                                  windowTitle: nil, stepSince: false, pending: late[info.pid], nowMs: nowMs()) {
+                unread.insert(info.id)
+                continue
+            }
             guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
-                                     windowTitle: ax.flatMap { AX.string($0, "AXTitle") },
-                                     stepSince: (focusGuard.lastActionMs(info.pid) ?? -.infinity) >= late[info.pid]!.untilMs - Self.lateHandoutMs,
+                                     windowTitle: title, stepSince: stepSince,
                                      pending: late[info.pid], nowMs: nowMs()) else { continue }
             // Taken once: the same pending handout (still there, the one
             // this sweep saw) can't also claim another window, in this

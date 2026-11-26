@@ -205,4 +205,19 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.showMenuMayHaveRun(.actionUnsupported))
         XCTAssertFalse(WindowManager.showMenuMayHaveRun(.invalidUIElement))
     }
+
+    /// Two links between looks, [agent, A, B] with B selected: B is moved,
+    /// and A, never judged, stays new for the next look.
+    func testATabThatCameWithTheMovedOneStaysNew() {
+        let known = WindowManager.knownAfterHandout(before: [1], after: [1, 2], moved: 3) { $0 == $1 }
+        XCTAssertEqual(known, [1])
+    }
+
+    /// A step ran since the handout, so the late window is told by its
+    /// title; an unreadable title waits for a later look.
+    func testALateWindowWithAnUnreadableTitleWaitsWhenTheTitleDecides() {
+        XCTAssertTrue(WindowManager.lateHandoutNeedsTitle(stepSince: true, title: nil))
+        XCTAssertFalse(WindowManager.lateHandoutNeedsTitle(stepSince: true, title: "X - Google Chrome"))
+        XCTAssertFalse(WindowManager.lateHandoutNeedsTitle(stepSince: false, title: nil))
+    }
 }
