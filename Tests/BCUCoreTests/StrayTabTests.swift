@@ -290,4 +290,13 @@ final class StrayTabTests: XCTestCase {
         XCTAssertTrue(WindowManager.claimLateHandout(pid: pid, untilMs: until, id: 990_302))
         XCTAssertFalse(WindowManager.handoutPending(from: 990_300))
     }
+
+    /// A late move's window that took key from the user's window gives it
+    /// back; otherwise key is left alone.
+    func testKeyAfterALateMove() {
+        XCTAssertEqual(WindowManager.keyAfterLateMove(userIn: true, userKey: 5, keyNow: 9, made: 9), 5)
+        XCTAssertNil(WindowManager.keyAfterLateMove(userIn: false, userKey: 5, keyNow: 9, made: 9))
+        XCTAssertNil(WindowManager.keyAfterLateMove(userIn: true, userKey: 5, keyNow: 5, made: 9))
+        XCTAssertNil(WindowManager.keyAfterLateMove(userIn: true, userKey: nil, keyNow: 9, made: 9))
+    }
 }

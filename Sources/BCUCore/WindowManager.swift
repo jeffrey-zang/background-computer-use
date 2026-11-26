@@ -1754,6 +1754,10 @@ public final class WindowManager {
     /// browser is in front with no window of the user's (another engine's
     /// front gate lets it through), is the fallback.
     private func handOutSelectedTab(_ w: AgentWindow, tab: AXUIElement, sinceMs: Double) -> HandOut {
+        // The tab's title tells its new window from others (a popup an
+        // earlier step asked for): unreadable for a moment, try again later
+        // rather than match any window.
+        guard let tabTitle = AX.string(tab, "AXTitle") else { return .later }
         // Not while a session is opening a window: its catcher would take
         // the new window for the one it asked for.
         guard Self.openLock.try() else { return .later }
@@ -1801,7 +1805,6 @@ public final class WindowManager {
             Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, a step came first, or the window went to the user; left it")
             return .later
         }
-        let tabTitle = AX.string(tab, "AXTitle") ?? ""
         var scope: KeyScope?
         var route = "the tab's menu"
         var pressed: AXError
@@ -1868,6 +1871,7 @@ public final class WindowManager {
             Self.sharedLock.lock()
             Self.lateHandouts[w.pid] = (before, nowMs() + Self.lateHandoutMs, tabTitle)
             Self.lateHandoutSource[w.pid] = w.id
+            Self.lateHandoutUserKey[w.pid] = userKey
             Self.sharedLock.unlock()
             Log.info("tabs: Move Tab to New Window made no window in \(w.appName) yet; the next new one is the user's")
             return .pending
@@ -1920,6 +1924,8 @@ public final class WindowManager {
     private static var lateHandouts: [pid_t: (before: Set<CGWindowID>, untilMs: Double, title: String)] = [:]
     /// The agent window each pending handout's tab came out of.
     private static var lateHandoutSource: [pid_t: CGWindowID] = [:]
+    /// The user's browser window when each pending handout began.
+    private static var lateHandoutUserKey: [pid_t: CGWindowID] = [:]
     /// Move presses in a row that failed, per agent window.
     private static var pressFailures: [CGWindowID: Int] = [:]
 
@@ -2005,15 +2011,24 @@ public final class WindowManager {
     /// the reservation is gone.
     static func claimLateHandout(pid: pid_t, untilMs: Double, id: CGWindowID) -> Bool {
         claimLock.lock(); defer { claimLock.unlock() }
-        guard !isRegistered(id), takeLateHandout(pid: pid, untilMs: untilMs) else { return false }
-        keep(id)
-        // The move has happened now: a read of the agent's window taken
-        // while it was pending (reads don't wait for the input lock) still
-        // showed the tab, so the agent's next step re-reads it first.
+        guard !isRegistered(id) else { return false }
+        // In one step under the lock `handoutPending` reads: the move has
+        // happened, so a read of the agent's window taken while it was
+        // pending (reads don't wait for the input lock) is marked stale
+        // before the reservation goes, never after.
         sharedLock.lock()
+        guard lateHandouts[pid]?.untilMs == untilMs else { sharedLock.unlock(); return false }
         if let source = lateHandoutSource.removeValue(forKey: pid) { tabMovedOut[source] = nowMs() }
+        lateHandouts[pid] = nil
         sharedLock.unlock()
+        keep(id)
         return true
+    }
+
+    /// The user's browser window recorded when a pending handout began.
+    static func takeLateUserKey(_ pid: pid_t) -> CGWindowID? {
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        return lateHandoutUserKey.removeValue(forKey: pid)
     }
 
     /// Register a window a sweep caught, unless it's been kept as the
@@ -2024,6 +2039,13 @@ public final class WindowManager {
         guard !Self.isKept(w.id) else { return false }
         register(w)
         return true
+    }
+
+    /// After a late move's window came: the user's window to give key back
+    /// to, when they're in the browser and the new window took key from it.
+    static func keyAfterLateMove(userIn: Bool, userKey: CGWindowID?, keyNow: CGWindowID?, made: CGWindowID) -> CGWindowID? {
+        guard userIn, let userKey, userKey != made, keyNow == made else { return nil }
+        return userKey
     }
 
     /// What keeps the automatic handout from starting now, if anything.
@@ -2078,11 +2100,24 @@ public final class WindowManager {
             // this sweep saw) can't also claim another window, in this
             // sweep or another session's.
             guard Self.claimLateHandout(pid: info.pid, untilMs: late[info.pid]!.untilMs, id: info.id) else { continue }
+            let userKey = Self.takeLateUserKey(info.pid)
             // Placed as an on-time handout's window is: the browser moves it
             // next to the agent's a moment after showing it.
             let (pid, id, owner) = (info.pid, info.id, info.owner)
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 guard let self else { return }
+                // Arriving late, it may take key from the window the user is
+                // typing in: back to theirs, with their keys held meanwhile.
+                if let back = Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: userKey, keyNow: AX.focusedWindowID(pid), made: id),
+                   WindowList.info(back) != nil {
+                    let appLock = Engine.inputLock(pid)
+                    appLock.lock()
+                    focusGuard.beginSwap(pid)
+                    _ = KeyScope.postRecords(pid: pid, from: id, to: back, settle: 5)
+                    KeyScope.awaitKey(pid: pid, target: back, budgetMs: 250)
+                    focusGuard.endSwap(pid)
+                    appLock.unlock()
+                }
                 let placed = settleOnUserScreen(pid: pid, id: id)
                 focusGuard.record("another app opened a tab in your agent's \(owner) window; it's in a window of yours now")
                 Log.info("tabs: window \(id) of \(owner) came late from Move Tab to New Window; it's the user's\(placed ? ", on their screen" : " (couldn't move it to the user's screen)")")
