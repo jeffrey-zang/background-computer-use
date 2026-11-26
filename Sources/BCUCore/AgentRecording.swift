@@ -282,6 +282,7 @@ public final class AgentRecording {
             let b = live.isEmpty ? display.bounds : live
             var covers: [CGWindowID: CGRect] = [:]
             lock.lock(); let coversBefore = self.coversBefore; lock.unlock()
+            let first = steps.firstCovers()
             for id in steps.coverWindows() {
                 // The recorded window itself: where this frame shows it (the
                 // same reading of its place as the mapping), not a later one.
@@ -290,7 +291,8 @@ public final class AgentRecording {
                 // together: it may have moved while the screenshot was taken.
                 if let wb = WindowList.info(id)?.bounds {
                     let now = wb.offsetBy(dx: -b.minX, dy: -b.minY)
-                    covers[id] = coversBefore[id].map { $0.union(now) } ?? now
+                    // Newly covered while it was taken: where the typing started, too.
+                    covers[id] = (coversBefore[id] ?? first[id]).map { $0.union(now) } ?? now
                 } else if let then = coversBefore[id] {
                     // Gone meanwhile: the frame may still show it where it was.
                     covers[id] = then

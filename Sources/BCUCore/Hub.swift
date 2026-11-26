@@ -301,7 +301,10 @@ public final class Hub {
             lock.unlock()
             if let route {
                 if Self.routeHolds(dir: route.dir, current: route.owner.recordingDir) {
-                    return .error("a recording you started is already under way (into \(route.dir)). Call stop_recording first.")
+                    // Listed there too, as a failed call.
+                    return route.owner.logCall(tool, args) {
+                        .error("a recording you started is already under way (into \(route.dir)). Call stop_recording first.")
+                    }
                 }
                 lock.lock(); recordingAt[id] = nil; lock.unlock()
             }
@@ -326,7 +329,9 @@ public final class Hub {
             if let (ownerID, owner) = relative(of: id, owning: windowID) {
                 // One recording at a time: not while the caller records on its own.
                 if tool == "start_recording", let mine = caller.recordingDir {
-                    return .error("a recording you started is already under way (into \(mine)). Call stop_recording first.")
+                    return caller.logCall(tool, args) {
+                        .error("a recording you started is already under way (into \(mine)). Call stop_recording first.")
+                    }
                 }
                 lock.lock(); usedBy[ownerID, default: []].insert(id); lock.unlock()
                 // Listed in the caller's own recording, if it's making one.

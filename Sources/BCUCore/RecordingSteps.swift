@@ -541,10 +541,10 @@ public final class StepLog {
         if foreignTyping {
             // Its later reads can show it too.
             if redactAll {
-                if !hidValues { hidValuesFrom = clock() }
+                hidValuesFrom = min(hidValuesFrom, clock())
                 hidValues = true
             } else {
-                if !hideFieldValues { hideFieldValuesFrom = clock() }
+                hideFieldValuesFrom = min(hideFieldValuesFrom, clock())
                 hideFieldValues = true
             }
         }
@@ -559,7 +559,7 @@ public final class StepLog {
         // the moment it starts: a status answered meanwhile can show it already.
         if redactAll, tool == "type_text" || tool == "set_value" || character {
             for v in original.values where RecordingText.redactsLater(v) { addHidden(RecordingText.forms(of: v)) }
-            if !hidValues { hidValuesFrom = clock() }
+            hidValuesFrom = min(hidValuesFrom, clock())
             hidValues = true
         }
         let window = (a["window_id"] as? NSNumber)?.uint32Value
@@ -635,6 +635,14 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         current?.cover = rect
         if let window { current?.coverWindow = window }
+    }
+
+    /// Where each covered window was when its typing started (the first cover).
+    public func firstCovers() -> [CGWindowID: CGRect] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [CGWindowID: CGRect] = [:]
+        for s in Self.flatten(steps) { if let w = s.coverWindow, let c = s.cover, out[w] == nil { out[w] = c } }
+        return out
     }
 
     /// Windows hidden typing went into, to follow in the video.
@@ -732,11 +740,11 @@ public final class StepLog {
             if let forms = runForms.removeValue(forKey: w) { addHidden(forms) }
         }
         if s.textHidden && !redactAll && (s.target?.secure == true || s.focusSecure) {
-            if !hideFieldValues { hideFieldValuesFrom = s.t }
+            hideFieldValuesFrom = min(hideFieldValuesFrom, s.t)
             hideFieldValues = true
         }
         if s.textHidden && redactAll {
-            if !hidValues { hidValuesFrom = s.t }
+            hidValuesFrom = min(hidValuesFrom, s.t)
             hidValues = true
         }
         s.original = [:]

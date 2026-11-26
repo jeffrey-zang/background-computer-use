@@ -796,6 +796,23 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(r.result.contains("42"), r.result)
     }
 
+    func testOverlappingHiddenWritesKeepTheEarliestStart() {
+        var now = 0.0
+        let log = StepLog(redactAll: false, clock: { now })
+        let w = log.begin(tool: "type_text", args: ["text": "confidential", "element": 5])
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: .zero, secure: true))
+        now = 10
+        let st = log.begin(tool: "status", args: [:], tracked: false)
+        log.end(st, result: "Your windows:\n  7: TextEdit [opened] \"confidentia\"", isError: false)
+        now = 20
+        let f = log.begin(tool: "type_text", args: ["text": "abc"], tracked: false, foreign: true)
+        log.end(f, result: "Typed.", isError: false)
+        now = 30
+        log.end(w, result: "Typed.", isError: false)
+        log.redactAgain()
+        XCTAssertFalse(st.result.contains("confidentia"), st.result)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))
