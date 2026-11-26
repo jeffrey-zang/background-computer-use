@@ -143,6 +143,15 @@ final class AudioClaims {
     /// `outputRunning` says whether the app's audio output is running at
     /// all: it stays running through a silent stretch of a video or call,
     /// and stops when the media is paused (or, in Chromium, its tab muted).
+    /// Whether the agent's sound has stopped since the toggle was named:
+    /// the app's output is quiet, or the toggle reads otherwise now.
+    /// Pressing it then would play the sound again.
+    static func stoppedSince(quiet: Bool, named: String?, now: String?) -> Bool {
+        if quiet { return true }
+        guard let named, let now else { return false }
+        return named != now
+    }
+
     /// How long a mute press waits for the app's input lock: past the
     /// longest a tab handout holds it.
     static let muteLockWaitMs = WindowManager.handoutHoldMaxMs + 500
@@ -156,17 +165,18 @@ final class AudioClaims {
         // sound again. Not when it's merely silent for a moment: a gap in a
         // video isn't a pause, and its sound would come back after it.
         let quietBefore = Set(hit.map(\.pid)).filter { !outputRunning($0) }
-        let flipped = hit.map { c in
-            quietBefore.contains(c.pid) || (c.mute.map { m in c.muteLook.map { $0 != Self.look(m) } ?? false } ?? false)
+        var flipped = hit.map { c in
+            Self.stoppedSince(quiet: quietBefore.contains(c.pid), named: c.muteLook, now: c.mute.map(Self.look))
         }
         // Not a button that's in another window now (a tab handed out to the
         // user since it was named): pressing it would act in theirs.
         // Under the app's input lock, which a tab handout holds while it
         // moves a tab, and not while one from that window is pending: the
         // check and the press can't straddle a move.
-        let pressed = zip(hit, flipped).map { c, flip in
-            c.mute.map { m -> AXError in
-                if flip { return .success }
+        let pressed = hit.indices.map { i -> AXError? in
+            let c = hit[i]
+            return c.mute.map { m -> AXError in
+                if flipped[i] { return .success }
                 let appLock = Engine.inputLock(c.pid)
                 // Waited out a handout in progress: the app stays muted on
                 // the speakers meanwhile, and giving it back unsilenced
@@ -174,6 +184,13 @@ final class AudioClaims {
                 guard appLock.lock(before: Date(timeIntervalSinceNow: Self.muteLockWaitMs / 1000)) else { return .cannotComplete }
                 defer { appLock.unlock() }
                 if WindowManager.handoutPending(from: c.window) || Self.movedAway(windowOf: m, from: c.window) { return .invalidUIElement }
+                // Looked at again after the wait: the sound may have stopped
+                // (the video ended) or the toggle turned, and pressing it
+                // now would play it.
+                if Self.stoppedSince(quiet: !outputRunning(c.pid), named: c.muteLook, now: Self.look(m)) {
+                    flipped[i] = true
+                    return .success
+                }
                 return AX.perform(m, "AXPress")
             }
         }

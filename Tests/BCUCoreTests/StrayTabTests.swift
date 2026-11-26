@@ -326,6 +326,15 @@ final class StrayTabTests: XCTestCase {
         XCTAssertGreaterThan(AudioClaims.muteLockWaitMs, WindowManager.handoutHoldMaxMs)
     }
 
+    /// After that wait the toggle is read again: a video that ended (quiet
+    /// output) or a pause button that turned to Play isn't pressed.
+    func testAMuteToggleThatTurnedIsNotPressed() {
+        XCTAssertFalse(AudioClaims.stoppedSince(quiet: false, named: "Pause", now: "Pause"))
+        XCTAssertTrue(AudioClaims.stoppedSince(quiet: false, named: "Pause", now: "Play"))
+        XCTAssertTrue(AudioClaims.stoppedSince(quiet: true, named: "Pause", now: "Pause"))
+        XCTAssertFalse(AudioClaims.stoppedSince(quiet: false, named: nil, now: "Play"))
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {
