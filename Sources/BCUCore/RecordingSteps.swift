@@ -208,17 +208,23 @@ public enum RecordingText {
     /// step whose text is hidden, which can quote part of it ("Typed 4 of 7
     /// characters ("hunt")").
     public static func hideQuoted(_ text: String) -> String {
-        var out = "", inQuote = false
-        for ch in text {
-            if ch == "\"" {
-                out.append(ch)
-                if !inQuote { out += "(hidden)" }
-                inQuote.toggle()
-            } else if !inQuote {
-                out.append(ch)
-            }
+        // From the first quote to the last on each line: what was typed can
+        // hold quotes itself, so the quotes don't say where it ends.
+        text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            guard let first = line.firstIndex(of: "\""), let last = line.lastIndex(of: "\""), first < last else { return String(line) }
+            return String(line[...first]) + "(hidden)" + String(line[last...])
+        }.joined(separator: "\n")
+    }
+
+    /// What of `secret` may be in the field after typing it failed: the
+    /// part the error says went in ("Typed 6 of 18 characters"), else every
+    /// start of it.
+    static func partsTyped(_ secret: String, result: String) -> [String] {
+        if let r = result.range(of: #"Typed (\d+) of \d+"#, options: .regularExpression),
+           let n = Int(result[r].split(separator: " ")[1]) {
+            return [String(secret.prefix(n))]
         }
-        return out
+        return (3..<max(3, secret.count)).map { String(secret.prefix($0)) }
     }
 
     /// The ways a window read can show `secret`: as typed, on one line, and
@@ -359,6 +365,14 @@ public final class StepLog {
                 s.secret = secret
                 s.textHidden = true
                 if RecordingText.redactsLater(secret) { hiddenTexts += RecordingText.forms(of: secret) }
+                // Typing that stopped partway left part of it in the field,
+                // which a later read shows.
+                if isError {
+                    for part in RecordingText.partsTyped(secret, result: result) where RecordingText.redactsLater(part) {
+                        hiddenTexts += RecordingText.forms(of: part)
+                    }
+                    hiddenTexts.sort { $0.count > $1.count }
+                }
             }
         }
         if s.tool == "batch" {

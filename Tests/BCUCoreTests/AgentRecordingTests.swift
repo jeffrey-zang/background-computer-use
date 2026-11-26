@@ -122,7 +122,10 @@ final class AgentRecordingTests: XCTestCase {
         log.end(b, result: "1. click: Clicked \"Log in\"\n2. type_text FAILED: Typed 2 of 6 characters (\"s3\")", isError: true)
         XCTAssertFalse(b.result.contains("\"s3\""), b.result)
         XCTAssertTrue(b.result.contains("\"Log in\""), "other steps' lines are left as they are")
-        XCTAssertEqual(RecordingText.hideQuoted("a \"x\" b \"y\""), "a \"(hidden)\" b \"(hidden)\"")
+        XCTAssertEqual(RecordingText.hideQuoted("a \"x\" b \"y\""), "a \"(hidden)\"")
+        // Typed text can hold quotes itself.
+        XCTAssertEqual(RecordingText.hideQuoted("Typed 7 of 10 characters (\"abc\"def\"), nothing after that."),
+                       "Typed 7 of 10 characters (\"(hidden)\"), nothing after that.")
     }
 
     /// A call answered off the session's queue (status, from another
@@ -295,6 +298,16 @@ final class AgentRecordingTests: XCTestCase {
         let r = log.begin(tool: "get_window_state", args: [:])
         log.end(r, result: "[3] TextArea value=\"\(secret.prefix(159))…\" @(0,0 10x10)", isError: false)
         XCTAssertFalse(r.result.contains("confidential-confidential"), r.result)
+    }
+
+    /// Typing that stopped partway left part of the text in the field: a later read doesn't show it.
+    func testPartlyTypedHiddenTextIsTakenOutOfLaterReads() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "confidential-notes", "element": 3])
+        log.end(t, result: "stopped typing: Typed 6 of 18 characters (\"confid\"), nothing after that.", isError: true)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[3] TextField value=\"confid\" @(0,0 10x10)", isError: false)
+        XCTAssertFalse(r.result.contains("confid"), r.result)
     }
 
     func testTypingFailuresAreLoggedWithoutWhatWasTyped() {
