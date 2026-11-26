@@ -58,8 +58,9 @@ public enum Input {
     /// anything is posted and again right before the button goes down.
     /// `origin`: the window's top left, for a window the window list
     /// doesn't give (a panel service's, drawn into a sheet).
+    /// `primer`: the off-screen press first, which Chromium needs (see below).
     public static func click(pid: pid_t, windowID: CGWindowID, at point: CGPoint, button: Button = .left, count: Int = 1,
-                             origin known: CGPoint? = nil, check: () throws -> Void = {}) throws {
+                             origin known: CGPoint? = nil, primer: Bool = true, check: () throws -> Void = {}) throws {
         try check()
         guard let src = source() else { throw ToolError("could not create an event source") }
         guard let origin = known ?? origin(of: windowID) else { throw ToolError("window \(windowID) is gone") }
@@ -76,11 +77,15 @@ public enum Input {
         // Without a move first, AppKit ignores a synthetic mouseDown on a background control.
         post(.mouseMoved, point, phase: 2, state: 0, btn: 0, mouseButton: .left)
         sleepMs(15)
-        // Off-screen primer pair: opens Chromium's user-activation gate; harmless elsewhere.
-        post(.leftMouseDown, offScreen, phase: 1, state: 1, btn: 0, mouseButton: .left)
-        sleepMs(1)
-        post(.leftMouseUp, offScreen, phase: 2, state: 1, btn: 0, mouseButton: .left)
-        sleepMs(100)
+        // Off-screen primer pair: opens Chromium's user-activation gate;
+        // harmless elsewhere, but its 100 ms is time the window holds key,
+        // which comes off the user's window when they're in the app.
+        if primer {
+            post(.leftMouseDown, offScreen, phase: 1, state: 1, btn: 0, mouseButton: .left)
+            sleepMs(1)
+            post(.leftMouseUp, offScreen, phase: 2, state: 1, btn: 0, mouseButton: .left)
+            sleepMs(100)
+        }
         try check()
         let pairs = max(1, min(count, 3))
         for i in 1...pairs {

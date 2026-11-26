@@ -151,7 +151,7 @@ Choose a menu bar item of the window's app, applied to your window, e.g. path ["
 
 ### navigate
 
-Load a URL in your browser window (Chromium browsers: Helium, Chrome, Brave, Edge…). No keystrokes: with the user in another app it only waits while they hold a mouse button or key or have a menu open. With the user in that same browser it waits for a pause in their input, as a key step does. Prefer it to clicking the address bar and typing.
+Load a URL in your browser window (Chromium browsers: Helium, Chrome, Brave, Edge…, and Safari). No keystrokes: in a Chromium browser, with the user in another app it only waits while they hold a mouse button or key or have a menu open, and with the user in that same browser it waits for a pause in their input, as a key step does. In Safari the URL goes into your window's address field through accessibility and never takes key focus, so it doesn't wait for the user even when they're in Safari. Prefer it to clicking the address bar and typing.
 
 - `url` (string, required): The URL to load.
 - `window_id` (integer, required): Your window.

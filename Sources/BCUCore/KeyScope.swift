@@ -25,6 +25,8 @@ public final class KeyScope {
     private let wasInactive: Bool
     private var exited = false
     private var confirmed = true
+    /// Built on Chromium, which needs more time between records (`giveBackSettleMs`).
+    private let chromium: Bool
 
     private static let settleMs: Double = 120
     /// The gap between the records of the first try at giving key back.
@@ -34,8 +36,20 @@ public final class KeyScope {
     /// a second later, while the user's keys waited), and took every set
     /// sent 40 ms apart.
     static let giveBackSettleMs: Double = 40
+    /// The same gap for an app that isn't built on Chromium. AppKit apps
+    /// (Safari among them) take records 5 ms apart, as they do when key is
+    /// taken (`enter`): measured with the user in Safari on macOS 26.1, the
+    /// 40 ms gaps were 80 of the 130 ms the user's window was without key
+    /// on the way back, for nothing.
+    static let quickSettleMs: Double = 5
+
+    /// The gap between records for the first try at giving key back in an app.
+    static func giveBackSettle(chromium: Bool) -> Double {
+        chromium ? giveBackSettleMs : quickSettleMs
+    }
 
     private init(pid: pid_t, target: CGWindowID, keyWindow: CGWindowID, previous: CGWindowID?, primed: Prime, wasInactive: Bool) {
+        self.chromium = AppKind.isChromium(pid: pid)
         self.pid = pid
         self.target = target
         self.keyWindow = keyWindow
@@ -50,7 +64,6 @@ public final class KeyScope {
     /// trusting a stale "already key" would send the keys to the user's window.
     public static func enter(pid: pid_t, window target: CGWindowID, giveBackTo user: CGWindowID? = nil) throws -> KeyScope {
         let current = AX.focusedWindowID(pid)
-        let previous = user ?? current
         // AXFocusedWindow keeps naming the last key window after the app goes
         // inactive, when AppKit has no key window at all and keys sent to the
         // app land nowhere (and make it beep). AXFrontmost is AppKit's own
@@ -62,6 +75,8 @@ public final class KeyScope {
         let sheetAX = targetAX.flatMap(AX.sheet(of:))
         let sheet = sheetAX.flatMap(AX.windowID).flatMap { $0 != target ? $0 : nil }
         let key = sheet ?? target
+        let previous = giveBackWindow(user: user, current: current, active: active, ours: [target, key],
+                                      onAgentDisplay: FocusGuard.onAgentDisplay)
         // The window to take key from: the one that has it, or the user's if
         // accessibility says ours has it already.
         let from = current == key ? user : current
@@ -146,15 +161,28 @@ public final class KeyScope {
             if BCUFrontProcessPID() != pid { _ = BCUPostFocusRecord(pid, held, false) }
             return true
         }
-        for settle in [Self.giveBackSettleMs, Self.settleMs] {
+        let ours: Set<CGWindowID> = [held, target, keyWindow]
+        for settle in [Self.giveBackSettle(chromium: chromium), Self.settleMs] {
             switch primed {
             case .records:
                 _ = KeyScope.postRecords(pid: pid, from: held, to: previous, settle: settle)
             case .axFocus:
                 if let w = AX.window(pid: pid, id: previous) { AX.set(AX.app(pid), "AXFocusedWindow", w) }
             }
-            KeyScope.awaitKey(pid: pid, target: previous, budgetMs: settle < 50 ? 250 : 400)
-            if AX.focusedWindowID(pid) == previous { return true }
+            switch KeyScope.awaitKeyBack(pid: pid, previous: previous, ours: ours, budgetMs: settle < 50 ? 250 : 400) {
+            case .back:
+                return true
+            case .elsewhere(let other):
+                // The app put key on another of the user's windows and kept
+                // it there: key is off the agent's window, which is what
+                // the user's held input waits for. Sending the records again
+                // would only pull key away from where the app put it, and
+                // waited up to 1.5 s for that.
+                Log.info("keyscope: key went back to window \(other) in pid \(pid), not \(previous), after \(Int(nowMs() - t0)) ms; left it there")
+                return true
+            case .ours:
+                continue
+            }
         }
         confirmed = false
         Log.info("keyscope: could not confirm key back on window \(previous) in pid \(pid) after \(Int(nowMs() - t0)) ms (key is \(AX.focusedWindowID(pid).map(String.init) ?? "none"))")
@@ -214,6 +242,66 @@ public final class KeyScope {
         while AX.focusedElementWindowID(pid) != nil && nowMs() < deadline {
             sleepMs(2)
         }
+    }
+
+    /// Where key is while it's being given back.
+    enum KeyBack: Equatable {
+        /// On the window it came from.
+        case back
+        /// On another window that isn't the agent's and isn't on an agent
+        /// display (another of the user's), and it stayed there.
+        case elsewhere(CGWindowID)
+        /// Still on the agent's window, or on none (not handled yet).
+        case ours
+    }
+
+    /// How long key has to stay on another of the user's windows before
+    /// giving back takes that as where the app wants it. The defocus record
+    /// alone can pass key there for a moment, before the focus record for
+    /// the window it came from lands.
+    static let elsewhereSettleMs: Double = 60
+
+    static func keyBack(key: CGWindowID?, previous: CGWindowID, ours: Set<CGWindowID>, onAgentDisplay: (CGWindowID) -> Bool) -> KeyBack {
+        guard let key else { return .ours }
+        if key == previous { return .back }
+        if ours.contains(key) || onAgentDisplay(key) { return .ours }
+        return .elsewhere(key)
+    }
+
+    /// Wait up to `budgetMs` for key to come back to `previous`, or to
+    /// settle on another of the user's windows for `elsewhereSettleMs`.
+    static func awaitKeyBack(pid: pid_t, previous: CGWindowID, ours: Set<CGWindowID>, budgetMs: Double) -> KeyBack {
+        let deadline = nowMs() + budgetMs
+        var elsewhereSince: (window: CGWindowID, at: Double)?
+        while true {
+            let state = keyBack(key: AX.focusedWindowID(pid), previous: previous, ours: ours, onAgentDisplay: FocusGuard.onAgentDisplay)
+            switch state {
+            case .back:
+                return .back
+            case .elsewhere(let w):
+                if elsewhereSince?.window != w { elsewhereSince = (w, nowMs()) }
+                if nowMs() - elsewhereSince!.at >= elsewhereSettleMs { return state }
+            case .ours:
+                elsewhereSince = nil
+            }
+            if nowMs() >= deadline { return elsewhereSince == nil ? .ours : state }
+            sleepMs(2)
+        }
+    }
+
+    /// Where key goes back to after the step. The window that has key now,
+    /// when it's one of the user's in an app that's active (AppKit's own
+    /// idea of the key window, so not stale), else `user` if given, else
+    /// whatever has it. `user` comes from earlier (the cover a batch keeps
+    /// up across its steps, or the guard's guess at the user's window), and
+    /// the user may have moved to another of the app's windows since:
+    /// handing key back to the one they left puts it behind the one they're
+    /// looking at, or the app refuses and the user's input waited out every
+    /// try (1.5 s) before going on.
+    static func giveBackWindow(user: CGWindowID?, current: CGWindowID?, active: Bool, ours: Set<CGWindowID>,
+                               onAgentDisplay: (CGWindowID) -> Bool) -> CGWindowID? {
+        if active, let current, !ours.contains(current), !onAgentDisplay(current) { return current }
+        return user ?? current
     }
 
     static func awaitKey(pid: pid_t, target: CGWindowID, budgetMs: Double) {

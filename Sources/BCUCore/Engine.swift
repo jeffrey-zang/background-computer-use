@@ -1236,7 +1236,10 @@ public final class Engine {
         let result = try body(check, scope.keyWindow)
         // Let focus moves (Tab, a click) land before noting the focused field.
         sleepMs(30)
-        rememberFocusedText(in: w)
+        // With the user in the app this is their window's time without key:
+        // an app busy with the step (Safari opening a tab) answered in up
+        // to 170 ms. Then don't wait for it.
+        rememberFocusedText(in: w, timeout: shared ? Self.sharedFocusReadTimeout : nil)
         return result
     }
 
@@ -1595,7 +1598,10 @@ public final class Engine {
             }
             return
         }
-        try keyed(w, cause: "clicking") { check, key in try Input.click(pid: w.pid, windowID: Self.clickTarget(w.id, key: key, at: p), at: p, button: button, count: count, check: check) }
+        let primer = AppKind.isChromium(pid: w.pid)
+        try keyed(w, cause: "clicking") { check, key in
+            try Input.click(pid: w.pid, windowID: Self.clickTarget(w.id, key: key, at: p), at: p, button: button, count: count, primer: primer, check: check)
+        }
     }
 
     private func globalPoint(_ args: Args, window ax: AXUIElement, of w: AgentWindow) throws -> CGPoint {
@@ -2459,9 +2465,23 @@ public final class Engine {
 
     /// Note the window's focused text element, its selection and value,
     /// while the window is key. Something else focused: forget the field.
-    private func rememberFocusedText(in w: AgentWindow) {
-        guard let el = AX.element(AX.app(w.pid), "AXFocusedUIElement"),
-              let win = AX.element(el, "AXWindow"), AX.windowID(win) == w.id else { return }
+    /// How long the read after a step may take while the user is in the app.
+    static let sharedFocusReadTimeout: Float = 0.05
+
+    /// `timeout`: give up on the read after this long (seconds), forgetting
+    /// what was noted before: focus may have moved meanwhile.
+    private func rememberFocusedText(in w: AgentWindow, timeout: Float? = nil) {
+        let app = AX.app(w.pid)
+        if let timeout { AXUIElementSetMessagingTimeout(app, timeout) }
+        var value: AnyObject?
+        let err = AXUIElementCopyAttributeValue(app, "AXFocusedUIElement" as CFString, &value)
+        if err == .cannotComplete && timeout != nil {
+            focusedText[w.id] = nil
+            return
+        }
+        guard err == .success, let v = value, CFGetTypeID(v) == AXUIElementGetTypeID() else { return }
+        let el = unsafeBitCast(v, to: AXUIElement.self)
+        guard let win = AX.element(el, "AXWindow"), AX.windowID(win) == w.id else { return }
         guard Self.textRoles.contains(AX.string(el, "AXRole") ?? "") else { focusedText[w.id] = nil; return }
         focusedText[w.id] = TextFocus(element: el, range: AX.range(el, "AXSelectedTextRange"), value: AX.string(el, "AXValue") ?? "")
     }
@@ -2793,6 +2813,9 @@ public final class Engine {
         guard let url = BrowserAutomation.loadableURL(given) else {
             throw ToolError("\"\(given)\" isn't a URL. Give a full one, like https://example.com. navigate doesn't search: to search, load the search page's URL with the query in it.")
         }
+        if AppKind.isSafari(bundleID: NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier) {
+            return try navigateSafari(w, url: url)
+        }
         guard let app = NSRunningApplication(processIdentifier: w.pid), let bundleURL = app.bundleURL, let bundleID = app.bundleIdentifier,
               BrowserAutomation.isScriptableChromium(bundleURL) else {
             throw ToolError("navigate works in Chromium browsers only. In \(w.appName), click the address bar, type_text the URL and \"\\n\".")
@@ -2896,6 +2919,112 @@ public final class Engine {
         }
         let state = loading == false ? "Loaded" : "Loading"
         return ToolResult(text: "\(state) \(url) in window \(w.id). Next: get_window_state window_id=\(w.id) (it waits for the page to settle).")
+    }
+
+    /// Load a URL in one of the agent's Safari windows through
+    /// accessibility, with no key focus and no keystrokes: the URL is set
+    /// as the value of the window's address field ("smart search field")
+    /// and confirmed there (AXConfirm), as Return would. Nothing goes
+    /// through the keyboard, so the user's window keeps key even when
+    /// they're in Safari, and there's no pause of theirs to wait for.
+    /// Before, navigate refused Safari, and every page load there was a
+    /// key swap (cmd+L, typing, Return), each taking key from the user's
+    /// window when they were in Safari (#87).
+    private func navigateSafari(_ w: AgentWindow, url: String) throws -> ToolResult {
+        guard let ax = AX.window(pid: w.pid, id: w.id) else { throw ToolError("window \(w.id) is gone") }
+        guard let field = Self.safariAddressField(in: ax) else {
+            throw ToolError("couldn't find \(w.appName)'s address field in window \(w.id) (its toolbar may be hidden). Click the address bar, type_text the URL and \"\\n\".")
+        }
+        let before = Self.webArea(in: ax).flatMap(Self.webAreaURL)
+        let sent = try guarded(w, cause: "loading a URL") { () -> Bool in
+            guard AX.set(field, "AXValue", url as CFString) == .success else { return false }
+            return AX.perform(field, "AXConfirm") == .success
+        }
+        guard sent else {
+            throw ToolError("\(w.appName)'s address field didn't take the URL. Click the address bar, type_text the URL and \"\\n\".")
+        }
+        // The window's tree is the old page's until the new one takes its
+        // place: wait until the page is another one and done loading, 3 s
+        // at most (as for Chromium), so a read just after finds the new one.
+        focusGuard.beginAction(pid: w.pid, cause: "loading a URL")
+        defer { focusGuard.endAction(pid: w.pid) }
+        let since = nowMs()
+        var now: String?
+        var done = false
+        while nowMs() - since < 3000 {
+            sleepMs(40)
+            let web = Self.webArea(in: ax)
+            now = web.flatMap(Self.webAreaURL)
+            if Self.safariLoaded(before: before, now: now, wanted: url, loading: web.flatMap { AX.bool($0, "AXLoaded") }.map { !$0 }) {
+                done = true
+                break
+            }
+        }
+        let state = done ? "Loaded" : "Loading"
+        return ToolResult(text: "\(state) \(url) in window \(w.id) (through its address field: no keystrokes). Next: get_window_state window_id=\(w.id) (it waits for the page to settle).")
+    }
+
+    /// Safari's address field: a text field outside the page, which Safari
+    /// names "smart search field" (its identifier is
+    /// WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD).
+    static func isSafariAddressField(role: String?, identifier: String?, description: String?) -> Bool {
+        guard role == "AXTextField" || role == "AXComboBox" || role == "AXSearchField" else { return false }
+        if identifier == "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD" { return true }
+        return (description ?? "").lowercased().contains("smart search field")
+    }
+
+    private static func safariAddressField(in window: AXUIElement) -> AXUIElement? {
+        var found: AXUIElement?
+        func walk(_ el: AXUIElement, depth: Int) {
+            guard found == nil, depth < 10 else { return }
+            for c in AX.children(el) where found == nil {
+                let role = AX.string(c, "AXRole")
+                // Never into the page: a site's own search field isn't it.
+                if role == "AXWebArea" || role == "AXScrollArea" && AX.children(c).contains(where: { AX.string($0, "AXRole") == "AXWebArea" }) { continue }
+                if isSafariAddressField(role: role, identifier: AX.string(c, "AXIdentifier"), description: AX.string(c, "AXDescription")) {
+                    found = c
+                    return
+                }
+                walk(c, depth: depth + 1)
+            }
+        }
+        walk(window, depth: 0)
+        return found
+    }
+
+    private static func webArea(in window: AXUIElement) -> AXUIElement? {
+        var found: AXUIElement?
+        func walk(_ el: AXUIElement, depth: Int) {
+            guard found == nil, depth < 8 else { return }
+            for c in AX.children(el) where found == nil {
+                if AX.string(c, "AXRole") == "AXWebArea" { found = c; return }
+                walk(c, depth: depth + 1)
+            }
+        }
+        walk(window, depth: 0)
+        return found
+    }
+
+    private static func webAreaURL(_ web: AXUIElement) -> String? {
+        guard let v = AX.attr(web, "AXURL") else { return nil }
+        if let u = v as? URL { return u.absoluteString }
+        if let u = v as? NSURL { return u.absoluteString }
+        return v as? String
+    }
+
+    /// Whether the page Safari shows is the one asked for (or at least a
+    /// new one: a redirect, or Safari's own form of the URL) and is done
+    /// loading. `loading`: what the page says, if it says.
+    static func safariLoaded(before: String?, now: String?, wanted: String, loading: Bool?) -> Bool {
+        guard let now, !now.isEmpty else { return false }
+        if loading == true { return false }
+        func bare(_ s: String) -> String {
+            var t = s.lowercased()
+            while t.hasSuffix("/") { t.removeLast() }
+            return t.replacingOccurrences(of: "file:///private/", with: "file:///")
+        }
+        if bare(now) == bare(wanted) { return true }
+        return now != before
     }
 
     /// The browser's own id for an agent's window, proven instead of
