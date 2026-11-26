@@ -1697,6 +1697,11 @@ public final class WindowManager {
                     seen[w.id] = (Self.knownAfterHandout(before: before.tabs, after: now, moved: stray), readMs)
                 case .later: seen[w.id] = before
                 case .failed: break
+                case .pending:
+                    // The move may still happen: as after a handout, a tab
+                    // that came with the moved one (two links between looks)
+                    // stays new for the next look, not taken in as known.
+                    seen[w.id] = (Self.knownAfterHandout(before: before.tabs, after: tabs, moved: stray), readMs)
                 }
             }
             lock.lock()
@@ -1707,7 +1712,8 @@ public final class WindowManager {
         }
     }
 
-    enum HandOut { case handedOut, later, failed }
+    /// `pending`: the move was asked for and its window hasn't come yet.
+    enum HandOut { case handedOut, later, failed, pending }
 
     /// The baseline after a handout: tabs seen before it that are still
     /// there, not the moved one, and nothing that arrived meanwhile.
@@ -1849,9 +1855,12 @@ public final class WindowManager {
             // It may still come: whichever new standard window the browser
             // shows next is the user's tab, not a window the agent's step
             // opened (see `claimLateHandouts`).
-            Self.sharedLock.lock(); Self.lateHandouts[w.pid] = (before, nowMs() + Self.lateHandoutMs, tabTitle); Self.sharedLock.unlock()
+            Self.sharedLock.lock()
+            Self.lateHandouts[w.pid] = (before, nowMs() + Self.lateHandoutMs, tabTitle)
+            Self.lateHandoutSource[w.pid] = w.id
+            Self.sharedLock.unlock()
             Log.info("tabs: Move Tab to New Window made no window in \(w.appName) yet; the next new one is the user's")
-            return .failed
+            return .pending
         }
         // The user's from now on: never caught as the agent's, never closed with its windows.
         Self.keep(made)
@@ -1887,6 +1896,8 @@ public final class WindowManager {
     /// stopped waiting: the app's windows before it, and until when a new
     /// standard window of the app is taken for it.
     private static var lateHandouts: [pid_t: (before: Set<CGWindowID>, untilMs: Double, title: String)] = [:]
+    /// The agent window each pending handout's tab came out of.
+    private static var lateHandoutSource: [pid_t: CGWindowID] = [:]
     static let lateHandoutMs = 10_000.0
 
     /// Whether a window is the late one a handout made: new since the
@@ -1932,8 +1943,8 @@ public final class WindowManager {
         return lateHandouts[pid]?.untilMs
     }
 
-    static func setLateHandoutForTesting(pid: pid_t, before: Set<CGWindowID>, untilMs: Double, title: String = "T") {
-        sharedLock.lock(); lateHandouts[pid] = (before, untilMs, title); sharedLock.unlock()
+    static func setLateHandoutForTesting(pid: pid_t, before: Set<CGWindowID>, untilMs: Double, title: String = "T", source: CGWindowID? = nil) {
+        sharedLock.lock(); lateHandouts[pid] = (before, untilMs, title); lateHandoutSource[pid] = source; sharedLock.unlock()
     }
 
     /// Taking a late handout's window for the user and catching a window as
@@ -1949,6 +1960,12 @@ public final class WindowManager {
         claimLock.lock(); defer { claimLock.unlock() }
         guard !isRegistered(id), takeLateHandout(pid: pid, untilMs: untilMs) else { return false }
         keep(id)
+        // The move has happened now: a read of the agent's window taken
+        // while it was pending (reads don't wait for the input lock) still
+        // showed the tab, so the agent's next step re-reads it first.
+        sharedLock.lock()
+        if let source = lateHandoutSource.removeValue(forKey: pid) { tabMovedOut[source] = nowMs() }
+        sharedLock.unlock()
         return true
     }
 

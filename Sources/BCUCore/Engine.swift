@@ -1741,6 +1741,9 @@ public final class Engine {
         }
         var mute: AXNode?
         if args.int("mute_element") != nil {
+            // Its number may be a tab's that was moved to the user since the
+            // last read (its button would be pressed in their window).
+            try checkReadAfterHandout(w)
             var muteArgs = args.raw
             muteArgs["element"] = muteArgs["mute_element"]
             let n = try node(Args(muteArgs), window: w)

@@ -155,7 +155,11 @@ final class AudioClaims {
         let flipped = hit.map { c in
             quietBefore.contains(c.pid) || (c.mute.map { m in c.muteLook.map { $0 != Self.look(m) } ?? false } ?? false)
         }
-        let pressed = zip(hit, flipped).map { c, flip in c.mute.map { flip ? AXError.success : AX.perform($0, "AXPress") } }
+        // Not a button that's in another window now (a tab handed out to the
+        // user since it was named): pressing it would act in theirs.
+        let pressed = zip(hit, flipped).map { c, flip in
+            c.mute.map { m in flip ? AXError.success : Self.movedAway(windowOf: m, from: c.window) ? AXError.invalidUIElement : AX.perform(m, "AXPress") }
+        }
         let pids = Set(hit.map(\.pid))
         let deadline = nowMs() + settleMs
         var loud = pids.filter(playing)
@@ -188,6 +192,17 @@ final class AudioClaims {
     /// How to play sound in the app again. Pausing first: a muted tab whose
     /// media still plays counts as sound (Safari), and the claim is refused.
     static let again = "To play sound in it again, pause yours, call capture_audio, then unmute and play."
+
+    /// Whether the element now sits in a window other than `window` (read
+    /// from its AXWindow; unreadable counts as still there).
+    static func movedAway(windowOf element: AXUIElement, from window: CGWindowID) -> Bool {
+        movedAway(now: AX.element(element, "AXWindow").flatMap(AX.windowID), from: window)
+    }
+
+    static func movedAway(now: CGWindowID?, from window: CGWindowID) -> Bool {
+        guard let now else { return false }
+        return now != window
+    }
 
     func clear() {
         lock.lock(); claims = [:]; releasing = [:]; lock.unlock()

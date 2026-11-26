@@ -242,4 +242,23 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.claimLateHandout(pid: pid, untilMs: until, id: 990_102))
         XCTAssertFalse(WindowManager.isKept(990_102))
     }
+
+    /// A move whose window came late: claiming it marks the agent's window
+    /// as changed then, so a read taken while it was pending isn't fresh.
+    func testALateMoveMarksTheSourceWindowWhenItLands() {
+        let pid: pid_t = 99_102
+        let until = nowMs() + 5000
+        WindowManager.setLateHandoutForTesting(pid: pid, before: [], untilMs: until, source: 990_200)
+        let readWhilePending = nowMs()
+        XCTAssertTrue(WindowManager.claimLateHandout(pid: pid, untilMs: until, id: 990_201))
+        XCTAssertTrue(Engine.staleAfterTabMovedOut(movedMs: WindowManager.tabMovedOutMs(990_200), readMs: readWhilePending))
+    }
+
+    /// A mute button named before a handout isn't pressed once it's in
+    /// another window (the user's).
+    func testAMuteButtonInAnotherWindowIsNotPressed() {
+        XCTAssertTrue(AudioClaims.movedAway(now: 12, from: 11))
+        XCTAssertFalse(AudioClaims.movedAway(now: 11, from: 11))
+        XCTAssertFalse(AudioClaims.movedAway(now: nil, from: 11))
+    }
 }
