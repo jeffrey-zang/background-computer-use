@@ -179,6 +179,7 @@ public final class FocusGuard {
     private var screenLook: [CGWindowID: String]?
     /// The same look's windows in order, top first, for what a click landed in.
     private var screenOrder: [ScreenWindow]?
+    private var screenOrderMs = -Double.infinity
     struct ScreenWindow {
         let pid: pid_t
         let bounds: CGRect
@@ -720,10 +721,17 @@ public final class FocusGuard {
     }
 
     /// The app a click at `p` is surely in, for the gate: the owner of the
-    /// topmost ordinary window there, now (`ClickTarget.gateOwner`).
-    static func gateOwner(at p: CGPoint) -> pid_t? {
-        ClickTarget.gateOwner(screenWindows(WindowList.all(onScreenOnly: true).filter { $0.bounds.contains(p) })
-            .map { ($0.pid, $0.dock, $0.layer, $0.coversDisplay) })
+    /// topmost ordinary window there in the last look at the user's screens
+    /// (`ClickTarget.gateOwner`). nil without a look from the last 400 ms.
+    private func lookedOwner(at p: CGPoint) -> pid_t? {
+        lock.lock()
+        let order = nowMs() - screenOrderMs < 400 ? screenOrder : nil
+        lock.unlock()
+        return order.flatMap { Self.owner(in: $0, at: p) }
+    }
+
+    static func owner(in order: [ScreenWindow], at p: CGPoint) -> pid_t? {
+        ClickTarget.gateOwner(order.filter { $0.bounds.contains(p) }.map { ($0.pid, $0.dock, $0.layer, $0.coversDisplay) })
     }
 
     /// A click the gate kept the apps an agent is acting on back for (it was
@@ -733,8 +741,8 @@ public final class FocusGuard {
     private func lookLateForKept(at p: CGPoint) {
         let acting = gate.acting
         guard !acting.isEmpty else { return }
+        guard let on = lookedOwner(at: p) else { return }
         DispatchQueue.global(qos: .userInitiated).async {
-            guard let on = Self.gateOwner(at: p) else { return }
             self.lock.lock(); let c = self.lastClick; self.lock.unlock()
             guard c.point == p else { return }
             for pid in acting where pid != on && pid != self.userFront { self.lookLate(at: pid, click: c, putBackMs: c.ms) }
@@ -1597,7 +1605,9 @@ public final class FocusGuard {
         switch type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             // Where it went matters only while an agent is acting on an app.
-            let on = gate.acting.isEmpty ? nil : Self.gateOwner(at: event.location)
+            // From the last look at the screen (every 250 ms): asking the
+            // window server here could hold up every event on the Mac.
+            let on = gate.acting.isEmpty ? nil : lookedOwner(at: event.location)
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             gate.pointer(down: false, ms: Self.clickLiftMs)
@@ -1923,9 +1933,7 @@ public final class FocusGuard {
         let ms = nowMs()
         lock.lock()
         let look = screenLook
-        let wasIn = screenOrder.flatMap { order in
-            ClickTarget.gateOwner(order.filter { $0.bounds.contains(p) }.map { ($0.pid, $0.dock, $0.layer, $0.coversDisplay) })
-        }
+        let wasIn = screenOrder.flatMap { Self.owner(in: $0, at: p) }
         lastClick = Click(ms: ms, point: p, windows: look, wasIn: wasIn)
         lock.unlock()
         // The window list first, on its own queue, and accessibility for
@@ -1973,7 +1981,7 @@ public final class FocusGuard {
             let all = busy ? WindowList.all(onScreenOnly: true) : nil
             let look = all.map(Self.userScreenWindows)
             let order = all.map(Self.screenWindows)
-            lock.lock(); screenLook = look; screenOrder = order; lock.unlock()
+            lock.lock(); screenLook = look; screenOrder = order; screenOrderMs = nowMs(); lock.unlock()
             usleep(250_000)
         }
     }
