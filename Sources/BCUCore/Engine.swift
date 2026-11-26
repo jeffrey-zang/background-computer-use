@@ -567,7 +567,9 @@ public final class Engine {
     /// Called from socket threads. Blocks until the tool finishes.
     public func call(tool: String, args: JSONObject) -> ToolResult {
         let touch = { [self] in stateLock.lock(); lastCallMs = nowMs(); stateLock.unlock() }
-        if let result = Self.answerOffQueue(tool, touch: touch, run: { status(Args(args)) }) { return result }
+        // (status answers off the queue, so an agent polling it while it waits
+        // for a deferred release still hears what became of it.)
+        if let result = Self.answerOffQueue(tool, touch: touch, run: { Self.withNote(status(Args(args)), takeReleaseNotes()) }) { return result }
         return queue.sync {
             stateLock.lock()
             lastCallMs = nowMs()
@@ -1558,6 +1560,13 @@ public final class Engine {
     func answersLeave(pid: pid_t, stepStartMs: Double, userOpenInputMs: Double) -> Bool {
         WindowManager.stepAnswersLeave(userInApp: userIsIn(pid), userOpenInputMs: userOpenInputMs, stepStartMs: stepStartMs,
                                        userControlsDisplay: userInControl || anyUserInControl())
+    }
+
+    static func withNote(_ result: ToolResult, _ note: String?) -> ToolResult {
+        guard let note else { return result }
+        var r = result
+        r.text += note
+        return r
     }
 
     /// Releases finished after a hung app answered that stopped at a dialog.

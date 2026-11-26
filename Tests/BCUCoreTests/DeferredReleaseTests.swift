@@ -1,4 +1,5 @@
 import XCTest
+import BCUShared
 @testable import BCUCore
 
 /// release_window on a window whose app wasn't answering accessibility (a
@@ -73,5 +74,25 @@ final class DeferredReleaseTests: XCTestCase {
         XCTAssertNil(b.pendingRelease(other))
         XCTAssertNil(a.pendingRelease(id))
         XCTAssertNil(a.window(id))
+    }
+
+    /// A second release_window while the app still hangs, with another
+    /// keep_open: the pending release is the latest one, and the finish
+    /// reads it then rather than what the sweep saw.
+    func testTheLatestKeepOpenWins() {
+        let m = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-k-\(UUID().uuidString)")
+        let id: CGWindowID = 4_000_000_003
+        m.register(AgentWindow(id: id, pid: 1, appName: "Dia", bundleID: nil, kind: .opened))
+        defer { m.unregister(id) }
+        m.deferRelease(id, keepOpen: false)
+        m.deferRelease(id, keepOpen: true)
+        XCTAssertEqual(m.pendingRelease(id), true)
+    }
+
+    /// status answers off the engine's queue; it carries the note too.
+    func testStatusCarriesTheNote() {
+        let base = ToolResult(text: "status")
+        XCTAssertEqual(Engine.withNote(base, nil).text, "status")
+        XCTAssertEqual(Engine.withNote(base, "\n[released window] Window 7 didn't close").text, "status\n[released window] Window 7 didn't close")
     }
 }

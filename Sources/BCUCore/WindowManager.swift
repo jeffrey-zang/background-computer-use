@@ -1194,7 +1194,7 @@ public final class WindowManager {
         Self.releaseRetryQueue.async { [weak self] in
             guard let self else { return }
             defer { self.lock.lock(); self.retryingReleases = false; self.lock.unlock() }
-            for (id, keepOpen) in pending {
+            for id in pending.keys {
                 guard let w = self.window(id), !w.handedOff else { continue }
                 let listed = WindowList.info(id) != nil
                 let reachable = listed && AX.window(pid: w.pid, id: id) != nil
@@ -1204,7 +1204,7 @@ public final class WindowManager {
                     self.unregister(id)
                     Log.info("\(w.appName) window \(id), released while \(w.appName) wasn't answering, is gone")
                 case .finish:
-                    self.serialize { [weak self] in self?.finishDeferredRelease(id, keepOpen: keepOpen) }
+                    self.serialize { [weak self] in self?.finishDeferredRelease(id) }
                 }
             }
         }
@@ -1231,10 +1231,13 @@ public final class WindowManager {
         "Window \(id), which you released while \(app) wasn't answering, didn't close now that \(app) answers: \(said)"
     }
 
-    /// On the engine's queue (see `serialize`).
-    private func finishDeferredRelease(_ id: CGWindowID, keepOpen: Bool) {
-        guard Self.mayFinishDeferred(window(id), pending: pendingRelease(id) != nil, userInControl: userArranging),
-              let w = window(id) else { return }
+    /// On the engine's queue (see `serialize`). `keep_open` is read again
+    /// here: the agent may have released the window again, with another
+    /// `keep_open`, since the sweep looked.
+    private func finishDeferredRelease(_ id: CGWindowID) {
+        let pending = pendingRelease(id)
+        guard Self.mayFinishDeferred(window(id), pending: pending != nil, userInControl: userArranging),
+              let w = window(id), let keepOpen = pending else { return }
         let said: String
         do { said = try release(id, keepOpen: keepOpen) } catch { said = "\(error)" }
         switch Self.deferredOutcome(stillRegistered: window(id) != nil, stillPending: pendingRelease(id) != nil) {
