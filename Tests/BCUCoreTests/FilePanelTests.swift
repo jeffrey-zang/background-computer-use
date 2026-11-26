@@ -89,6 +89,35 @@ final class PanelMatchTests: XCTestCase {
                                       candidates: candidates, isService: { $0 == self.service }))
     }
 
+    /// Another document's file picker sheet, window-backed and so listed
+    /// among the app's windows, with the service's window over it: it's that
+    /// document's, so a call on this document doesn't find it (review of #89).
+    func testAnotherDocumentsSheetIsntThisWindowsStandalonePanel() {
+        let doc = window(29264, app, documentFrame), otherSheet = window(29300, app, panelFrame)
+        let candidates = [otherSheet, window(29301, service, panelFrame), doc]
+        XCTAssertNil(Panel.standalone(window: 29264, appPid: app, appWindows: [29300, 29264], excluded: [29300],
+                                      display: agentDisplay, candidates: candidates, isService: { $0 == self.service }))
+    }
+
+    /// A panel handed off to the user stays on the agent's display until
+    /// they open it; another window of the app doesn't reach it (review of #89).
+    func testAHandedOffPanelIsntFoundFromAnotherWindow() {
+        let doc = window(29264, app, documentFrame), panel = window(29292, app, panelFrame)
+        let candidates = [panel, window(29293, service, panelFrame), doc]
+        XCTAssertNil(Panel.standalone(window: 29264, appPid: app, appWindows: [29292, 29264], excluded: [29292],
+                                      display: agentDisplay, candidates: candidates, isService: { $0 == self.service }))
+    }
+
+    /// With one excluded, a panel further back is still found.
+    func testAPanelBehindAnExcludedOneIsStillFound() {
+        let doc = window(29264, app, documentFrame), frame2 = panelFrame.offsetBy(dx: 30, dy: 30)
+        let candidates = [window(29300, app, panelFrame), window(29301, service, panelFrame),
+                          window(29292, app, frame2), window(29293, service, frame2), doc]
+        let found = Panel.standalone(window: 29264, appPid: app, appWindows: [29300, 29292, 29264], excluded: [29300],
+                                     display: agentDisplay, candidates: candidates, isService: { $0 == self.service })
+        XCTAssertEqual(found?.panel, 29292)
+    }
+
     func testPathsAreResolved() {
         XCTAssertEqual(Panel.resolve("~/Library/../Library/x.png"), NSHomeDirectory() + "/Library/x.png")
         XCTAssertEqual(Panel.resolve("/tmp/./a/b/../c"), "/tmp/a/c")

@@ -1575,7 +1575,14 @@ public final class Engine {
         }
         let windows = AX.windows(w.pid)
         let ids = windows.compactMap { AX.windowID($0) }
-        guard let found = Panel.standalone(window: w.id, appPid: w.pid, appWindows: ids, display: display.bounds),
+        // Never another document's sheet (it's that document's, and listed
+        // among the app's windows when window-backed) or a panel handed off
+        // to the user (the handoff guard would refuse it addressed directly).
+        var excluded = Set(windows.compactMap { AX.sheet(of: $0).flatMap(AX.windowID) })
+        excluded.formUnion(windows.filter { AX.string($0, "AXRole") == "AXSheet" }.compactMap { AX.windowID($0) })
+        excluded.formUnion(self.windows.windows.filter(\.handedOff).map(\.id))
+        excluded.remove(w.id)
+        guard let found = Panel.standalone(window: w.id, appPid: w.pid, appWindows: ids, excluded: excluded, display: display.bounds),
               let panel = found.panel == w.id ? ax : windows.first(where: { AX.windowID($0) == found.panel }) else { return nil }
         return (panel, found.remote)
     }

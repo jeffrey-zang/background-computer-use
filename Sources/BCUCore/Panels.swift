@@ -34,17 +34,22 @@ public enum Panel {
     /// it all the same. `window` itself when it's the panel (the agent caught
     /// it), else the frontmost of the app's other windows (`appWindows`,
     /// front to back) that's a panel on the agent's display: one on the
-    /// user's display is theirs.
-    public static func standalone(window: CGWindowID, appPid: pid_t, appWindows: [CGWindowID], display: CGRect) -> (panel: CGWindowID, remote: Remote)? {
+    /// user's display is theirs. `excluded` are the app's windows that are
+    /// never this window's panel: another document's sheet (a window-backed
+    /// sheet is listed among the app's windows too) and a panel handed off
+    /// to the user.
+    public static func standalone(window: CGWindowID, appPid: pid_t, appWindows: [CGWindowID], excluded: Set<CGWindowID>,
+                                  display: CGRect) -> (panel: CGWindowID, remote: Remote)? {
         let all = WindowList.all()
-        return standalone(window: window, appPid: appPid, appWindows: appWindows, display: display, candidates: all, isService: isPanelService)
+        return standalone(window: window, appPid: appPid, appWindows: appWindows, excluded: excluded, display: display,
+                          candidates: all, isService: isPanelService)
     }
 
-    static func standalone(window: CGWindowID, appPid: pid_t, appWindows: [CGWindowID], display: CGRect,
+    static func standalone(window: CGWindowID, appPid: pid_t, appWindows: [CGWindowID], excluded: Set<CGWindowID> = [], display: CGRect,
                            candidates: [WindowInfo], isService: (pid_t) -> Bool) -> (panel: CGWindowID, remote: Remote)? {
         // No panel service window anywhere: nothing to look for.
         guard candidates.contains(where: { $0.pid != appPid && isService($0.pid) }) else { return nil }
-        let others = appWindows.filter { $0 != window }
+        let others = appWindows.filter { $0 != window && !excluded.contains($0) }
         for id in [window] + others {
             guard let info = candidates.first(where: { $0.id == id && $0.pid == appPid }) else { continue }
             if id != window && !display.intersects(info.bounds) { continue }
