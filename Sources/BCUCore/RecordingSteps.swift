@@ -236,7 +236,7 @@ public enum RecordingText {
         let frame = #"@\(-?\d+,-?\d+ \d+x\d+\)"#
         // A text field's name first (it can be its contents), up to what
         // follows it on the line: its value, placeholder or frame.
-        return text.replacingOccurrences(of: #"((?:TextField|TextArea|SearchField|ComboBox)(?:\([^)\n]*\))?) "[^\n]*?"(?= value="| placeholder="| "# + frame + ")",
+        return text.replacingOccurrences(of: #"((?:TextField|TextArea|SearchField|ComboBox)(?:\([^)\n]*\))?) "[^\n]*?"(?= value="| value=\(hidden\)| placeholder="| "# + frame + ")",
                                          with: "$1 \"(hidden)\"", options: [.regularExpression])
             // Then every value, up to the frame that ends the line (it can
             // hold quotes and brackets itself).
@@ -520,8 +520,17 @@ public final class StepLog {
     /// (`status`, from another thread) isn't, so it never takes what belongs
     /// to the action running at the same time.
     @discardableResult
-    public func begin(tool: String, args: JSONObject, inBatch: Bool = false, tracked: Bool = true) -> RecordedStep {
+    /// `foreign`: run by another session, whose steps (a batch's too) this
+    /// log never sees and whose fields it can't tell: anything it types is
+    /// hidden, whatever the mode.
+    public func begin(tool: String, args: JSONObject, inBatch: Bool = false, tracked: Bool = true, foreign: Bool = false) -> RecordedStep {
         lock.lock(); defer { lock.unlock() }
+        if foreign {
+            let calls = [args] + ((args["actions"] as? [Any]) ?? []).compactMap { $0 as? JSONObject }.map { ($0["args"] as? JSONObject) ?? $0 }
+            for c in calls {
+                for key in ["text", "value"] { if let v = c[key] as? String, RecordingText.redactsLater(v) { addHidden(RecordingText.forms(of: v)) } }
+            }
+        }
         var a = args
         a["_session"] = nil
         a["_recording_dir"] = nil

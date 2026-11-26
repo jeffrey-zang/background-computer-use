@@ -762,6 +762,18 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertTrue(st.result.contains("\"(hidden)\""), st.result)
     }
 
+    func testASecureFieldNameBeforeAHiddenValueIsHidden() {
+        XCTAssertEqual(RecordingText.hideValues("[5] TextField(SecureTextField) \"confidentia\" value=(hidden) @(0,0 10x10)"),
+                       "[5] TextField(SecureTextField) \"(hidden)\" value=(hidden) @(0,0 10x10)")
+    }
+
+    func testAForeignBatchHidesWhatItTypes() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let b = log.begin(tool: "batch", args: ["actions": [["tool": "set_value", "element": 3, "value": "s3cret-value"]]], tracked: false, foreign: true)
+        log.end(b, result: "1. set_value: Set element 3 to \"s3cret-value\".", isError: false)
+        XCTAssertFalse(b.result.contains("s3cret-value"), b.result)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

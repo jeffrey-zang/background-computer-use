@@ -51,6 +51,15 @@ public final class Engine {
     let recorder: SessionRecorder
     /// The video the agent is recording (`start_recording`), while it runs.
     private var _recording: AgentRecording?
+    /// Windows being handed back right now (moved to the user's screen before
+    /// they're let go): a window-only recording stops filming them first.
+    private var releasing: Set<CGWindowID> = []
+    /// `windows.release`, with the window no longer the recording's to film from the start.
+    private func releaseFilmed(_ id: CGWindowID, keepOpen: Bool) throws -> String {
+        stateLock.lock(); releasing.insert(id); stateLock.unlock()
+        defer { stateLock.lock(); releasing.remove(id); stateLock.unlock() }
+        return try windows.release(id, keepOpen: keepOpen)
+    }
     /// Whether that video keeps the session's sound file beside it.
     private var _recordingAudio = false
     /// A recording that ended without `stop_recording` (its display went
@@ -337,7 +346,7 @@ public final class Engine {
                 case .keepForUser:
                     notes.append("kept \(w.appName) window \(w.id): it's waiting for you")
                 case .release:
-                    notes.append((try? self.windows.release(w.id, keepOpen: false)) ?? "window \(w.id): failed")
+                    notes.append((try? self.releaseFilmed(w.id, keepOpen: false)) ?? "window \(w.id): failed")
                 }
             }
             self.snapshots.removeAll()
@@ -608,7 +617,11 @@ public final class Engine {
     /// Another session's call (no window to route it by) listed in this
     /// session's recording, which that session started here. Runs `body` as is.
     public func logCall(_ tool: String, _ args: JSONObject, _ body: () -> ToolResult) -> ToolResult {
-        recorded(tool, args, tracked: false, body)
+        guard let steps = recordingSteps else { return body() }
+        let step = steps.begin(tool: tool, args: args, tracked: false, foreign: true)
+        let result = body()
+        steps.end(step, result: result.text, isError: result.isError)
+        return result
     }
 
     /// `body`'s call, listed in the recording under way, if any.
@@ -2088,7 +2101,7 @@ public final class Engine {
             }
             touched.insert(w.pid)
         }
-        let text = try windows.release(id, keepOpen: args.bool("keep_open") ?? false)
+        let text = try releaseFilmed(id, keepOpen: args.bool("keep_open") ?? false)
         snapshots[id] = nil
         focusedText[id] = nil
         browserWindowIDs[id] = nil
@@ -3184,7 +3197,11 @@ public final class Engine {
         let rec = try AgentRecording(display: display, windowID: windowID, fps: args.int("fps") ?? AgentRecording.defaultFPS,
                                      label: label, redactAll: args.bool("hide_typing") ?? false,
                                      // Not one handed to the user, or that they have now.
-                                     owns: { [weak self] in self?.windows.window($0).map { !$0.handedOff && !$0.withUser } ?? false },
+                                     owns: { [weak self] id in
+                                         guard let self else { return false }
+                                         stateLock.lock(); let going = releasing.contains(id); stateLock.unlock()
+                                         return !going && (windows.window(id).map { !$0.handedOff && !$0.withUser } ?? false)
+                                     },
                                      onWindowFrame: { [weak self] in self?.recorder.windowShot($0, $1) },
                                      onDisplayFrame: { [weak self] in self?.recordPreview($0) })
         let what = windowID.map { "window \($0)" } ?? "your display"

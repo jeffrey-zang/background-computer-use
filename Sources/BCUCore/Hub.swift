@@ -329,7 +329,10 @@ public final class Hub {
                     return .error("a recording you started is already under way (into \(mine)). Call stop_recording first.")
                 }
                 lock.lock(); usedBy[ownerID, default: []].insert(id); lock.unlock()
-                let result = owner.call(tool: tool, args: args)
+                // Listed in the caller's own recording, if it's making one.
+                let result = caller.recordingDir == nil || tool == "start_recording" || tool == "stop_recording"
+                    ? owner.call(tool: tool, args: args)
+                    : caller.logCall(tool, args) { owner.call(tool: tool, args: args) }
                 // The folder this very call made (the owner could start another right after).
                 if tool == "start_recording" && !result.isError, let dir = Engine.recordingDir(fromStart: result.text) {
                     lock.lock(); recordingAt[id] = (owner, dir); lock.unlock()
