@@ -1846,7 +1846,7 @@ public final class WindowManager {
         while made == nil && nowMs() < deadline {
             made = AX.windows(w.pid).first { ax in
                 guard let id = AX.windowID(ax), !before.contains(id), AX.string(ax, "AXSubrole") == "AXStandardWindow" else { return false }
-                return Self.windowShowsTab(windowTitle: AX.string(ax, "AXTitle"), tabTitle: tabTitle)
+                return Self.windowShowsTab(windowTitle: AX.string(ax, "AXTitle"), tabTitle: tabTitle, browser: w.appName)
             }.flatMap(AX.windowID)
             if made == nil { sleepMs(10) }
         }
@@ -1864,6 +1864,9 @@ public final class WindowManager {
         }
         // The user's from now on: never caught as the agent's, never closed with its windows.
         Self.keep(made)
+        // The move is done now: a read of the agent's window taken since the
+        // press (reads don't wait for the input lock) may still show the tab.
+        Self.sharedLock.lock(); Self.tabMovedOut[w.id] = nowMs(); Self.sharedLock.unlock()
         // Key goes to the new window (the user's), so the browser's last
         // window is theirs; or back to theirs if they're in the browser.
         // On the user's screen before their held keys go anywhere: the guard
@@ -1910,10 +1913,10 @@ public final class WindowManager {
     /// With no step since, nothing but the move could have made it, so it's
     /// the user's whatever its page has become (loaded, redirected).
     static func isLateHandout(id: CGWindowID, standard: Bool, registered: Bool, opening: Bool, windowTitle: String?, stepSince: Bool,
-                              pending: (before: Set<CGWindowID>, untilMs: Double, title: String)?, nowMs: Double) -> Bool {
+                              pending: (before: Set<CGWindowID>, untilMs: Double, title: String)?, nowMs: Double, browser: String? = nil) -> Bool {
         guard let pending, nowMs < pending.untilMs, !pending.before.contains(id), standard, !registered, !opening else { return false }
         guard stepSince else { return true }
-        return !pending.title.isEmpty && windowShowsTab(windowTitle: windowTitle, tabTitle: pending.title)
+        return !pending.title.isEmpty && windowShowsTab(windowTitle: windowTitle, tabTitle: pending.title, browser: browser)
     }
 
     /// A late window can be told only by its title (a step ran since the
@@ -1923,11 +1926,17 @@ public final class WindowManager {
     }
 
     /// Whether a browser window shows this tab: Chromium titles a window
-    /// "<tab> - <browser>". A tab with no title matches any window.
-    static func windowShowsTab(windowTitle: String?, tabTitle: String) -> Bool {
+    /// "<tab> - <browser>" (and " - <profile>" after it with several
+    /// profiles). With the browser's name, the whole tab title has to come
+    /// before it: "Sign in" doesn't match "Sign in - Google Accounts -
+    /// Google Chrome". A tab with no title matches any window.
+    static func windowShowsTab(windowTitle: String?, tabTitle: String, browser: String? = nil) -> Bool {
         if tabTitle.isEmpty { return true }
         guard let windowTitle else { return false }
-        return windowTitle == tabTitle || windowTitle.hasPrefix(tabTitle + " - ")
+        if windowTitle == tabTitle { return true }
+        guard let browser, !browser.isEmpty else { return windowTitle.hasPrefix(tabTitle + " - ") }
+        let full = tabTitle + " - " + browser
+        return windowTitle == full || windowTitle.hasPrefix(full + " - ")
     }
 
     /// When a tab was last moved out of each agent window.
@@ -2018,13 +2027,13 @@ public final class WindowManager {
             // later look can tell, not attributed as the agent's meanwhile.
             if Self.lateHandoutNeedsTitle(stepSince: stepSince, title: title),
                Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
-                                  windowTitle: nil, stepSince: false, pending: late[info.pid], nowMs: nowMs()) {
+                                  windowTitle: nil, stepSince: false, pending: late[info.pid], nowMs: nowMs(), browser: info.owner) {
                 unread.insert(info.id)
                 continue
             }
             guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
                                      windowTitle: title, stepSince: stepSince,
-                                     pending: late[info.pid], nowMs: nowMs()) else { continue }
+                                     pending: late[info.pid], nowMs: nowMs(), browser: info.owner) else { continue }
             // Taken once: the same pending handout (still there, the one
             // this sweep saw) can't also claim another window, in this
             // sweep or another session's.

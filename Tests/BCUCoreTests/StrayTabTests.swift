@@ -261,4 +261,13 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(AudioClaims.movedAway(now: 11, from: 11))
         XCTAssertFalse(AudioClaims.movedAway(now: nil, from: 11))
     }
+
+    /// With the browser's name, the whole tab title must come before it: a
+    /// popup "Sign in - Google Accounts" isn't the moved tab "Sign in".
+    func testTheWholeTabTitleMustComeBeforeTheBrowsersName() {
+        XCTAssertFalse(WindowManager.windowShowsTab(windowTitle: "Sign in - Google Accounts - Google Chrome", tabTitle: "Sign in", browser: "Google Chrome"))
+        XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "Sign in - Google Chrome", tabTitle: "Sign in", browser: "Google Chrome"))
+        XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "Sign in - Google Chrome - Work", tabTitle: "Sign in", browser: "Google Chrome"))
+        XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "A - B - Google Chrome", tabTitle: "A - B", browser: "Google Chrome"))
+    }
 }
