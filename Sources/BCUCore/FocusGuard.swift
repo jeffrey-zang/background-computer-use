@@ -736,10 +736,13 @@ public final class FocusGuard {
     /// (`ClickTarget.gateOwner`). nil without a look from the last 400 ms.
     private func lookedOwner(at p: CGPoint) -> pid_t? {
         lock.lock()
-        let order = nowMs() - screenOrderMs < 400 ? screenOrder : nil
+        let order = nowMs() - screenOrderMs < Self.lookFreshMs ? screenOrder : nil
         lock.unlock()
         return order.flatMap { Self.owner(in: $0, at: p) }
     }
+
+    /// How old a look at the screen may be to say where a click went.
+    static let lookFreshMs = 400.0
 
     static func owner(in order: [ScreenWindow], at p: CGPoint) -> pid_t? {
         ClickTarget.gateOwner(order.filter { $0.bounds.contains(p) }.map { ($0.pid, $0.dock, $0.layer, $0.coversDisplay) })
@@ -1026,6 +1029,10 @@ public final class FocusGuard {
                 }
                 self.record("\(name(pid)) came forward during an agent's step and was left in front on \(why); put \(name(user)) back after \(Int(nowMs() - atMs)) ms")
                 self.restoreUserFront(from: pid, reason: "re-check")
+                // The click may still have opened something there after all
+                // (a link, during a lift that let the app through): bring it
+                // forward with that, as for any app put back on a click.
+                if credit == .click { self.lookLate(at: pid, click: now, putBackMs: nowMs()) }
             }
         }
         look(0)
@@ -1963,7 +1970,8 @@ public final class FocusGuard {
         let ms = nowMs()
         lock.lock()
         let look = screenLook
-        let wasIn = screenOrder.flatMap { Self.owner(in: $0, at: p) }
+        // Only from a fresh look: an old one may show other windows there.
+        let wasIn = (ms - screenOrderMs < Self.lookFreshMs ? screenOrder : nil).flatMap { Self.owner(in: $0, at: p) }
         lastClick = Click(ms: ms, point: p, windows: look, wasIn: wasIn)
         lock.unlock()
         // The window list first, on its own queue, and accessibility for
