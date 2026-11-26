@@ -60,7 +60,9 @@ public final class WindowManager {
     /// yet: not probed or queued again until it has (a long call can hold
     /// the queue for many sweeps).
     private var finishing: Set<CGWindowID> = []
-    private static let releaseRetryQueue = DispatchQueue(label: "bcu.release-retry", qos: .utility)
+    /// Each session its own: one session's windows in a hung app wait out
+    /// their accessibility timeouts without holding up another's retries.
+    let releaseRetryQueue = DispatchQueue(label: "bcu.release-retry", qos: .utility)
     /// What became of a deferred release that the agent has to hear about
     /// (the app answered with a dialog): given with its next call's result.
     private var releaseNotes: [String] = []
@@ -1224,7 +1226,7 @@ public final class WindowManager {
         lastReleaseRetryMs = now
         let pending = releaseWhenAnswering
         lock.unlock()
-        Self.releaseRetryQueue.async { [weak self] in
+        releaseRetryQueue.async { [weak self] in
             guard let self else { return }
             defer { self.lock.lock(); self.retryingReleases = false; self.lock.unlock() }
             for id in pending.keys {

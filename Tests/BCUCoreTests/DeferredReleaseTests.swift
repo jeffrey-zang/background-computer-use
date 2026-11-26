@@ -183,4 +183,17 @@ final class DeferredReleaseTests: XCTestCase {
         XCTAssertEqual(Hub.relativesToTell("parent", usedBy: usedBy, attached: ["parent": 1, "sub": 1]), ["sub2"])
         XCTAssertEqual(Hub.relativesToTell("someone-else", usedBy: usedBy, attached: [:]), [])
     }
+
+    /// Each session probes on a queue of its own, so one session's hung
+    /// app can't hold up another's retries.
+    func testEachSessionRetriesOnItsOwnQueue() {
+        let a = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-q-\(UUID().uuidString)")
+        let b = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-r-\(UUID().uuidString)")
+        XCTAssertFalse(a.releaseRetryQueue === b.releaseRetryQueue)
+        let blocked = DispatchSemaphore(value: 0), ran = expectation(description: "b's retry ran")
+        a.releaseRetryQueue.async { blocked.wait() }
+        b.releaseRetryQueue.async { ran.fulfill() }
+        wait(for: [ran], timeout: 2)
+        blocked.signal()
+    }
 }
