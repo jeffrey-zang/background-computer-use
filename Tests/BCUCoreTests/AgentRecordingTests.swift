@@ -484,6 +484,41 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertGreaterThan(data[150 * image.bytesPerRow + 450 * 4 + 1], 100, "covered where the window is now")
     }
 
+    /// Under hide_typing, once something was typed, later reads show no field values (an edit leaves a copy that matches nothing typed).
+    func testAnEditedHiddenValueStaysHidden() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "confidential", "element": 3]); log.end(t, result: "ok", isError: false)
+        let d = log.begin(tool: "press_key", args: ["key": "delete"]); log.end(d, result: "Pressed delete.", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[3] TextField \"Note\" value=\"confidentia\" @(0,0 10x10) [settable]", isError: false)
+        XCTAssertEqual(r.result, "[3] TextField \"Note\" value=(hidden) @(0,0 10x10) [settable]")
+    }
+
+    func testKeyRunsSkipRefusalsAndStayPerWindow() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        func key(_ k: String, _ w: Int, fail: Bool = false, mods: [String] = []) {
+            let s = log.begin(tool: "press_key", args: ["key": k, "window_id": w, "modifiers": mods]); log.setFocus(secure: false)
+            log.end(s, result: fail ? "Paused by the user." : "Pressed.", isError: fail)
+        }
+        for c in "confi" { key(String(c), 1) }
+        key("d", 1, fail: true)
+        for c in "dential" { key(String(c), 1) }
+        for c in "second" { key(String(c), 2) }
+        key("1", 2, mods: ["shift"]); key("2", 2, mods: ["shift"])
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "a confidential b second!@ c", isError: false)
+        XCTAssertFalse(r.result.contains("confidential") || r.result.contains("second"), r.result)
+    }
+
+    /// A Shift-only character key is typing even when its modifier name was redacted (it matched hidden text).
+    func testAKeyIsClassifiedFromItsArgumentsAsGiven() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "shift", "element": 3]); log.end(t, result: "ok", isError: false)
+        let k = log.begin(tool: "press_key", args: ["key": "c", "modifiers": ["shift"]]); log.setFocus(secure: false)
+        log.end(k, result: "Pressed shift+c.", isError: false)
+        XCTAssertEqual(k.args["key"] as? String, "(hidden, 1 characters)")
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))

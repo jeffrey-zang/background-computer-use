@@ -56,6 +56,8 @@ public final class Engine {
     /// A recording that ended without `stop_recording` (its display went
     /// away), for the next `stop_recording` to hand over.
     private var endedRecording: Result<AgentRecording.Output, Error>?
+    /// That recording's folder, which a failed save has too (for routing).
+    private var endedDir: String?
     /// The folder of a recording being saved as its display goes away.
     private var _savingDir: String?
     /// A recording being saved by stop_recording; shutdown waits for it.
@@ -65,7 +67,7 @@ public final class Engine {
     var recordingDir: String? {
         stateLock.lock(); defer { stateLock.unlock() }
         // A recording saved when its display went away still waits for that stop.
-        return _recording?.dir.path ?? _savingDir ?? (try? endedRecording?.get())?.dir.path
+        return _recording?.dir.path ?? _savingDir ?? endedDir
     }
     var currentRecording: AgentRecording? { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
     /// Test support: a list of steps kept as a recording would, with no video.
@@ -3167,6 +3169,7 @@ public final class Engine {
         _recording = rec
         _recordingAudio = args.bool("audio") ?? false
         endedRecording = nil
+        endedDir = nil
         stateLock.unlock()
         return ToolResult(text: text)
     }
@@ -3176,7 +3179,7 @@ public final class Engine {
         // here on the session's queue, where nothing can stop it in between.
         if let want = args.string("_recording_dir") {
             stateLock.lock()
-            let have = _recording?.dir.path ?? _savingDir ?? (try? endedRecording?.get())?.dir.path
+            let have = _recording?.dir.path ?? _savingDir ?? endedDir
             stateLock.unlock()
             guard have == want else {
                 throw ToolError("the recording you started was already stopped by the session whose window it shows; ask that agent for it.")
@@ -3187,6 +3190,7 @@ public final class Engine {
         _recording = nil
         let ended = endedRecording
         endedRecording = nil
+        endedDir = nil
         stateLock.unlock()
         let out: AgentRecording.Output
         if let rec {
@@ -3236,7 +3240,7 @@ public final class Engine {
         exporting.enter()
         let result = Result { try rec.finish(audio: withAudio ? audio.url : nil) }
         exporting.leave()
-        stateLock.lock(); endedRecording = result; _savingDir = nil; stateLock.unlock()
+        stateLock.lock(); endedRecording = result; endedDir = rec.dir.path; _savingDir = nil; stateLock.unlock()
         if case .success(let out) = result { Log.info("recording saved as the display went away: \(out.video.path)") }
     }
 

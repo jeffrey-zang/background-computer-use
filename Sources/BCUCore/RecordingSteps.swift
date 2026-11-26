@@ -61,6 +61,12 @@ public final class RecordedStep {
     /// when it starts, but what's hidden and what went in come from this).
     /// Never written anywhere.
     var original: [String: String] = [:]
+    /// A press_key of one character (no modifier but shift), from its
+    /// arguments as given (the stored ones can be redacted).
+    var typesCharacter = false
+    /// Its window_id, for keeping key runs per window.
+    var window: UInt32?
+    var originalModifiers: [String] = []
     /// Where its typing goes was looked at (an element, or the focus).
     var focusChecked = false
     /// What it typed that's hidden, to take out of its batch's result too. Never written anywhere.
@@ -86,7 +92,7 @@ public final class RecordedStep {
         if textHidden { return true }
         // A character key on its own is typing one key at a time (a PIN).
         if tool == "press_key" {
-            guard Self.typesACharacter(args) else { return false }
+            guard typesCharacter else { return false }
             return redactAll || focusSecure || target?.secure == true || end == nil || !focusChecked
         }
         guard tool == "type_text" || tool == "set_value" else { return false }
@@ -214,6 +220,13 @@ public enum RecordingText {
     /// The waits a result reports ("[user first] …", "[other agents] …").
     public static func waits(in result: String) -> [String] {
         result.split(separator: "\n").map(String.init).filter { $0.hasPrefix("[user first]") || $0.hasPrefix("[other agents]") }
+    }
+
+    /// Every field value in a window read (`value="…"` up to where the line
+    /// goes on with its frame or flags) replaced: under hide_typing, once
+    /// something was typed, a field can hold an edited or partial copy of it.
+    static func hideValues(_ text: String) -> String {
+        text.replacingOccurrences(of: #"value="[^\n]*?"(?= @\(| \[|$)"#, with: "value=(hidden)", options: .regularExpression)
     }
 
     /// The exact form a hidden value is replaced with.
@@ -376,7 +389,11 @@ public final class StepLog {
     private var hiddenTexts: [String] = []
     /// Characters hidden one press_key at a time, in a row: together they're
     /// what went into the field.
-    private var keyRun = ""
+    private var keyRuns: [UInt32: String] = [:]
+    /// Some typing was hidden under hide_typing: from then on, later reads
+    /// show no field values at all (an edited or partly typed value matches
+    /// no text that was typed).
+    private var hidValues = false
     public let redactAll: Bool
     private let clock: () -> Double
 
@@ -401,13 +418,19 @@ public final class StepLog {
         a["_session"] = nil
         a["_recording_dir"] = nil
         var original: [String: String] = [:]
+        let modifiers = (a["modifiers"] as? [Any] ?? []).map { "\($0)" }
         for key in ["text", "value", "key"] { if let v = a[key] as? String { original[key] = v } }
+        let character = tool == "press_key" && RecordedStep.typesACharacter(a)
+        let window = (a["window_id"] as? NSNumber)?.uint32Value
         // Text hidden earlier can come back in a later call (a path with the
         // file name that was typed): it's taken out of the arguments too.
         if !hiddenTexts.isEmpty { a = Self.redacted(a, hiddenTexts) as? JSONObject ?? a }
         if inBatch, let parent = open.last(where: { $0.sub == nil && $0.tool == "batch" }) {
             let s = RecordedStep(n: parent.n, sub: parent.steps.count + 1, tool: tool, args: a, t: clock())
             s.original = original
+            s.typesCharacter = character
+            s.window = window
+            s.originalModifiers = modifiers
             parent.steps.append(s)
             open.append(s)
             return s
@@ -417,6 +440,9 @@ public final class StepLog {
         if tool == "batch" { a["actions"] = (a["actions"] as? [Any])?.count ?? 0 }
         let s = RecordedStep(n: steps.count + 1, sub: nil, tool: tool, args: a, t: clock())
         s.original = original
+        s.typesCharacter = character
+        s.window = window
+        s.originalModifiers = modifiers
         steps.append(s)
         if tracked { open.append(s) }
         return s
@@ -478,6 +504,7 @@ public final class StepLog {
         let given = result
         // Text hidden in an earlier step, wherever it shows up again.
         var result = RecordingText.redact(result, secrets: hiddenTexts)
+        if hidValues { result = RecordingText.hideValues(result) }
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
             if s.args[key] is String, let secret = s.original[key] ?? s.args[key] as? String {
@@ -503,18 +530,25 @@ public final class StepLog {
             }
         }
         // Keys pressed one by one add up to text in a field.
-        if s.tool == "press_key" && s.textHidden, let key = s.secret {
-            // What it put in the field: shift makes a letter a capital.
-            let shifted = ((s.args["modifiers"] as? [Any]) ?? []).contains { KeyMap.modifierNames["\($0)".trimmingCharacters(in: .whitespaces).lowercased()] == .maskShift }
-            keyRun += shifted ? key.uppercased() : key
-            if RecordingText.redactsLater(keyRun) {
-                hiddenTexts += RecordingText.forms(of: keyRun)
+        let w = s.window ?? 0
+        if s.tool == "press_key" && s.textHidden && !isError, let key = s.secret {
+            // What it put in the field (a key refused or failed put nothing):
+            // shift makes a capital, or the symbol over a digit or mark.
+            let shifted = s.originalModifiers.contains { KeyMap.modifierNames["\($0)".trimmingCharacters(in: .whitespaces).lowercased()] == .maskShift }
+            var ch = key
+            if shifted, let c = key.first {
+                ch = KeyMap.shifted.first { $0.value == c }.map { String($0.key) } ?? key.uppercased()
+            }
+            keyRuns[w, default: ""] += ch
+            if let run = keyRuns[w], RecordingText.redactsLater(run) {
+                hiddenTexts += RecordingText.forms(of: run)
                 hiddenTexts.sort { $0.count > $1.count }
             }
-        } else if Self.endsKeyRun.contains(s.tool) || s.tool == "press_key" {
+        } else if Self.endsKeyRun.contains(s.tool) || (s.tool == "press_key" && !s.typesCharacter) {
             // Something that changes the input or where it goes; reads don't.
-            keyRun = ""
+            keyRuns[w] = nil
         }
+        if s.textHidden && redactAll { hidValues = true }
         s.original = [:]
         if s.tool == "batch" {
             result = RecordingText.redact(result, secrets: s.steps.compactMap(\.secret))
