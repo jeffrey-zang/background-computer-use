@@ -105,7 +105,9 @@ public final class RecordedStep {
         guard let key = args["key"] as? String, key.count == 1, let ch = key.first, !ch.isWhitespace else { return false }
         // Every spelling press_key takes for shift ("⇧", " Shift ").
         let mods = (args["modifiers"] as? [Any] ?? []).map { "\($0)".trimmingCharacters(in: .whitespaces).lowercased() }
-        return mods.allSatisfy { KeyMap.modifierNames[$0] == .maskShift }
+        // Shift and option change which character goes in (option+s is ß);
+        // cmd, ctrl and fn make it a shortcut.
+        return mods.allSatisfy { [.maskShift, .maskAlternate].contains(KeyMap.modifierNames[$0]) }
     }
 
     /// Its arguments as written out: typed text that's to be hidden and
@@ -424,6 +426,13 @@ public final class StepLog {
         let modifiers = (a["modifiers"] as? [Any] ?? []).map { "\($0)" }
         for key in ["text", "value", "key"] { if let v = a[key] as? String { original[key] = v } }
         let character = tool == "press_key" && RecordedStep.typesACharacter(a)
+        // Under hide_typing, what a call types is hidden from everything from
+        // the moment it starts: a status answered meanwhile can show it already.
+        if redactAll, tool == "type_text" || tool == "set_value" || character {
+            for v in original.values where RecordingText.redactsLater(v) { hiddenTexts += RecordingText.forms(of: v) }
+            hiddenTexts.sort { $0.count > $1.count }
+            hidValues = true
+        }
         let window = (a["window_id"] as? NSNumber)?.uint32Value
         // Text hidden earlier can come back in a later call (a path with the
         // file name that was typed): it's taken out of the arguments too.
@@ -482,7 +491,8 @@ public final class StepLog {
     public func coverWindows() -> Set<CGWindowID> {
         lock.lock(); defer { lock.unlock() }
         guard redactAll else { return [] }
-        return Set(Self.flatten(steps).filter(\.textHidden).compactMap(\.coverWindow))
+        // Running ones too: the window can move while the typing goes on.
+        return Set(Self.flatten(steps).filter { $0.textHidden || ($0.end == nil && $0.hidesText(redactAll: true)) }.compactMap(\.coverWindow))
     }
 
     public func setFocus(secure: Bool) {
@@ -588,6 +598,21 @@ public final class StepLog {
 
     static let endsKeyRun: Set<String> = ["click", "type_text", "set_value", "navigate", "open_window", "borrow_window", "release_window",
                                           "choose_file", "drag", "perform_action", "press_menu_item", "handoff", "take_back"]
+
+    /// Every finished step's result and arguments redacted again against
+    /// all text hidden by the end, before the lists are written: a call that
+    /// ended before a later one hid its text (answered meanwhile) gets it too.
+    public func redactAgain() {
+        lock.lock(); defer { lock.unlock() }
+        guard !hiddenTexts.isEmpty else { return }
+        for s in Self.flatten(steps) where s.end != nil {
+            s.result = RecordingText.redact(s.result, secrets: hiddenTexts)
+            s.args = Self.redacted(s.args, hiddenTexts) as? JSONObject ?? s.args
+            if let t = s.target {
+                s.target = StepTarget(element: t.element, role: t.role, label: RecordingText.redact(t.label, secrets: hiddenTexts), frame: t.frame, secure: t.secure)
+            }
+        }
+    }
 
     /// Every step, batch steps after their batch, in the order they started.
     /// In the order they started: a call answered off the session's queue

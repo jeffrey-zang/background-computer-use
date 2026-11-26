@@ -1209,7 +1209,8 @@ public final class Engine {
         if let rec = recordingSteps {
             let b = display.bounds
             rec.setTarget(StepTarget(element: n.index, role: n.role, label: n.label,
-                                           frame: liveFrame(n).offsetBy(dx: -b.minX, dy: -b.minY), secure: n.secure))
+                                           // Secure now, or when it was read (a "show password" toggle can change it).
+                                           frame: liveFrame(n).offsetBy(dx: -b.minX, dy: -b.minY), secure: n.secure || Self.isSecureField(n.element)))
         }
         return n
     }

@@ -281,6 +281,7 @@ public final class AgentRecording {
         if wasCapped { notes.append("Capture stopped after \(Int(Self.maxMs / 60_000)) minutes; later steps are listed but not in the video.") }
         if released { notes.append("The window was released before the recording stopped; the video ends with its last frame before that.") }
         else if gone { notes.append("The window closed before the recording stopped; the video ends with its last frame.") }
+        steps.redactAgain()
         let all = steps.all
         let video = dir.appendingPathComponent("recording.mp4")
         let md = dir.appendingPathComponent("actions.md"), js = dir.appendingPathComponent("actions.json")

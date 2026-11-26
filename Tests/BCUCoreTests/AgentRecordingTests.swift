@@ -528,6 +528,28 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertTrue(r.result.contains("@(0,0 10x10) [settable]"), r.result)
     }
 
+    func testOptionCharactersAreTyping() {
+        XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
+        XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))
+    }
+
+    func testAReadAnsweredDuringAHiddenWriteIsRedacted() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let w = log.begin(tool: "type_text", args: ["text": "Project Nightingale", "element": 3])
+        let st = log.begin(tool: "status", args: [:], tracked: false)
+        log.end(st, result: "Your windows: 7: TextEdit \"Project Nightingale\"", isError: false)
+        log.end(w, result: "ok", isError: false)
+        log.redactAgain()
+        XCTAssertFalse(st.result.contains("Nightingale"), st.result)
+    }
+
+    func testCoverWindowsIncludeTypingStillRunning() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        _ = log.begin(tool: "type_text", args: ["text": "long text", "element": 3])
+        log.setCover(.zero, window: 9)
+        XCTAssertEqual(log.coverWindows(), [9])
+    }
+
     func testTheStartResultsFirstLineNamesItsFolder() {
         XCTAssertEqual(Engine.recordingDir(fromStart: "… into /tmp/r/1.\n[user] Done with the window you handed over."), "/tmp/r/1")
     }
