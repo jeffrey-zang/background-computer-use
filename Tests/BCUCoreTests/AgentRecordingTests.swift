@@ -276,6 +276,16 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(c.target?.label, "(hidden)")
     }
 
+    func testHiddenTextIsTakenOutOfLaterArguments() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "budget-2027.xlsx"])
+        log.end(t, result: "Typed 16 characters.", isError: false)
+        let c = log.begin(tool: "choose_file", args: ["path": "/Users/x/budget-2027.xlsx", "list": ["a", "budget-2027.xlsx"]])
+        log.end(c, result: "Chose it.", isError: false)
+        XCTAssertEqual(c.args["path"] as? String, "/Users/x/(hidden)")
+        XCTAssertEqual(c.args["list"] as? [String], ["a", "(hidden)"])
+    }
+
     func testTypingFailuresAreLoggedWithoutWhatWasTyped() {
         XCTAssertEqual(Engine.loggable("type_text FAILED: Typed 4 of 7 characters (\"hunt\"), nothing after that."),
                        "type_text FAILED: Typed 4 of 7 characters (\"(hidden)\"), nothing after that.")

@@ -281,6 +281,9 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         var a = args
         a["_session"] = nil
+        // Text hidden earlier can come back in a later call (a path with the
+        // file name that was typed): it's taken out of the arguments too.
+        if !hiddenTexts.isEmpty { a = Self.redacted(a, hiddenTexts) as? JSONObject ?? a }
         if inBatch, let parent = open.last(where: { $0.sub == nil && $0.tool == "batch" }) {
             let s = RecordedStep(n: parent.n, sub: parent.steps.count + 1, tool: tool, args: a, t: clock())
             parent.steps.append(s)
@@ -373,6 +376,14 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         s.result = RecordingText.redact(result, secrets: hiddenTexts)
         s.isError = isError
+    }
+
+    /// `value` with each secret taken out of every string in it, arrays and objects included.
+    static func redacted(_ value: Any, _ secrets: [String]) -> Any {
+        if let s = value as? String { return RecordingText.redact(s, secrets: secrets) }
+        if let a = value as? [Any] { return a.map { redacted($0, secrets) } }
+        if let o = value as? JSONObject { return o.mapValues { redacted($0, secrets) } }
+        return value
     }
 
     /// Every step, batch steps after their batch, in the order they started.

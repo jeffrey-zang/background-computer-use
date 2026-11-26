@@ -3141,7 +3141,8 @@ public final class Engine {
         let out: AgentRecording.Output
         if let rec {
             // This call is its last step.
-            let last = rec.steps.all.last.flatMap { $0.tool == "stop_recording" ? $0 : nil }
+            // This call's own step (a status from another connection may have started since).
+            let last = rec.steps.all.last { $0.tool == "stop_recording" && $0.end == nil }
             if let last { rec.steps.end(last, result: "Stopped the recording and saved it.", isError: false) }
             // If saving fails, the list says so for this call too.
             exporting.enter()
