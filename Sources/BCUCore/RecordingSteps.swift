@@ -67,9 +67,23 @@ public final class RecordedStep {
 
     /// Whether what it typed or set is hidden: a password field, or the
     /// recording hides all typed text.
+    /// A step still running (the recording is saved as the app quits) may
+    /// not know yet where its text goes, so it's hidden too.
     func hidesText(redactAll: Bool) -> Bool {
         guard tool == "type_text" || tool == "set_value" else { return false }
-        return redactAll || target?.secure == true || focusSecure
+        return redactAll || target?.secure == true || focusSecure || end == nil
+    }
+
+    /// Its arguments as written out: typed text that's to be hidden and
+    /// isn't yet (the step hasn't ended) is left out.
+    func exportedArgs(redactAll: Bool) -> JSONObject {
+        var a = args
+        if hidesText(redactAll: redactAll) {
+            for key in ["text", "value"] {
+                if let v = a[key] as? String, !v.hasPrefix("(hidden") { a[key] = "(hidden, \(v.count) characters)" }
+            }
+        }
+        return a
     }
 }
 

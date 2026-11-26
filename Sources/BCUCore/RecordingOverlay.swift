@@ -267,7 +267,7 @@ public enum ActionList {
             "n": s.number, "tool": s.tool, "t": (s.t / 10).rounded() / 100, "time": RecordingText.clock(s.t),
             "duration_ms": Int(s.durationMs.rounded()),
             "caption": RecordingText.caption(tool: s.tool, args: s.args, target: s.target, hidden: s.hidesText(redactAll: redactAll)),
-            "args": sanitized(s.args), "result": s.result, "error": s.isError,
+            "args": sanitized(s.exportedArgs(redactAll: redactAll)), "result": s.end == nil ? "" : s.result, "error": s.isError,
         ]
         if s.end == nil { e["unfinished"] = true }
         if let t = s.target {
@@ -344,7 +344,7 @@ public enum ActionList {
             }
             if let p = s.point { out.append("\(sub)- \(s.clicked ? "clicked" : "pointed") at (\(Int(p.x)), \(Int(p.y)))") }
             for w in s.waits { out.append("\(sub)- \(md(w))") }
-            let args = sanitized(s.args).filter { $0.key != "window_id" || s.tool == "release_window" }
+            let args = sanitized(s.exportedArgs(redactAll: info.redactAll)).filter { $0.key != "window_id" || s.tool == "release_window" }
             if !args.isEmpty, let d = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys]), let a = String(data: d, encoding: .utf8) {
                 out.append("\(sub)- args: `\(a.replacingOccurrences(of: "`", with: "'"))`")
             }

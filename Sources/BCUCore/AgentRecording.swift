@@ -106,10 +106,19 @@ public final class AgentRecording {
         self.owns = owns
         let fm = FileManager.default
         try fm.createDirectory(at: Self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // Made without intermediates, so it fails if it's there already: two
+        // sessions starting in the same millisecond each get their own.
         var d = Self.directory.appendingPathComponent(Self.folderName(started), isDirectory: true)
         var i = 2
-        while fm.fileExists(atPath: d.path) { d = Self.directory.appendingPathComponent(Self.folderName(started) + "-\(i)"); i += 1 }
-        try fm.createDirectory(at: d, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        while true {
+            do {
+                try fm.createDirectory(at: d, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+                break
+            } catch where fm.fileExists(atPath: d.path) && i < 1000 {
+                d = Self.directory.appendingPathComponent(Self.folderName(started) + "-\(i)", isDirectory: true)
+                i += 1
+            }
+        }
         dir = d
         Self.markActive(d, true)
         var points = CGSize(width: display.bounds.width, height: display.bounds.height)

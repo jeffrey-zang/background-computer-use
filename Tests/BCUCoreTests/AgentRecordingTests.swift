@@ -216,6 +216,17 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertGreaterThan(data[i + 1], 100, "covered")
     }
 
+    /// Saved while a step still runs (the app quits): what it's typing isn't written out.
+    func testAnUnfinishedStepsTextIsHidden() throws {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        _ = log.begin(tool: "type_text", args: ["text": "hunter2", "element": 5])
+        let info = ActionList.Info(started: Date(), durationMs: 1000, source: "display", windowID: nil, fps: 12, frames: 12,
+                                   size: CGSize(width: 1600, height: 1000), label: "Agent", redactAll: false, video: "recording.mp4")
+        for text in [ActionList.markdown(log.all, info: info), String(decoding: ActionList.json(log.all, info: info), as: UTF8.self)] {
+            XCTAssertFalse(text.contains("hunter2"), text)
+        }
+    }
+
     func testPruningSparesRecordingsUnderWay() {
         let dirs = (1...25).reversed().map { URL(fileURLWithPath: "/r/\(String(format: "%02d", $0))", isDirectory: true) }
         let gone = AgentRecording.prunable(dirs, keep: 20, protected: ["/r/02"])
