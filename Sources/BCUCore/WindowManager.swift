@@ -39,6 +39,9 @@ public final class WindowManager {
     let sessionKey: String
     private let lock = NSLock()
     private var registry: [CGWindowID: AgentWindow] = [:]
+    /// After each window is registered or unregistered, from any thread
+    /// (the watchdog catches windows between tool calls too).
+    var onRegistryChange: (() -> Void)?
     /// When each window was registered (`nowMs`).
     private var registeredAt: [CGWindowID: Double] = [:]
     /// The watchdog leaves a window this new alone: an app launched hidden
@@ -133,6 +136,7 @@ public final class WindowManager {
         Self.sharedLock.unlock()
         Self.ownedAgain(w.id)
         persist()
+        onRegistryChange?()
     }
 
     /// Move every window of `other` (a session whose agent is gone) to this
@@ -153,6 +157,7 @@ public final class WindowManager {
         if Self.registeredAnywhere[id]?.session == sessionKey { Self.registeredAnywhere[id] = nil }
         Self.sharedLock.unlock()
         persist()
+        onRegistryChange?()
     }
 
     private var registryURL: URL { BCUPaths.supportDirectory.appendingPathComponent("windows-\(sessionKey).json") }

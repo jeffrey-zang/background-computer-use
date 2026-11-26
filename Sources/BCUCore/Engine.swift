@@ -190,6 +190,10 @@ public final class Engine {
         recorder = SessionRecorder(sessionID: sessionID, label: label, display: display)
         frontMark = focusGuard.frontMark
         interference.idleMs = { [weak self] in self?.msSinceLastCall ?? 0 }
+        windows.onRegistryChange = { [weak self] in
+            guard let self else { return }
+            self.interference.sync(self.windows.windows)
+        }
         interference.excluded = { [weak self] id in
             guard let self else { return true }
             return Self.interferenceExcluded(handedOff: self.windows.window(id)?.handedOff, userInControl: self.userInControl)

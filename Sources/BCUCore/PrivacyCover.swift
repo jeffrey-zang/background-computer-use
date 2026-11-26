@@ -106,6 +106,8 @@ public final class PrivacyCover {
         // A panel hides whenever its app stops being active (opening BCU's
         // Settings and switching away would take the cover down).
         p.hidesOnDeactivate = false
+        // Nor when its app is hidden (Cmd-H in an app that runs the engine in process).
+        p.canHide = false
         p.ignoresMouseEvents = true
         p.isReleasedWhenClosed = false
         p.animationBehavior = .none

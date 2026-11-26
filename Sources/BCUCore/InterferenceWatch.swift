@@ -139,15 +139,19 @@ final class InterferenceWatch {
     func sync(_ windows: [AgentWindow]) {
         let want = Dictionary(windows.map { ($0.id, (pid: $0.pid, app: $0.appName)) }, uniquingKeysWith: { a, _ in a })
         lock.lock()
-        let same = Set(want.keys) == Set(watched.keys)
+        let same = Set(want.keys) == Set(watched.keys) && Set(want.values.map(\.pid)) == Set(observers.keys)
         watched = want
-        let pids = Set(want.values.map(\.pid))
-        let have = Set(observers.keys)
         lock.unlock()
-        guard !same || pids != have else { return }
-        _ = onMainUnlessQuitting { [self] in
-            for pid in pids.subtracting(observers.keys) { observe(pid) }
-            for pid in Set(observers.keys).subtracting(pids) { unobserve(pid) }
+        guard !same else { return }
+        // Without waiting for the main thread: this runs from wherever a
+        // window was registered or released, which may hold up the main thread.
+        DispatchQueue.main.async { [self] in
+            lock.lock()
+            let pids = Set(watched.values.map(\.pid))
+            let have = Set(observers.keys)
+            lock.unlock()
+            for pid in pids.subtracting(have) { observe(pid) }
+            for pid in have.subtracting(pids) { unobserve(pid) }
         }
     }
 
