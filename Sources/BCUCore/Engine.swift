@@ -1303,6 +1303,8 @@ public final class Engine {
         let queue = DispatchQueue.global(qos: .userInitiated)
         let state = NSLock()
         var done = false
+        // The step being handed back from has begun already: any change is a newer action.
+        let actions = fg.actionsBegun(pid)
         for ms in [150, 500, 1200] {
             queue.asyncAfter(deadline: .now() + .milliseconds(ms)) {
                 state.lock(); let skip = done; state.unlock()
@@ -1316,7 +1318,7 @@ public final class Engine {
                         KeyScope.shouldRetryHandOff(appFront: BCUFrontProcessPID() == pid, swapping: false,
                                                     parked: fg.parkedKey(pid) != nil, key: AX.focusedWindowID(pid),
                                                     agentKey: agentKey, userWindowExists: WindowList.info(user) != nil,
-                                                    userInControl: self.userInControl)
+                                                    userInControl: self.userInControl, newerAction: fg.actionsBegun(pid) != actions)
                     },
                     attempt: {
                         _ = KeyScope.postRecords(pid: pid, from: agentKey, to: user, settle: KeyScope.handOffSettles.last ?? 120)

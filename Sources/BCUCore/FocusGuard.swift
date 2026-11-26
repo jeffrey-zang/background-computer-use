@@ -177,6 +177,8 @@ public final class FocusGuard {
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
+    /// How many agent actions have begun on each app (see `actionsBegun`).
+    private var actionsBegunCount: [pid_t: Int] = [:]
     private var lastUserSwitchKeyMs = 0.0
     private var lastUserKeyMs = 0.0
     /// The user's last key that could open or switch to an app: Return or
@@ -439,9 +441,17 @@ public final class FocusGuard {
         t.cause = cause
         t.strict = strict
         taints[pid] = t
+        actionsBegunCount[pid, default: 0] += 1
         lock.unlock()
         // Shut before the app is asked for anything, not at the gate's next look.
         if !gate.blocks(pid) { gate.sync() }
+    }
+
+    /// How many agent actions have begun on `pid` so far: a later action
+    /// (any step, a batch's included) changes it.
+    public func actionsBegun(_ pid: pid_t) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return actionsBegunCount[pid] ?? 0
     }
 
     public func endAction(pid: pid_t, graceMs: Double = 700) {

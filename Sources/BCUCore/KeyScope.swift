@@ -219,9 +219,12 @@ public final class KeyScope {
     /// Never while the user controls an agent window from the preview: the
     /// controlled window keeps key for their keystrokes (`RemoteControl`
     /// reuses its scope without checking focus), as no new swap starts then.
+    /// And never after a newer action in the app: it decided for itself
+    /// where key goes, and may have opened something (a menu, a dropdown,
+    /// through accessibility alone) that taking key away would close.
     static func shouldRetryHandOff(appFront: Bool, swapping: Bool, parked: Bool, key: CGWindowID?, agentKey: CGWindowID, userWindowExists: Bool,
-                                   userInControl: Bool = false) -> Bool {
-        !userInControl && !appFront && !swapping && !parked && key == agentKey && userWindowExists
+                                   userInControl: Bool = false, newerAction: Bool = false) -> Bool {
+        !userInControl && !newerAction && !appFront && !swapping && !parked && key == agentKey && userWindowExists
     }
 
     enum DeferredHandOff: Equatable { case skipped, handed, missed }

@@ -68,6 +68,23 @@ final class HandOffRetryTests: XCTestCase {
                                                    userInControl: true))
     }
 
+    /// A newer action in the app (an accessibility press that opened a
+    /// dropdown, say) supersedes the queued tries (review of #90).
+    func testNoLaterTryAfterANewerActionInTheApp() {
+        XCTAssertFalse(KeyScope.shouldRetryHandOff(appFront: false, swapping: false, parked: false, key: 7, agentKey: 7, userWindowExists: true,
+                                                   newerAction: true))
+    }
+
+    /// The guard counts every action that begins on an app.
+    func testTheGuardCountsActionsBegunPerApp() {
+        let fg = FocusGuard()
+        let before = fg.actionsBegun(4242)
+        fg.beginAction(pid: 4242, cause: "test")
+        fg.endAction(pid: 4242)
+        XCTAssertEqual(fg.actionsBegun(4242), before + 1)
+        XCTAssertEqual(fg.actionsBegun(4343), 0)
+    }
+
     // MARK: Later tries run as a swap (review of #90)
 
     /// The records of a later try are sent inside the guard's swap, so a
