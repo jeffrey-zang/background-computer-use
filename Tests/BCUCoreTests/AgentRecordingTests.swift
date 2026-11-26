@@ -817,6 +817,19 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(RecordingText.hideQuotedInSteps("1. set_value: Set element 3 to \"42", [1]), "1. set_value: Set element 3 to \"(hidden)")
     }
 
+    func testOtherWindowTitlesAndSecureFieldNamesAreHidden() {
+        XCTAssertEqual(RecordingText.hideTitles("  7: \"confidentia\" 800x600 (the user's)"), "  7: \"(hidden)\" 800x600 (the user's)")
+        XCTAssertEqual(RecordingText.hideValues("[5] SecureTextField \"confidentia\" @(0,0 10x10)"), "[5] SecureTextField \"(hidden)\" @(0,0 10x10)")
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let w = log.begin(tool: "set_value", args: ["value": "confidential", "element": 5])
+        log.setTarget(StepTarget(element: 5, role: "SecureTextField", label: "Password", frame: .zero, secure: true))
+        log.end(w, result: "Set.", isError: false)
+        let c = log.begin(tool: "click", args: ["element": 5])
+        log.setTarget(StepTarget(element: 5, role: "SecureTextField", label: "confidentia", frame: .zero, secure: true))
+        log.end(c, result: "Clicked.", isError: false)
+        XCTAssertEqual(c.target?.label, "(hidden)")
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

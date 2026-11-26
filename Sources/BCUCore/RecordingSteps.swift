@@ -238,7 +238,7 @@ public enum RecordingText {
         let frame = #"@\(-?\d+,-?\d+ \d+x\d+\)"#
         // A text field's name first (it can be its contents), up to what
         // follows it on the line: its value, placeholder or frame.
-        return text.replacingOccurrences(of: #"((?:TextField|TextArea|SearchField|ComboBox)(?:\([^)\n]*\))?) "[^\n]*?"(?= value="| value=\(hidden\)| placeholder="| "# + frame + ")",
+        return text.replacingOccurrences(of: #"((?:SecureTextField|TextField|TextArea|SearchField|ComboBox)(?:\([^)\n]*\))?) "[^\n]*?"(?= value="| value=\(hidden\)| placeholder="| "# + frame + ")",
                                          with: "$1 \"(hidden)\"", options: [.regularExpression])
             // Then every value, up to the frame that ends the line (it can
             // hold quotes and brackets itself).
@@ -253,6 +253,8 @@ public enum RecordingText {
         text.replacingOccurrences(of: #"(Window \d+ )"[^\n]*"(?= of )"#, with: "$1\"(hidden)\"", options: .regularExpression)
             // `7: App [opened] "…"` (status) and `7: App "…" [opened]` (list_windows).
             .replacingOccurrences(of: #"(?m)^(\s*\d+: [^\n"]*) "[^\n]*"(?=( \[[^\]\n]*\])?$)"#, with: "$1 \"(hidden)\"", options: .regularExpression)
+            // The user's other windows: `7: "…" 800x600 (the user's)`.
+            .replacingOccurrences(of: #"(?m)^(\s*\d+: )"[^\n]*"(?= \d+x\d+)"#, with: "$1\"(hidden)\"", options: .regularExpression)
     }
 
     /// Every word (between spaces, quotes or line breaks) holding a
@@ -604,7 +606,7 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         // An element can be named after text hidden earlier (a row with the file name typed).
         // A text field's name can be its (edited) contents, once typing was hidden.
-        let textInput = ["TextField", "TextArea", "SearchField", "ComboBox"].contains(target.role)
+        let textInput = target.secure || ["TextField", "SecureTextField", "TextArea", "SearchField", "ComboBox"].contains(target.role)
         // Once typing is hidden, no name at all: any element's can echo it.
         // After a password write, a text field's name can be an edited copy of it too.
         let label = (hidValues || (hideFieldValues && textInput)) && !target.label.isEmpty && target.label != "focused field"
