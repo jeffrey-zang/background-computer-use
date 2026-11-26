@@ -2122,6 +2122,18 @@ public final class WindowManager {
         return userKey
     }
 
+    /// Hold the user's input (`hold`), then wait for the app's input lock
+    /// (`lock`, bounded: false when it timed out, and `body` runs anyway,
+    /// as the guard's hand-over does), run `body`, and undo both on the way
+    /// out, the lock only if it was taken.
+    static func holdThenLock(hold: () -> Void, lock: () -> Bool, unlock: () -> Void, release: () -> Void, body: () -> Void) {
+        hold()
+        defer { release() }
+        let locked = lock()
+        defer { if locked { unlock() } }
+        body()
+    }
+
     /// What keeps the automatic handout from starting now, if anything.
     static func handoutBlocker(focusSensitive: String?, secureInput: Bool, typing: Bool) -> String? {
         if secureInput { return QuietWait.secureReason }
@@ -2209,17 +2221,23 @@ public final class WindowManager {
                 // typing in: back to theirs, with their keys held meanwhile.
                 if let back = Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: userKey, keyNow: AX.focusedWindowID(pid), made: id),
                    WindowList.info(back) != nil {
+                    // Their keys are held from now, not from when the lock
+                    // comes: a step in the app (an accessibility-only one
+                    // starts no swap) can hold it a while, and meanwhile
+                    // their typing would go to the detached tab. Waited for
+                    // as the guard's hand-over waits, `maxHoldMs` at most.
                     let appLock = Engine.inputLock(pid)
-                    appLock.lock()
-                    focusGuard.beginSwap(pid)
-                    // Looked at again with the lock: the user may have moved
-                    // on (another window, another app) while it waited.
-                    if Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: back, keyNow: AX.focusedWindowID(pid), made: id) == back,
-                       !Self.giveKey(pid: pid, to: back) {
-                        Log.info("tabs: couldn't confirm key on window \(back) after a late move")
+                    Self.holdThenLock(hold: { self.focusGuard.beginSwap(pid) },
+                                      lock: { appLock.lock(before: Date().addingTimeInterval(FocusGuard.maxHoldMs / 1000)) },
+                                      unlock: { appLock.unlock() },
+                                      release: { self.focusGuard.endSwap(pid) }) {
+                        // Looked at again with the lock: the user may have
+                        // moved on (another window, another app) meanwhile.
+                        if Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: back, keyNow: AX.focusedWindowID(pid), made: id) == back,
+                           !Self.giveKey(pid: pid, to: back) {
+                            Log.info("tabs: couldn't confirm key on window \(back) after a late move")
+                        }
                     }
-                    focusGuard.endSwap(pid)
-                    appLock.unlock()
                 }
                 let placed = settleOnUserScreen(pid: pid, id: id)
                 focusGuard.record("another app opened a tab in your agent's \(owner) window; it's in a window of yours now")

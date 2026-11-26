@@ -265,6 +265,19 @@ final class StrayTabTests: XCTestCase {
         XCTAssertEqual(order, ["register", "place"])
     }
 
+    /// A late give-back holds the user's input before it waits for the
+    /// app's lock, and lets both go on every exit (the lock only if taken).
+    func testALateGiveBackHoldsInputBeforeWaitingForTheLock() {
+        var order: [String] = []
+        WindowManager.holdThenLock(hold: { order.append("hold") }, lock: { order.append("lock"); return true },
+                                   unlock: { order.append("unlock") }, release: { order.append("release") }) { order.append("body") }
+        XCTAssertEqual(order, ["hold", "lock", "body", "unlock", "release"])
+        order = []
+        WindowManager.holdThenLock(hold: { order.append("hold") }, lock: { order.append("lock"); return false },
+                                   unlock: { order.append("unlock") }, release: { order.append("release") }) { order.append("body") }
+        XCTAssertEqual(order, ["hold", "lock", "body", "release"])
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {
