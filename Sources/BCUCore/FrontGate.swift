@@ -176,12 +176,20 @@ public final class FrontGate {
         public var bundleIDs: Set<String> = []
         /// Of `pids`, the apps an agent's step is running in right now.
         public var stepping: Set<pid_t> = []
-        public init(pids: Set<pid_t> = [], bundleIDs: Set<String> = [], stepping: Set<pid_t> = []) {
+        /// Of `pids`, the apps whose agent's step just ended but can still
+        /// bring them forward (a page loading after a press on a link), or
+        /// that the guard just put back from the front: what comes forward
+        /// from these is the agent's (`Attribution.acting`).
+        public var settling: Set<pid_t> = []
+        public init(pids: Set<pid_t> = [], bundleIDs: Set<String> = [], stepping: Set<pid_t> = [], settling: Set<pid_t> = []) {
             self.pids = pids
             self.bundleIDs = bundleIDs
             self.stepping = stepping
+            self.settling = settling
         }
         var isEmpty: Bool { pids.isEmpty && bundleIDs.isEmpty }
+        /// The apps an agent is acting on: stepping or settling.
+        var acting: Set<pid_t> { stepping.union(settling) }
     }
 
     public var targets: (() -> Targets)?
@@ -208,10 +216,17 @@ public final class FrontGate {
     /// Since when agents have needed nothing kept back (WindowServer's list).
     private var idleSinceMs: Double?
     private var liftedUntilMs = 0.0
-    /// Open for a key: for everyone but the apps an agent is stepping in.
+    /// Open for a key: for everyone but the apps an agent is acting on.
     private var keyLiftedUntilMs = 0.0
-    /// The apps an agent was stepping in at the last pass.
-    private var lastStepping: Set<pid_t> = []
+    /// Open for a click in an ordinary window of one of `clickedApps`: for
+    /// everyone but the apps an agent is acting on, other than those. A
+    /// click anywhere else (the Dock, the menu bar, a notification) sets
+    /// `clickAll`, and then everyone goes through, as for any click before.
+    private var clickLiftedUntilMs = 0.0
+    private var clickedApps: Set<pid_t> = []
+    private var clickAll = false
+    /// The apps an agent was acting on (stepping or settling) at the last pass.
+    private var lastActing: Set<pid_t> = []
     private var switcherOpen = false
     private var switcherSinceMs = 0.0
     private var pointerDown = false
@@ -407,18 +422,30 @@ public final class FrontGate {
     }
 
     /// A key that may switch apps (Return, a shortcut, a function key): every
-    /// app goes through but those an agent's step is running in right now.
-    /// What comes forward from those then is almost always the agent's doing
-    /// (Return on a link into that browser at that very moment opens it
-    /// without bringing it forward). A click lets everyone through: it may be
-    /// on that app's window.
+    /// app goes through but those an agent is acting on: its step is running
+    /// there, or ended a moment ago and can still bring the app forward (a
+    /// browser loading the page of a link it pressed brings itself forward
+    /// while it loads). What comes forward from those then is almost always
+    /// the agent's doing (Return on a link into that browser at that very
+    /// moment opens it without bringing it forward). The user's Return in
+    /// their chat app let a browser an agent had just pressed a link in come
+    /// forward over it (issue #87).
     public func liftForKey(ms: Double) {
         let now = nowMs()
         fromTap {
             self.keyLiftedUntilMs = max(self.keyLiftedUntilMs, now + ms)
-            self.openForUserLocked(keeping: self.lastStepping)
+            self.openForUserLocked(keeping: self.lastActing)
         }
     }
+
+    /// The apps an agent is acting on, as of the gate's last pass. For the
+    /// input tap too: it doesn't wait for a pass to let go of the lock.
+    public var acting: Set<pid_t> {
+        actingLock.lock(); defer { actingLock.unlock() }
+        return actingSeen
+    }
+    private let actingLock = NSLock()
+    private var actingSeen: Set<pid_t> = []
 
     /// For the input tap: run `body` with the lock held, right away if the
     /// lock comes within `tapWaitS`, else just after on `tapQueue`, so a
@@ -557,17 +584,33 @@ public final class FrontGate {
     /// A mouse button went down, or came up: open for as long as it's held
     /// and `ms` after. What a drag is let go on can come forward (a file on
     /// a Dock icon, an item of a Dock menu), however long the drag took.
-    public func pointer(down: Bool, ms: Double) {
+    ///
+    /// `on`: the app whose ordinary window the button went down in (the
+    /// topmost window there, see `ClickTarget.gateOwner`), nil when that
+    /// can't be told or it went down on something else (the Dock, the menu
+    /// bar, a notification). A click in one app's window can't be a request
+    /// for another app to come forward, so the apps an agent is acting on
+    /// stay back, but for that app: the user clicking in their chat app
+    /// while an agent scrolled in a browser let the browser through, and it
+    /// came forward over them (issue #87). (A link they clicked that opens
+    /// in that browser is brought forward once it shows, see `LateLook`.)
+    public func pointer(down: Bool, ms: Double, on app: pid_t? = nil) {
         let now = nowMs()
         fromTap {
             if down {
+                if !self.pointerDown && now >= self.clickLiftedUntilMs {
+                    // A new click lift: the last one's apps are done with.
+                    self.clickAll = false
+                    self.clickedApps = []
+                }
                 if !self.pointerDown { self.pointerSinceMs = now }
                 self.pointerDown = true
-                self.openForUserLocked()
+                if let app { self.clickedApps.insert(app) } else { self.clickAll = true }
+                self.openForUserLocked(keeping: self.clickAll ? [] : self.lastActing.subtracting(self.clickedApps))
             } else {
                 self.pointerDown = false
             }
-            self.liftedUntilMs = max(self.liftedUntilMs, now + ms)
+            self.clickLiftedUntilMs = max(self.clickLiftedUntilMs, now + ms)
         }
     }
 
@@ -576,10 +619,35 @@ public final class FrontGate {
         return liftedLocked(nowMs())
     }
 
+    /// Open for everyone.
     private func liftedLocked(_ now: Double) -> Bool {
         if switcherOpen && now - switcherSinceMs > Self.switcherMaxMs { switcherOpen = false }
         if pointerDown && now - pointerSinceMs > Self.pointerMaxMs { pointerDown = false }
-        return now < liftedUntilMs || switcherOpen || pointerDown
+        return now < liftedUntilMs || switcherOpen || (clickLiftedLocked(now) && clickAll)
+    }
+
+    /// Open for a click (for everyone, or for everyone but some: `clickAll`).
+    private func clickLiftedLocked(_ now: Double) -> Bool {
+        pointerDown || now < clickLiftedUntilMs
+    }
+
+    /// What a pass keeps back of `want` (pids in `t`, already without the
+    /// app in front): nothing while open for everyone; while open for a key,
+    /// only the apps an agent is acting on; while open for a click in an
+    /// app's window, those but that app.
+    static func narrowed(_ t: Targets, want: Targets, open: Bool, keyOpen: Bool, clickOpen: Bool, clicked: Set<pid_t>) -> Targets {
+        if open { return Targets() }
+        var t = t
+        t.stepping = []
+        t.settling = []
+        if clickOpen {
+            t.pids.formIntersection(want.acting.subtracting(clicked))
+            t.bundleIDs = []
+        } else if keyOpen {
+            t.pids.formIntersection(want.acting)
+            t.bundleIDs = []
+        }
+        return t
     }
 
     // MARK: Keeping the list
@@ -643,15 +711,12 @@ public final class FrontGate {
         if foreign { foreign = false }
         let open = !tapOK || liftedLocked(now)
         let keyOpen = now < keyLiftedUntilMs
-        lastStepping = want.stepping
-        /// What to keep back of `t` now: nothing while open for the user;
-        /// while open for a key, only the apps an agent is stepping in.
+        let clickOpen = clickLiftedLocked(now)
+        let clicked = clickedApps
+        lastActing = want.acting
+        actingLock.lock(); actingSeen = want.acting; actingLock.unlock()
         func narrowed(_ t: Targets) -> Targets {
-            if open { return Targets() }
-            var t = t
-            t.stepping = []
-            if keyOpen { t.pids.formIntersection(want.stepping); t.bundleIDs = [] }
-            return t
+            Self.narrowed(t, want: want, open: open, keyOpen: keyOpen, clickOpen: clickOpen, clicked: clicked)
         }
         if useWindowServer {
             // The watchdog took this engine's entries off (after a stall).

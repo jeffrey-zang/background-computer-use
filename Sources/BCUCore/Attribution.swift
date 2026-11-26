@@ -35,6 +35,19 @@ enum Attribution {
         var arrivedElsewhereMs: Double
         /// Whether the user's last click landed on this app (see `ClickTarget.explains`).
         var clickOnApp: Bool = true
+        /// The cmd+Tab switcher is up: command is still held after the
+        /// user's cmd+Tab, so the switch it makes hasn't happened yet.
+        var switcherOpen: Bool = false
+    }
+
+    /// What of the user's explains an app coming forward.
+    enum Credit: Equatable {
+        /// Nothing: it's the agent's doing, if an agent is acting on it.
+        case none
+        /// Their click on it (its window, its Dock icon).
+        case click
+        /// Their cmd+Tab.
+        case switchKey
     }
 
     /// How long after a click or cmd+Tab an app coming forward is the user's doing.
@@ -67,12 +80,21 @@ enum Attribution {
     /// People press those all the time in the app they're in, and an agent's
     /// app comes forward on nearly every step. Counting them left the
     /// agent's app in front whenever the two fell within 1.5 s.
+    ///
+    /// A cmd+Tab explains nothing while the switcher is still up: the switch
+    /// comes when command is let go. The agent's browser coming forward while
+    /// the user held command was left in front on their cmd+Tab, and stayed
+    /// there once they let go of it without switching (issue #87).
     static func agentCaused(_ f: Facts) -> Bool {
-        let reasserting = f.restoredAwayMs.map { f.nowMs - $0 < reassertMs } ?? false
-        guard reasserting || f.step.map({ $0.running > 0 || $0.settleUntilMs >= f.nowMs }) == true else { return false }
+        acting(f) && credit(f) == .none
+    }
+
+    /// Which of the user's inputs explains the app coming forward now.
+    static func credit(_ f: Facts) -> Credit {
         func unanswered(_ ms: Double) -> Bool { f.nowMs - ms < switchMs && ms > f.arrivedElsewhereMs }
-        let click = f.step?.strict != true && f.clickOnApp && unanswered(f.lastMouseDownMs)
-        return !(click || unanswered(f.lastSwitchKeyMs))
+        if f.step?.strict != true && f.clickOnApp && unanswered(f.lastMouseDownMs) { return .click }
+        if unanswered(f.lastSwitchKeyMs) && !f.switcherOpen { return .switchKey }
+        return .none
     }
 
     /// Whether an agent is acting on the app: a step on it running or
@@ -80,6 +102,54 @@ enum Attribution {
     static func acting(_ f: Facts) -> Bool {
         let reasserting = f.restoredAwayMs.map { f.nowMs - $0 < reassertMs } ?? false
         return reasserting || f.step.map({ $0.running > 0 || $0.settleUntilMs >= f.nowMs }) == true
+    }
+
+    /// When to look again at an app left in front on the user's input
+    /// while an agent was acting on it, after the change (ms): by then
+    /// accessibility has said where their click landed.
+    static let recheckMs: [Double] = [150, 450]
+
+    /// An app an agent was acting on came forward and was left in front
+    /// because of the user's click or cmd+Tab (`credit`). A moment later:
+    struct Left {
+        /// What explained it then.
+        var credit: Credit
+        /// It's still in front.
+        var front: Bool
+        /// The user clicked again, or came to another app, since: what's in
+        /// front now is theirs to decide.
+        var movedOn: Bool
+        /// An agent is still acting on it (`acting`).
+        var acting: Bool
+        /// Where the click landed, as now known (accessibility answers after
+        /// the decision had to be made).
+        var clickTarget: ClickTarget
+        /// The app whose ordinary window was on top where they clicked, in
+        /// the look at their screens from before the click (nil: no look,
+        /// or not an ordinary window there). The app coming forward can
+        /// raise its windows over the very spot before accessibility is
+        /// asked what's there, and then the click reads as on it.
+        var clickWasIn: pid_t?
+        /// The cmd+Tab switcher was still up when it came forward.
+        var switcherOpen: Bool
+    }
+
+    /// Whether to put the user's app back after all: the input that left
+    /// the agent's app in front turns out to have been in another app (the
+    /// click landed in another app's window, or the cmd+Tab hadn't switched
+    /// yet), it's still in front, an agent's step is still acting on it,
+    /// and the user hasn't done anything since. Before, the guard only
+    /// noticed once the user went back themselves, up to 3 s later.
+    static func revert(_ l: Left, pid: pid_t) -> Bool {
+        guard l.front, !l.movedOn, l.acting else { return false }
+        switch l.credit {
+        case .none: return false
+        case .switchKey: return l.switcherOpen
+        case .click:
+            if !l.clickTarget.explains(pid) { return true }
+            if let was = l.clickWasIn, was != pid { return true }
+            return false
+        }
     }
 }
 
@@ -106,6 +176,23 @@ enum ClickTarget: Equatable {
         case .app(let owner): return owner == pid
         case .dock(let app): return app == nil || app == pid
         }
+    }
+
+    /// The app a click is surely in, for the gate (`FrontGate.pointer`): the
+    /// owner of the topmost ordinary (layer 0) window under it. `windows`
+    /// are those under the click, top first; `dock` marks the Dock's and
+    /// `coversDisplay` a window as big as its display (on macOS 26 and later
+    /// the Dock keeps one over the whole screen that clicks pass through).
+    /// nil when it may be on anything that brings an app forward: a Dock
+    /// icon, the menu bar or a menu, a notification, a panel above ordinary
+    /// windows, the desktop, nothing.
+    static func gateOwner(_ windows: [(pid: pid_t, dock: Bool, layer: Int, coversDisplay: Bool)]) -> pid_t? {
+        for w in windows {
+            if w.dock && w.coversDisplay { continue }
+            if w.dock || w.layer != 0 { return nil }
+            return w.pid
+        }
+        return nil
     }
 
     /// The window list's answer, for when accessibility is too slow: the
