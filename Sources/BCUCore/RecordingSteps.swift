@@ -249,7 +249,8 @@ public enum RecordingText {
     /// can show what was typed in its title.
     static func hideTitles(_ text: String) -> String {
         text.replacingOccurrences(of: #"(Window \d+ )"[^\n]*"(?= of )"#, with: "$1\"(hidden)\"", options: .regularExpression)
-            .replacingOccurrences(of: #"(?m)^(\s*\d+: [^\n"]*) "[^\n]*"$"#, with: "$1 \"(hidden)\"", options: .regularExpression)
+            // `7: App [opened] "…"` (status) and `7: App "…" [opened]` (list_windows).
+            .replacingOccurrences(of: #"(?m)^(\s*\d+: [^\n"]*) "[^\n]*"(?=( \[[^\]\n]*\])?$)"#, with: "$1 \"(hidden)\"", options: .regularExpression)
     }
 
     /// Every word (between spaces, quotes or line breaks) holding a
@@ -493,6 +494,9 @@ public final class StepLog {
     /// values (an edited copy, revealed by "show password", matches no
     /// typed text). Reads stay; names of other elements too.
     private var hideFieldValues = false
+    /// When the first such write started: results that ended after it get
+    /// the same masking again at export (one could end before the write did).
+    private var hideFieldValuesFrom = Double.infinity
     /// When that started (ms into the video): reads that end after it are left out.
     private var hidValuesFrom = Double.infinity
     /// What a read's result becomes once typing is hidden.
@@ -697,7 +701,10 @@ public final class StepLog {
             // The run is over: its whole text stays hidden, once.
             if let forms = runForms.removeValue(forKey: w) { addHidden(forms) }
         }
-        if s.textHidden && !redactAll && (s.target?.secure == true || s.focusSecure) { hideFieldValues = true }
+        if s.textHidden && !redactAll && (s.target?.secure == true || s.focusSecure) {
+            if !hideFieldValues { hideFieldValuesFrom = s.t }
+            hideFieldValues = true
+        }
         if s.textHidden && redactAll {
             if !hidValues { hidValuesFrom = s.t }
             hidValues = true
@@ -751,6 +758,7 @@ public final class StepLog {
         guard !hiddenTexts.isEmpty || !keyRuns.isEmpty || !pastRuns.isEmpty else { return }
         for s in Self.flatten(steps) where s.end != nil {
             if hidValues, Self.reads.contains(s.tool), (s.end ?? 0) >= hidValuesFrom { s.result = Self.readLeftOut; continue }
+            if (s.end ?? 0) >= min(hidValuesFrom, hideFieldValuesFrom) { s.result = RecordingText.hideTitles(RecordingText.hideValues(s.result)) }
             s.result = RecordingText.redact(redactRunStarts(s.result), secrets: hiddenTexts)
             s.args = Self.redacted(s.args, hiddenTexts) as? JSONObject ?? s.args
             if let t = s.target {

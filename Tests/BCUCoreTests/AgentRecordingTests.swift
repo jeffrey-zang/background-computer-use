@@ -736,6 +736,21 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertGreaterThan(data[150 * image.bytesPerRow + 700 * 4 + 1], 100, "the part the window grew into")
     }
 
+    func testListWindowsTitlesAreHidden() {
+        XCTAssertEqual(RecordingText.hideTitles("  7: TextEdit \"confidentia\" [opened]"), "  7: TextEdit \"(hidden)\" [opened]")
+    }
+
+    func testAStatusDuringAPasswordWriteIsMaskedAtExport() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let w = log.begin(tool: "type_text", args: ["text": "confidential", "element": 5])
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: .zero, secure: true))
+        let st = log.begin(tool: "status", args: [:], tracked: false)
+        log.end(st, result: "Your windows:\n  7: TextEdit [opened] \"confidentia\"", isError: false)
+        log.end(w, result: "Typed.", isError: false)
+        log.redactAgain()
+        XCTAssertFalse(st.result.contains("confidentia"), st.result)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))
