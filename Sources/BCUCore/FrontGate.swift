@@ -446,6 +446,21 @@ public final class FrontGate {
     }
     private let actingLock = NSLock()
     private var actingSeen: Set<pid_t> = []
+    private var keptSeen: Set<pid_t> = []
+
+    /// The apps the gate is keeping back right now (off the list), as of its
+    /// last change. Not the apps an agent is acting on: while it's open for
+    /// the user that's none of them.
+    public var keptBack: Set<pid_t> {
+        actingLock.lock(); defer { actingLock.unlock() }
+        return keptSeen
+    }
+
+    /// Lock held.
+    private func publishKeptLocked() {
+        let kept = applied ?? []
+        actingLock.lock(); keptSeen = kept; actingLock.unlock()
+    }
 
     /// For the input tap: run `body` with the lock held, right away if the
     /// lock comes within `tapWaitS`, else just after on `tapQueue`, so a
@@ -478,6 +493,7 @@ public final class FrontGate {
     /// back go on (one call each, where taking everyone else off would be one
     /// per running app).
     private func openForUserLocked(keeping: Set<pid_t> = []) {
+        defer { publishKeptLocked() }
         guard let held = applied else { return }
         let keep = held.intersection(keeping)
         guard keep != held else { return }
@@ -769,6 +785,7 @@ public final class FrontGate {
             }
         }
         let active = hasListLocked || !want.isEmpty
+        publishKeptLocked()
         lock.unlock()
         // A new app must be on the list before it finishes launching, and an
         // agent's app off it before it next shows a window.

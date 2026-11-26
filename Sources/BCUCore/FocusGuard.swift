@@ -206,6 +206,8 @@ public final class FocusGuard {
     /// When a mouse button last came up, and whether away from where it went down.
     private var lastMouseUpMs = -Double.infinity
     private var lastUpDragged = false
+    /// The pointer went more than 4 pt from where the button went down, while held.
+    private var gestureDragged = false
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
@@ -698,7 +700,7 @@ public final class FocusGuard {
             var wasKept = keptAtClick
             while nowMs() - click.ms < LateLook.forMs {
                 sleepMs(LateLook.everyMs)
-                if kept && !wasKept && self.gate.acting.contains(pid) {
+                if kept && !wasKept && self.gate.keptBack.contains(pid) {
                     wasKept = true
                     // From now on a window it opens may be the click's (`linkClickKeptBack`).
                     self.lock.lock(); if self.lastClick.ms == click.ms { self.keptOnClick[pid] = click.ms }; self.lock.unlock()
@@ -804,6 +806,9 @@ public final class FocusGuard {
     /// keeps it back too.
     private func lookLateForKept(at p: CGPoint) {
         let acting = gate.acting
+        // What the gate is really keeping back now (none while it's open
+        // for everyone, after cmd+Tab say), not merely the apps acting.
+        let keptBack = gate.keptBack
         let apps = acting.union(WindowManager.agentPids())
         guard !apps.isEmpty else { return }
         guard let on = lookedOwner(at: p) else { return }
@@ -821,7 +826,7 @@ public final class FocusGuard {
             guard c.point == p else { return }
             for pid in apps where pid != on && pid != self.userFront {
                 // Kept back at the click already: an agent was acting on it.
-                let keptNow = acting.contains(pid)
+                let keptNow = keptBack.contains(pid)
                 if keptNow { self.lock.lock(); self.keptOnClick[pid] = c.ms; self.lock.unlock() }
                 self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true, clickedIn: on, keptAtClick: keptNow)
             }
@@ -1065,6 +1070,7 @@ public final class FocusGuard {
                 let current = self.rechecking[pid] == atMs
                 let now = self.lastClick.ms == click.ms ? self.lastClick : click
                 let movedOn = self.lastUserMouseDownMs > atMs || self.arrivals.contains { $0.ms > atMs && $0.pid != pid } || self.spaceChangedMs > atMs
+                    || self.lastUserSwitchKeyMs > atMs
                     || (self.userFrontPid != user && self.userFrontPid != pid)
                 self.lock.unlock()
                 guard current else { return }
@@ -1712,6 +1718,7 @@ public final class FocusGuard {
             let on = lookedOwner(at: event.location)
             lock.lock()
             lastMouseDownPoint = event.location
+            gestureDragged = false
             lastDownPlainLeft = type == .leftMouseDown && event.flags.intersection([.maskControl, .maskCommand]).isEmpty
             lock.unlock()
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
@@ -1722,9 +1729,10 @@ public final class FocusGuard {
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             // A drag can end somewhere else (a file on a Dock icon): what's
             // let go on decides, so everyone goes through, as for any drop.
-            lock.lock(); let from = lastMouseDownPoint; let plain = lastDownPlainLeft; lock.unlock()
+            lock.lock(); let from = lastMouseDownPoint; let plain = lastDownPlainLeft; let wentAway = gestureDragged; lock.unlock()
             let p = event.location
-            let dragged = hypot(p.x - from.x, p.y - from.y) > 4
+            // A drag, even one brought back to where it began.
+            let dragged = wentAway || hypot(p.x - from.x, p.y - from.y) > 4
             lock.lock(); lastMouseUpMs = nowMs(); lastUpDragged = dragged; lock.unlock()
             gate.pointer(down: false, ms: Self.clickLiftMs, dragEnded: dragged)
             // A completed plain left click (a right or control click asks for
@@ -1776,6 +1784,11 @@ public final class FocusGuard {
         switch type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .tabletPointer:
             let p = event.location
+            if type == .leftMouseDragged || type == .rightMouseDragged || type == .otherMouseDragged {
+                lock.lock()
+                if hypot(p.x - lastMouseDownPoint.x, p.y - lastMouseDownPoint.y) > 4 { gestureDragged = true }
+                lock.unlock()
+            }
             lastUserMoveMs.withLock { $0 = nowMs() }
             if let agent = AgentDisplay.fenced(at: p) {
                 let q = returnPoint(p, agent: agent, msSinceUserMove: 0)
