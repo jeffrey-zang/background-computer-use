@@ -612,6 +612,14 @@ public final class WindowManager {
         Self.openLock.lock()
         settledMs += AgentDisplay.awaitSettled()
         if settledMs > 100 { Log.info("open: waited \(Int(settledMs)) ms for the displays to settle") }
+        // A moved tab's window still on its way (see `lateHandouts`) would
+        // be the first new window this open's catcher sees: it waits until
+        // the sweep has given that one to the user, or the wait is over.
+        var lateWaitMs = 0.0
+        while let until = Self.lateHandoutUntil(pid), nowMs() < until {
+            sleepMs(50); lateWaitMs += 50
+        }
+        if lateWaitMs > 0 { Log.info("open: waited \(Int(lateWaitMs)) ms for a moved tab's window in \(name)") }
         // Which windows the app has now, taken once it's this session's turn:
         // taken before the wait, it would miss the window another session
         // opened meanwhile, and this one would catch that as its own (two
@@ -1586,7 +1594,8 @@ public final class WindowManager {
         return true
     }
 
-    /// A browser window's tabs, from its tab strip (nil: none found).
+    /// A browser window's tabs, from its tab strip (nil: none found, or a
+    /// read that came back incomplete).
     static func tabs(of window: AXUIElement) -> [AXUIElement]? {
         var level = [window]
         for _ in 0..<10 where !level.isEmpty {
@@ -1594,14 +1603,30 @@ public final class WindowManager {
             for el in level {
                 let role = AX.string(el, "AXRole")
                 if role == "AXTabGroup" {
-                    let tabs = AX.children(el).filter { AX.string($0, "AXSubrole") == "AXTabButton" }
-                    if !tabs.isEmpty { return tabs }
+                    let children = AX.children(el)
+                    let kinds = children.map { (role: AX.string($0, "AXRole"), subrole: AX.string($0, "AXSubrole")) }
+                    guard let picked = tabStrip(kinds) else { return nil }
+                    if !picked.isEmpty { return picked.map { children[$0] } }
                 }
                 if role != "AXWebArea" { next += AX.children(el) }
             }
             level = next
         }
         return nil
+    }
+
+    /// Which of a tab group's children are tabs, by role and subrole; nil
+    /// when a read failed (no role, or a radio button with no subrole, as
+    /// Chromium's tabs are): a strip missing a tab would make that tab look
+    /// new on the next look, and the agent's own tab be handed out.
+    static func tabStrip(_ children: [(role: String?, subrole: String?)]) -> [Int]? {
+        var out: [Int] = []
+        for (i, c) in children.enumerated() {
+            guard let role = c.role else { return nil }
+            if role == "AXRadioButton" && c.subrole == nil { return nil }
+            if c.subrole == "AXTabButton" { out.append(i) }
+        }
+        return out
     }
 
     private static func isChromium(_ pid: pid_t) -> Bool {
@@ -1651,6 +1676,13 @@ public final class WindowManager {
     }
 
     enum HandOut { case handedOut, later, failed }
+
+    /// Whether a menu press may have moved the tab: it succeeded, or the app
+    /// was slow to say so (the action can still run). A hard error (the item
+    /// gone, the app refusing it) moved nothing, so no window is waited for.
+    static func menuPressMayHaveRun(_ result: AXError) -> Bool {
+        result == .success || result == .cannotComplete
+    }
 
     /// Whether the tab a check found is still the one to hand out, looked at
     /// again under the app's input lock just before the move: still in the
@@ -1702,7 +1734,12 @@ public final class WindowManager {
             Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, a step came first, or the window went to the user; left it")
             return .later
         }
-        AX.perform(item.element, "AXPress")
+        let pressed = AX.perform(item.element, "AXPress")
+        guard Self.menuPressMayHaveRun(pressed) else {
+            scope.exit()
+            Log.info("tabs: Move Tab to New Window in \(w.appName) failed (\(pressed.rawValue)); the tab stays")
+            return .failed
+        }
         var made: CGWindowID?
         let deadline = nowMs() + 2000
         // The new standard window: the browser shows other new windows a
@@ -1764,6 +1801,12 @@ public final class WindowManager {
                               pending: (before: Set<CGWindowID>, untilMs: Double)?, nowMs: Double) -> Bool {
         guard let pending, nowMs < pending.untilMs, !pending.before.contains(id) else { return false }
         return standard && !registered && !opening
+    }
+
+    /// When the pending handout in `pid` stops waiting, if there is one.
+    static func lateHandoutUntil(_ pid: pid_t) -> Double? {
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        return lateHandouts[pid]?.untilMs
     }
 
     static func setLateHandoutForTesting(pid: pid_t, before: Set<CGWindowID>, untilMs: Double) {

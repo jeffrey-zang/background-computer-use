@@ -91,4 +91,33 @@ final class StrayTabTests: XCTestCase {
         XCTAssertTrue(WindowManager.takeLateHandout(pid: pid, untilMs: seen))
         XCTAssertFalse(WindowManager.takeLateHandout(pid: pid, untilMs: seen))
     }
+
+    /// A tab strip read that came back incomplete isn't the window's tabs:
+    /// saved as the baseline, the missing tab would look new next time.
+    func testAnIncompleteTabStripReadIsNoRead() {
+        XCTAssertEqual(WindowManager.tabStrip([("AXRadioButton", "AXTabButton"), ("AXButton", nil), ("AXRadioButton", "AXTabButton")]), [0, 2])
+        XCTAssertNil(WindowManager.tabStrip([("AXRadioButton", "AXTabButton"), ("AXRadioButton", nil)]))
+        XCTAssertNil(WindowManager.tabStrip([("AXRadioButton", "AXTabButton"), (nil, nil)]))
+        XCTAssertEqual(WindowManager.tabStrip([("AXButton", nil)]), [])
+    }
+
+    /// A menu press that failed outright moved nothing: no late window is
+    /// waited for (it would claim the agent's next popup as the user's).
+    func testOnlyAPressThatMayHaveRunWaitsForAWindow() {
+        XCTAssertTrue(WindowManager.menuPressMayHaveRun(.success))
+        XCTAssertTrue(WindowManager.menuPressMayHaveRun(.cannotComplete))
+        XCTAssertFalse(WindowManager.menuPressMayHaveRun(.invalidUIElement))
+        XCTAssertFalse(WindowManager.menuPressMayHaveRun(.actionUnsupported))
+    }
+
+    /// An open in a browser with a moved tab's window still on its way
+    /// waits for it: its catcher would take that window as the agent's.
+    func testAnOpenSeesAPendingHandout() {
+        let pid: pid_t = 999_903
+        XCTAssertNil(WindowManager.lateHandoutUntil(pid))
+        WindowManager.setLateHandoutForTesting(pid: pid, before: [], untilMs: seen)
+        XCTAssertEqual(WindowManager.lateHandoutUntil(pid), seen)
+        XCTAssertTrue(WindowManager.takeLateHandout(pid: pid, untilMs: seen))
+        XCTAssertNil(WindowManager.lateHandoutUntil(pid))
+    }
 }
