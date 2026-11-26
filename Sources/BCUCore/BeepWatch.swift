@@ -166,7 +166,8 @@ public final class BeepWatch {
     /// user typing, another agent's step), only the moment it sent counts.
     public struct Step {
         public let start: Date
-        public let end: Date
+        /// `.distantFuture` while the input is still being sent.
+        public var end: Date
         public let key: String?
         public let pids: Set<pid_t>
         public let owner: String
@@ -179,12 +180,35 @@ public final class BeepWatch {
 
     private var steps: [Step] = []
 
+    private var nextStepID = 1
+    private var open: [Int: Int] = [:]
+
+    /// Input about to be sent, listed before it is (open-ended), so another
+    /// session looking at a beep meanwhile sees it; `finish` closes it.
+    public func begin(_ step: Step) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        var s = step
+        s.end = .distantFuture
+        steps.append(s)
+        let id = nextStepID
+        nextStepID += 1
+        open[id] = steps.count - 1
+        return id
+    }
+
+    public func finish(_ id: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard let i = open.removeValue(forKey: id), i < steps.count else { return }
+        steps[i].end = Date()
+    }
+
     /// Every session's input goes here, so a beep is put down to one step.
     public func record(_ step: Step) {
         lock.lock(); defer { lock.unlock() }
         steps.append(step)
+        // Pruned only while nothing is being sent (`open` holds indexes).
         let cutoff = Date().addingTimeInterval(-60)
-        if steps.count > 200 || steps.first.map({ $0.end < cutoff }) == true {
+        if open.isEmpty, steps.count > 200 || steps.first.map({ $0.end < cutoff }) == true {
             steps = steps.filter { $0.end >= cutoff }.suffix(200)
         }
     }

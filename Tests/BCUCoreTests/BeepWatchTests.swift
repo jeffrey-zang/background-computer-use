@@ -77,6 +77,21 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertTrue(BeepWatch.agents([late], steps: [a, b], owner: "a").isEmpty)
     }
 
+    /// Input still being sent is listed already: a beep during it isn't put
+    /// down to the step before it, another session's, whose tail it's in.
+    func testInputBeingSentIsListedBeforeItEnds() {
+        let w = BeepWatch()
+        let t0 = Date()
+        w.record(step(t0, -0.5, -0.3, owner: "a"))
+        let id = w.begin(BeepWatch.Step(start: t0, end: .distantFuture, key: "return", pids: [62902], owner: "b", call: t0))
+        let b = beep(t0, 0.1)
+        XCTAssertTrue(BeepWatch.agents([b], steps: w.recentSteps, owner: "a").isEmpty)
+        XCTAssertEqual(BeepWatch.agents([b], steps: w.recentSteps, owner: "b").count, 1)
+        w.finish(id)
+        XCTAssertLessThan(w.recentSteps.last!.end, Date.distantFuture)
+        XCTAssertEqual(BeepWatch.agents([b], steps: w.recentSteps, owner: "b").count, 1)
+    }
+
     /// Keys sent to an open or save panel's service: its beeps count.
     func testAPanelServiceBeepCounts() {
         let t0 = Date()
