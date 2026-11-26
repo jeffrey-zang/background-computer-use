@@ -766,7 +766,8 @@ public final class Engine {
             // It may also pass through one on the way (Tab in, type, Tab
             // out), which leaves no trace: any password field in the window
             // counts.
-            if tool == "type_text", (args.string("text") ?? "").contains("\t"), let rec = recordingSteps,
+            // A Return can move focus on too (to a password field), with more typed after it.
+            if tool == "type_text", RecordedStep.reachesAnotherField(args.string("text") ?? ""), let rec = recordingSteps,
                let id = windowID, let w = windows.window(id) {
                 // With no read of the window, whether it has one isn't known: hidden.
                 // A read can leave fields out (max_elements), and the keys

@@ -108,6 +108,15 @@ public final class RecordedStep {
     }
 
     /// A press_key of one printable character, with no modifier but shift.
+    /// Typed text that can go on in another field: a Tab, or a Return with
+    /// more typed after it (an app can move focus on Return, e.g. to a
+    /// password field).
+    static func reachesAnotherField(_ text: String) -> Bool {
+        if text.contains("\t") { return true }
+        guard let r = text.rangeOfCharacter(from: CharacterSet(charactersIn: "\n\r")) else { return false }
+        return !text[r.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     static func typesACharacter(_ args: JSONObject) -> Bool {
         guard let key = args["key"] as? String, key.count == 1, let ch = key.first, !ch.isWhitespace else { return false }
         // Every spelling press_key takes for shift ("⇧", " Shift ").
@@ -579,7 +588,7 @@ public final class StepLog {
             s.typesCharacter = character
             s.window = window
             s.originalModifiers = modifiers
-            s.multiField = (original["text"] ?? "").contains("\t")
+            s.multiField = RecordedStep.reachesAnotherField(original["text"] ?? "")
             parent.steps.append(s)
             open.append(s)
             return s
@@ -592,7 +601,7 @@ public final class StepLog {
         s.typesCharacter = character
         s.window = window
         s.originalModifiers = modifiers
-        s.multiField = (original["text"] ?? "").contains("\t")
+        s.multiField = RecordedStep.reachesAnotherField(original["text"] ?? "")
         s.foreignTyping = foreignTyping
         steps.append(s)
         if tracked { open.append(s) }

@@ -830,6 +830,13 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(c.target?.label, "(hidden)")
     }
 
+    func testAReturnWithMoreTypedAfterItCanReachAnotherField() {
+        XCTAssertTrue(RecordedStep.reachesAnotherField("alice\n123456"))
+        XCTAssertTrue(RecordedStep.reachesAnotherField("a\tb"))
+        XCTAssertFalse(RecordedStep.reachesAnotherField("https://example.com\n"))
+        XCTAssertFalse(RecordedStep.reachesAnotherField("\n"))
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

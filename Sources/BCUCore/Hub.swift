@@ -381,6 +381,8 @@ public final class Hub {
         if caller.host == nil, !caller.display.isRunning, caller.windows.windows.isEmpty {
             byID[callerID] = old
             byID[oldID] = nil
+            // A recording it started on a relative's session goes with it.
+            if let route = recordingAt.removeValue(forKey: oldID) { recordingAt[callerID] = route }
             departedAtMs[oldID] = nil
             parentOf[oldID] = nil
             order.removeAll { $0 == callerID }
