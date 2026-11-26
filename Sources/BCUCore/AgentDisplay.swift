@@ -433,6 +433,9 @@ public final class AgentDisplay {
         // an agent is waiting for a place; `tend` asks again every second.
         if !all, !someoneWaiting, let activity = FocusGuard.shared?.activity, QuietWait.typing(activity.snapshot, now: nowMs()) { return }
         let furthestInUse = running.map(\.slot).max() ?? -1
+        // Read before taking the lock: `userDisplayIDs` reads `running`,
+        // which takes it too.
+        let users = userDisplayIDs().map { CGDisplayBounds($0) }
         registryLock.lock()
         let now = nowMs()
         var gone = spares.filter { all || now - $0.sinceMs > spareLifeMs }
@@ -452,7 +455,6 @@ public final class AgentDisplay {
             // (A window that's also on a user display, the spare lying over
             // it, stays where it is when the spare goes: not one that holds
             // the spare, the same rule `closeLeftovers` uses.)
-            let users = userDisplayIDs().map { CGDisplayBounds($0) }
             let busy = gone.filter { WindowManager.windows(on: CGDisplayBounds($0.id)).contains { WindowManager.strandedOnStray($0.bounds, userDisplays: users) } }
             gone.removeAll { g in busy.contains { $0.id == g.id } }
             // (After the busy ones are held back: one of those staying means
