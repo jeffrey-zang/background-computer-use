@@ -733,8 +733,12 @@ public final class Engine {
             // A Tab in typed text moves on to the next field, which may be a
             // password field: if that's where focus ended up, the recording
             // hides all of it.
+            // It may also pass through one on the way (Tab in, type, Tab
+            // out), which leaves no trace: any password field in the window
+            // counts.
             if tool == "type_text", (args.string("text") ?? "").contains("\t"), let rec = recordingSteps,
-               let id = windowID, let w = windows.window(id), passwordFieldFocused(w) {
+               let id = windowID, let w = windows.window(id),
+               passwordFieldFocused(w) || (snapshots[w.id]?.nodes.values.contains { $0.secure } ?? false) {
                 rec.setFocusSecure()
             }
             // A character key pressed into a password field (a PIN typed key

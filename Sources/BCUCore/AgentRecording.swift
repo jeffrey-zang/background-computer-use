@@ -395,11 +395,16 @@ public final class AgentRecording {
             guard let px = CMSampleBufferGetImageBuffer(sample) else { continue }
             let pts = CMSampleBufferGetPresentationTimeStamp(sample)
             let ms = Int64((pts.seconds * 1000).rounded())
+            CVPixelBufferLockBaseAddress(px, [])
+            let raw = context(px)?.makeImage()
+            CVPixelBufferUnlockBaseAddress(px, [])
+            // Steps before the first capture are drawn on it.
+            if prevRaw == nil { prevRaw = raw }
             while let e = extra.first, e < ms { extra.removeFirst(); try copyOfLast(at: e) }
             guard ms > lastMs else { continue }
             CVPixelBufferLockBaseAddress(px, [])
             if let ctx = context(px) {
-                prevRaw = ctx.makeImage()
+                prevRaw = raw
                 RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: mapping(ms),
                                       label: label, redactAll: steps.redactAll)
             }

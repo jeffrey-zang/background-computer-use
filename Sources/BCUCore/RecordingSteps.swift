@@ -101,9 +101,11 @@ public final class RecordedStep {
     /// isn't yet (the step hasn't ended) is left out.
     func exportedArgs(redactAll: Bool) -> JSONObject {
         var a = args
-        if hidesText(redactAll: redactAll) {
+        // Not hidden yet (still running): whatever it holds, even text that
+        // looks like a placeholder, goes.
+        if hidesText(redactAll: redactAll) && !textHidden {
             for key in ["text", "value", "key"] {
-                if let v = a[key] as? String, !v.hasPrefix("(hidden") { a[key] = "(hidden, \(v.count) characters)" }
+                if let v = a[key] as? String { a[key] = "(hidden, \(v.count) characters)" }
             }
         }
         return a
@@ -142,7 +144,7 @@ public enum RecordingText {
         // Once a step ends, what it typed is already "(hidden, N characters)" in its arguments.
         let typed: (String) -> String = { v in
             guard hidden else { return "\"\(clip(v, 48))\"" }
-            return v.hasPrefix("(hidden") ? v : "(hidden, \(v.count) characters)"
+            return isPlaceholder(v) ? v : "(hidden, \(v.count) characters)"
         }
         switch tool {
         case "click":
@@ -209,6 +211,23 @@ public enum RecordingText {
         result.split(separator: "\n").map(String.init).filter { $0.hasPrefix("[user first]") || $0.hasPrefix("[other agents]") }
     }
 
+    /// The exact form a hidden value is replaced with.
+    static func isPlaceholder(_ v: String) -> Bool {
+        v.range(of: #"^\(hidden, \d+ characters\)$"#, options: .regularExpression) != nil
+    }
+
+    /// The text inside double quotes in `text`: each quoted span, and the
+    /// whole stretch from the first quote to the last.
+    static func quotedSpans(_ text: String) -> [String] {
+        var out: [String] = []
+        let parts = text.split(separator: "\"", omittingEmptySubsequences: false)
+        if parts.count >= 3 { for i in stride(from: 1, to: parts.count - 1, by: 2) { out.append(String(parts[i])) } }
+        if let first = text.firstIndex(of: "\""), let last = text.lastIndex(of: "\""), first < last {
+            out.append(String(text[text.index(after: first)..<last]))
+        }
+        return out
+    }
+
     /// `text` with everything in double quotes replaced: for the result of a
     /// step whose text is hidden, which can quote part of it ("Typed 4 of 7
     /// characters ("hunt")").
@@ -263,7 +282,8 @@ public enum RecordingText {
         let oneLine = secret.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         var out = [secret, oneLine]
         // 160 for a value, 100 for a name in a read, 80 for a target's label.
-        for n in [160, 100, 80] where oneLine.count > n { out.append(String(oneLine.prefix(n - 1))) }
+        // A read keeps that many characters, then "…".
+        for n in [160, 100, 80] where oneLine.count > n { out.append(String(oneLine.prefix(n))) }
         // Longest first, so a shorter form doesn't leave part of a longer one.
         return Array(Set(out.filter { redactsLater($0) })).sorted { $0.count > $1.count }
     }
@@ -395,7 +415,11 @@ public final class StepLog {
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
             if s.args[key] is String, let secret = s.original[key] ?? s.args[key] as? String {
+                // What the field took can differ from what was asked (a mask,
+                // a length limit): the result quotes it, and a later read shows it.
+                let accepted = RecordingText.quotedSpans(result).filter { RecordingText.redactsLater($0) && !$0.contains("(hidden)") }
                 result = RecordingText.hideQuoted(RecordingText.redact(result, secrets: [secret]))
+                for a in accepted { hiddenTexts += RecordingText.forms(of: a) }
                 s.args[key] = "(hidden, \(secret.count) characters)"
                 s.secret = secret
                 s.textHidden = true

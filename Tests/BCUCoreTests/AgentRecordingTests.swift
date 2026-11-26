@@ -296,7 +296,7 @@ final class AgentRecordingTests: XCTestCase {
         let t = log.begin(tool: "type_text", args: ["text": secret, "element": 3])
         log.end(t, result: "Typed.", isError: false)
         let r = log.begin(tool: "get_window_state", args: [:])
-        log.end(r, result: "[3] TextArea value=\"\(secret.prefix(159))…\" @(0,0 10x10)", isError: false)
+        log.end(r, result: "[3] TextArea value=\"\(secret.prefix(160))…\" @(0,0 10x10)", isError: false)
         XCTAssertFalse(r.result.contains("confidential-confidential"), r.result)
     }
 
@@ -342,7 +342,7 @@ final class AgentRecordingTests: XCTestCase {
         let b = log.begin(tool: "set_value", args: ["value": "Ada Lovelace", "element": 3]); log.end(b, result: "ok", isError: false)
         let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "value=\"Ada Lovelace\"", isError: false)
         XCTAssertFalse(r.result.contains("Lovelace"), r.result)
-        XCTAssertTrue(RecordingText.forms(of: String(repeating: "f", count: 90) + ".txt").contains(String(repeating: "f", count: 79)), "a target label is clipped at 80")
+        XCTAssertTrue(RecordingText.forms(of: String(repeating: "f", count: 90) + ".txt").contains(String(repeating: "f", count: 80)), "a target label keeps 80 characters, then …")
     }
 
     func testABatchFailureIsLoggedSafelyBeforeItsLineIsPicked() {
@@ -351,6 +351,26 @@ final class AgentRecordingTests: XCTestCase {
         var safe = r
         safe.text = Engine.loggable("batch: " + r.text)
         XCTAssertFalse(Engine.summary(of: safe).contains("alpha"), Engine.summary(of: safe))
+    }
+
+    func testTextThatLooksLikeAPlaceholderIsStillHidden() throws {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        _ = log.begin(tool: "type_text", args: ["text": "(hidden) this is confidential", "element": 3])
+        let info = ActionList.Info(started: Date(), durationMs: 1000, source: "display", windowID: nil, fps: 12, frames: 12,
+                                   size: CGSize(width: 1600, height: 1000), label: "Agent", redactAll: true, video: "recording.mp4")
+        for text in [ActionList.markdown(log.all, info: info), String(decoding: ActionList.json(log.all, info: info), as: UTF8.self)] {
+            XCTAssertFalse(text.contains("confidential"), text)
+        }
+    }
+
+    /// The field took something else than what was asked: that is hidden from later reads too.
+    func testTheAcceptedValueIsHiddenFromLaterReads() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "confidential-notes", "element": 3])
+        log.end(t, result: "Inserted the text into element 3 through accessibility; the field changed it and now reads \"confidential\".", isError: false)
+        XCTAssertFalse(t.result.contains("confidential\""), t.result)
+        let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "value=\"confidential\"", isError: false)
+        XCTAssertFalse(r.result.contains("confidential"), r.result)
     }
 
     func testShiftSpellingsCountAsTyping() {
