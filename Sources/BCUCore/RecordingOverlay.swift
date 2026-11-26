@@ -291,7 +291,7 @@ public enum ActionList {
                    + (info.windowID.map { "window \($0)" } ?? "the agent display")
                    + " · \(steps.count) tool call\(steps.count == 1 ? "" : "s")" + (failed > 0 ? ", \(failed) failed" : ""))
         out.append("")
-        out.append("Video: [\(info.video)](\(info.video)) (\(Int(info.size.width))x\(Int(info.size.height)), \(info.fps) fps). Each time below is where the step starts in the video.")
+        out.append("Video: [\(info.video)](\(info.video)) (\(Int(info.size.width))x\(Int(info.size.height)), \(info.frames) frames, captured at up to \(info.fps) fps). Each time below is where the step starts in the video.")
         if info.redactAll { out.append("Typed text is hidden in this recording.") }
         for n in info.notes { out.append(n) }
         out.append("")

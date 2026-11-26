@@ -3066,7 +3066,7 @@ public final class Engine {
                                      label: label, redactAll: args.bool("hide_typing") ?? false,
                                      onDisplayFrame: { [weak self] in self?.recordPreview($0) })
         let what = windowID.map { "window \($0)" } ?? "your display"
-        let text = "Recording \(what) at \(rec.fps) fps. Every tool call from now on is drawn on the video and listed, failures included. Call stop_recording when you're done: it saves recording.mp4 with actions.md and actions.json into \(rec.dir.path)."
+        let text = "Recording \(what) at up to \(rec.fps) fps. Every tool call from now on is drawn on the video and listed, failures included. Call stop_recording when you're done: it saves recording.mp4 with actions.md and actions.json into \(rec.dir.path)."
         // This call is the recording's first step.
         let first = rec.steps.begin(tool: "start_recording", args: args.raw)
         rec.steps.end(first, result: text, isError: false)
