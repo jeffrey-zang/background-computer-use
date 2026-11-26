@@ -934,6 +934,20 @@ public final class AgentDisplay {
         return !inter.isNull && inter.width * inter.height >= 0.5 * rect.width * rect.height
     }
 
+    /// The agent display is mirrored with a user display, or shares area
+    /// with one: what lies "on the agent display" is on the user's screen
+    /// then, the user's own windows (full-screen ones included) too.
+    public var overlapsUser: Bool {
+        let id = displayID
+        guard isRunning else { return false }
+        return Self.overlapsUser(mirrored: CGDisplayIsInMirrorSet(id) != 0 || CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay,
+                                 bounds: CGDisplayBounds(id), user: userDisplayIDs().map { CGDisplayBounds($0) })
+    }
+
+    static func overlapsUser(mirrored: Bool, bounds: CGRect, user: [CGRect]) -> Bool {
+        mirrored || user.contains { let i = $0.intersection(bounds); return !i.isNull && i.width * i.height > 0 }
+    }
+
     /// True when any part of `rect` is visible on one of the user's displays.
     public func touchesUser(_ rect: CGRect) -> Bool {
         userDisplayIDs().contains { CGDisplayBounds($0).intersects(rect) }

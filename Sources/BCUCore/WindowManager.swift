@@ -1340,8 +1340,12 @@ public final class WindowManager {
         // moves it to its own. It counts as left, so the display stays
         // until it's gone.
         // Never a full-screen window (see `isFullScreen`): the user's.
+        // Nor one on a user display (the agent display was mirrored with
+        // it, or lay over it): the user sees it there already, and it stays
+        // there when the display goes.
+        let users = AgentDisplay.userDisplayIDs().map { CGDisplayBounds($0) }
         let before = windows(on: bounds)
-        let found = before.filter { !isRegistered($0.id) }
+        let found = before.filter { !isRegistered($0.id) && strandedOnStray($0.bounds, userDisplays: users) }
             .compactMap { info in AX.window(pid: info.pid, id: info.id).map { (info, $0) } }
             .filter { !isFullScreen($0.1) }
         // Everything that was here before any close, full-screen windows
@@ -1375,7 +1379,7 @@ public final class WindowManager {
                 sleepMs(400)
             }
         }
-        let left = windows(on: bounds)
+        let left = windows(on: bounds).filter { strandedOnStray($0.bounds, userDisplays: users) }
         if !left.isEmpty {
             Log.info("leftover windows on an agent display are still there: \(left.map { "\($0.owner) \($0.id) \"\($0.title.prefix(30))\"" }.joined(separator: ", "))")
         }
@@ -1586,6 +1590,13 @@ public final class WindowManager {
         lock.unlock()
         defer { lock.lock(); sweeping = false; lock.unlock() }
         guard display.isRunning else { return }
+        // While the agent display lies over the user's screen (mirrored
+        // with it, or placed on top), every window of the user's looks like
+        // it's on the agent display. Catching or moving windows then only
+        // moves the user's own: both times a user's full-screen app lost
+        // its Space in testing (#98), this sweep was moving the user's
+        // windows during such an overlap. Nothing to do until it's over.
+        guard !display.overlapsUser else { return }
 
         let onScreen = WindowList.all(onScreenOnly: true)
 

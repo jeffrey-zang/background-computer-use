@@ -137,3 +137,28 @@ final class ReviewFixTests: XCTestCase {
         XCTAssertEqual(WindowManager.newcomerOnAgentDisplay(registered: false, kept: true), .giveToUser)
     }
 }
+
+/// #98: while the agent display lies over the user's screen (mirrored, or
+/// placed on top), the sweep leaves every window alone.
+final class OverlapPauseTests: XCTestCase {
+    let user = CGRect(x: 0, y: 0, width: 1680, height: 1050)
+
+    func testAtTheCornerDoesntOverlap() {
+        XCTAssertFalse(AgentDisplay.overlapsUser(mirrored: false, bounds: CGRect(x: 1680, y: 1050, width: 1600, height: 1000), user: [user]))
+        XCTAssertFalse(AgentDisplay.overlapsUser(mirrored: false, bounds: CGRect(x: 1680, y: 0, width: 1600, height: 1000), user: [user]))
+    }
+
+    func testMirroredOverlaps() {
+        XCTAssertTrue(AgentDisplay.overlapsUser(mirrored: true, bounds: CGRect(x: 1680, y: 1050, width: 1600, height: 1000), user: [user]))
+    }
+
+    func testOnTopOverlaps() {
+        XCTAssertTrue(AgentDisplay.overlapsUser(mirrored: false, bounds: CGRect(x: 0, y: 0, width: 1600, height: 1000), user: [user]))
+    }
+
+    /// A window centred on the user's display isn't a leftover to move.
+    func testAWindowOnTheUsersDisplayIsntStranded() {
+        XCTAssertFalse(WindowManager.strandedOnStray(CGRect(x: 100, y: 100, width: 800, height: 600), userDisplays: [user]))
+        XCTAssertTrue(WindowManager.strandedOnStray(CGRect(x: 1800, y: 1100, width: 800, height: 600), userDisplays: [user]))
+    }
+}
