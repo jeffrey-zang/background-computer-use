@@ -717,11 +717,7 @@ public final class FocusGuard {
                 let mine = Dictionary(WindowList.of(pid: pid, onScreenOnly: true)
                     .filter { $0.layer == 0 && !Self.onAgentDisplay($0.id) }.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
                 let front = BCUFrontProcessPID() == pid
-                // A new window counts only once the guard has had time to
-                // move one an agent's step opened off the user's screen
-                // (`NewWindow.fromUserScreen` waits `guardLagMs` after a click).
-                let settled = nowMs() - click.ms >= NewWindow.guardLagMs + 150
-                let opened = kept ? LateLook.keptOpened(element: now.element, before: now.windows, now: mine, newWindowsCount: settled)
+                let opened = kept ? LateLook.keptOpened(element: now.element, before: now.windows, now: mine)
                                   : LateLook.opened(before: now.windows, now: mine)
                 let facts = LateLook.Facts(front: front, inputSince: inputSince, opened: opened)
                 guard let window = LateLook.bringForward(facts) else {
@@ -760,15 +756,19 @@ public final class FocusGuard {
     private static func screenWindows(_ all: [WindowInfo]) -> [ScreenWindow] {
         let me = getpid()
         var dock: [pid_t: Bool] = [:]
+        var overlayOwner: [pid_t: Bool] = [:]
         let displays = displayBounds()
         // Not the pointer itself: it's a window of its own, right where the click is.
         let pointer = Int(CGWindowLevelForKey(.cursorWindow))
         return all.filter { $0.pid != me && $0.alpha > 0 && $0.layer < pointer }.map { w in
             let isDock = dock[w.pid] ?? (NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier == "com.apple.dock")
             dock[w.pid] = isDock
-            // Over the whole of one display, where it is (not merely as big
-            // as some smaller display elsewhere).
-            let covers = displays.contains { d in w.bounds.contains(d) }
+            // The Dock's and Notification Center's pass-through windows over
+            // the whole of a display, where it is. Only theirs: an app's own
+            // full-screen panel above its windows takes the click.
+            let overlay = overlayOwner[w.pid] ?? (isDock || NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier == "com.apple.notificationcenterui")
+            overlayOwner[w.pid] = overlay
+            let covers = overlay && displays.contains { d in w.bounds.contains(d) }
             return ScreenWindow(id: w.id, pid: w.pid, bounds: w.bounds, layer: w.layer, dock: isDock, coversDisplay: covers)
         }
     }

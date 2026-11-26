@@ -171,6 +171,8 @@ final class SelfActivationTests: XCTestCase {
         XCTAssertNil(ClickTarget.gateOwner([]))
         // Notification Center's window over the whole screen, which clicks pass through.
         XCTAssertEqual(ClickTarget.gateOwner([(pid: 8, dock: false, layer: 25, coversDisplay: true), (pid: user, dock: false, layer: 0, coversDisplay: false)]), user)
+        // Another app's panel above ordinary windows, over a whole display, takes the click.
+        XCTAssertNil(ClickTarget.gateOwner([(pid: agent, dock: false, layer: 3, coversDisplay: false), (pid: user, dock: false, layer: 0, coversDisplay: false)]))
         // A full-screen app's own window is ordinary.
         XCTAssertEqual(ClickTarget.gateOwner([(pid: agent, dock: false, layer: 0, coversDisplay: true)]), agent)
         XCTAssertEqual(ClickTarget.gateOwner([(pid: agent, dock: false, layer: 0, coversDisplay: false)]), agent)
@@ -237,11 +239,11 @@ final class SelfActivationTests: XCTestCase {
         let before: [CGWindowID: String] = [10: "Inbox (3)"]
         XCTAssertNil(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (4)"]))
         XCTAssertNil(LateLook.keptOpened(element: nil, before: before, now: [10: "Inbox (4)"]))
-        XCTAssertEqual(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (3)", 11: "New"]), 11)
+        // A new window after a click that wasn't on a link may be an agent's popup.
+        XCTAssertNil(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (3)", 11: "Popup"]))
+        XCTAssertEqual(LateLook.keptOpened(element: .link, before: before, now: [10: "Inbox (3)", 11: "New"]), 11)
         XCTAssertEqual(LateLook.keptOpened(element: .link, before: before, now: [10: "Example"]), 10)
         XCTAssertNil(LateLook.keptOpened(element: .link, before: nil, now: [10: "Example"]))
-        // Not before the guard has had time to catch a window an agent's step opened.
-        XCTAssertNil(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (3)", 11: "Popup"], newWindowsCount: false))
     }
 
     /// They clicked in one app, then cmd+Tabbed to the agent's: the cmd+Tab

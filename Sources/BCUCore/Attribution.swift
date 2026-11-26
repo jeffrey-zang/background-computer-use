@@ -194,10 +194,10 @@ enum ClickTarget: Equatable {
     /// The app a click is surely in, for the gate (`FrontGate.pointer`): the
     /// owner of the topmost ordinary (layer 0) window under it. `windows`
     /// are those under the click, top first; `dock` marks the Dock's and
-    /// `coversDisplay` a window as big as its display: on macOS 26 and later
-    /// the Dock and Notification Center each keep one above everything,
-    /// over the whole screen, that clicks pass through. (An app's own window
-    /// that fills the screen is an ordinary one, at layer 0.)
+    /// `coversDisplay` the Dock's or Notification Center's window over a whole
+    /// display: on macOS 26 and later each keeps one above everything that
+    /// clicks pass through. (The caller sets it for those two only: any
+    /// other app's window above ordinary ones takes the click.)
     /// nil when it may be on anything that brings an app forward: a Dock
     /// icon, the menu bar or a menu, a notification, a panel above ordinary
     /// windows, the desktop, nothing.
@@ -292,16 +292,15 @@ enum LateLook {
     }
 
     /// For an app the gate kept back on the click (it never asked to come
-    /// forward as far as anyone can tell): a click on a link may have
-    /// opened a page in it (a new window, or a window showing another
-    /// title); anything else only if a new window came up. A title that
-    /// changes by itself (an unread count) isn't the click's.
+    /// forward as far as anyone can tell): only a click accessibility says
+    /// was on a link may have opened a page in it (a new window, or one
+    /// showing another title). Anything else explains nothing: a title
+    /// changes by itself (an unread count), and a window that comes up may
+    /// be one an agent's step opened.
     /// `newWindowsCount`: false until the guard has had time to move a
     /// window an agent's step opened off the user's screen.
-    static func keptOpened(element: ClickElement?, before: [CGWindowID: String]?, now: [CGWindowID: String], newWindowsCount: Bool = true) -> CGWindowID? {
-        if element == .link { return opened(before: before, now: now) }
-        guard let before, newWindowsCount else { return nil }
-        return now.keys.sorted().first { before[$0] == nil }
+    static func keptOpened(element: ClickElement?, before: [CGWindowID: String]?, now: [CGWindowID: String]) -> CGWindowID? {
+        element == .link ? opened(before: before, now: now) : nil
     }
 }
 
