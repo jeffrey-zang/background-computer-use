@@ -231,6 +231,16 @@ final class SelfActivationTests: XCTestCase {
         XCTAssertNil(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (3)", 11: "Popup"], newWindowsCount: false))
     }
 
+    /// They clicked in one app, then cmd+Tabbed to the agent's: the cmd+Tab
+    /// still explains it when the click turns out to be elsewhere.
+    func testACmdTabThatAlsoExplainsItKeepsItThere() {
+        var l = left(.click, target: .app(user), wasIn: user)
+        l.switchToo = true
+        XCTAssertFalse(Attribution.revert(l, pid: agent))
+        XCTAssertTrue(Attribution.switchExplains(facts(switchKey: now - 100)))
+        XCTAssertFalse(Attribution.switchExplains(facts(switchKey: now - 100, switcherOpen: true)))
+    }
+
     func testACmdTabStaysUnlessTheSwitcherWasUp() {
         XCTAssertFalse(Attribution.revert(left(.switchKey), pid: agent))
         XCTAssertTrue(Attribution.revert(left(.switchKey, switcher: true), pid: agent))

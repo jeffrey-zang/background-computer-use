@@ -962,7 +962,7 @@ public final class FocusGuard {
             // it or their cmd+Tab: if they go straight back, say so (`arrived`).
             if Attribution.acting(f) && pid != user && user != 0 {
                 lock.lock(); leftOnInput[pid] = (f.nowMs, user); lock.unlock()
-                recheckLeft(pid, credit: Attribution.credit(f), atMs: f.nowMs, user: user)
+                recheckLeft(pid, credit: Attribution.credit(f), switchToo: Attribution.switchExplains(f), atMs: f.nowMs, user: user)
             }
             arrived(pid)
         }
@@ -990,7 +990,7 @@ public final class FocusGuard {
     /// the user's app back if that input was in another app after all
     /// (`Attribution.revert`). Before, the guard only said it was probably
     /// wrong once the user went back themselves, up to 3 s later (issue #87).
-    private func recheckLeft(_ pid: pid_t, credit: Attribution.Credit, atMs: Double, user: pid_t) {
+    private func recheckLeft(_ pid: pid_t, credit: Attribution.Credit, switchToo: Bool, atMs: Double, user: pid_t) {
         lock.lock()
         let click = lastClick
         let switcher = switcherUp
@@ -1017,7 +1017,7 @@ public final class FocusGuard {
                 self.lock.unlock()
                 guard current else { return }
                 let left = Attribution.Left(credit: credit, front: BCUFrontProcessPID() == pid, movedOn: movedOn, acting: Attribution.acting(f),
-                                            clickTarget: now.target, clickWasIn: now.wasIn, switcherOpen: switcher)
+                                            clickTarget: now.target, clickWasIn: now.wasIn, switcherOpen: switcher, switchToo: switchToo)
                 guard Attribution.revert(left, pid: pid) else {
                     if left.front && !movedOn && left.acting { look(i + 1) } else {
                         self.lock.lock(); if self.rechecking[pid] == atMs { self.rechecking[pid] = nil }; self.lock.unlock()
@@ -1654,7 +1654,10 @@ public final class FocusGuard {
             // begins within the lift is kept back from the click on.
             let on = lookedOwner(at: event.location)
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
-            lock.lock(); gateClickOn = on; lock.unlock()
+            // Only a plain left click on a Dock icon brings its app forward
+            // (a right or control click opens its menu).
+            let activates = type == .leftMouseDown && !event.flags.contains(.maskControl)
+            lock.lock(); gateClickOn = activates ? on : nil; lock.unlock()
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             gate.pointer(down: false, ms: Self.clickLiftMs)
         case .keyDown:
@@ -2030,7 +2033,11 @@ public final class FocusGuard {
     private func finishDockSwitch(_ target: ClickTarget, gateOn: pid_t?, clickMs: Double) {
         guard case .dock(let app?) = target, app > 0, let gateOn, gateOn != app, gate.acting.contains(app) else { return }
         DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(80)) {
-            self.lock.lock(); let same = self.lastClick.ms == clickMs; self.lock.unlock()
+            // Not once the user has clicked, typed, switched or come to another app since.
+            self.lock.lock()
+            let same = self.lastClick.ms == clickMs && self.lastUserKeyMs < clickMs && self.lastUserSwitchKeyMs < clickMs
+                && !self.arrivals.contains { $0.ms > clickMs }
+            self.lock.unlock()
             guard same, BCUFrontProcessPID() != app else { return }
             self.noteUserSwitch()
             _ = BCUSetFrontProcess(app, 0, 0x200)

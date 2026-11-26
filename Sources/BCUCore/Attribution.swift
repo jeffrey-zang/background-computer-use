@@ -90,6 +90,12 @@ enum Attribution {
     }
 
     /// Which of the user's inputs explains the app coming forward now.
+    /// Whether the user's cmd+Tab explains the app coming forward too,
+    /// whatever their click does (`credit` names the click first).
+    static func switchExplains(_ f: Facts) -> Bool {
+        f.nowMs - f.lastSwitchKeyMs < switchMs && f.lastSwitchKeyMs > f.arrivedElsewhereMs && !f.switcherOpen
+    }
+
     static func credit(_ f: Facts) -> Credit {
         func unanswered(_ ms: Double) -> Bool { f.nowMs - ms < switchMs && ms > f.arrivedElsewhereMs }
         if f.step?.strict != true && f.clickOnApp && unanswered(f.lastMouseDownMs) { return .click }
@@ -132,6 +138,9 @@ enum Attribution {
         var clickWasIn: pid_t?
         /// The cmd+Tab switcher was still up when it came forward.
         var switcherOpen: Bool
+        /// The user's cmd+Tab explained it too (`switchExplains`): disproving
+        /// the click leaves that standing.
+        var switchToo: Bool = false
     }
 
     /// Whether to put the user's app back after all: the input that left
@@ -146,6 +155,7 @@ enum Attribution {
         case .none: return false
         case .switchKey: return l.switcherOpen
         case .click:
+            if l.switchToo { return false }
             if !l.clickTarget.explains(pid) { return true }
             // Accessibility named the app's Dock icon: the look from before
             // can't know the Dock had come up over that spot.
