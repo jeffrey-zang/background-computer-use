@@ -1223,7 +1223,7 @@ public final class WindowManager {
             guard now - firstSeen < 3000, info.pid == front, info.pid == guardian.userFront,
                   info.bounds.width > 100, info.bounds.height > 100,
                   let ax = AX.window(pid: info.pid, id: info.id),
-                  AX.string(ax, "AXSubrole") == "AXStandardWindow" else { continue }
+                  AX.string(ax, "AXSubrole") == "AXStandardWindow", !isFullScreen(ax) else { continue }
             let main = CGDisplayBounds(CGMainDisplayID())
             let w = min(info.bounds.width, main.width - 80), h = min(info.bounds.height, main.height - 120)
             AX.setPosition(ax, CGPoint(x: main.midX - w / 2, y: main.midY - h / 2))
@@ -1276,10 +1276,22 @@ public final class WindowManager {
         agentMade && !kept.contains(id) ? .close : .giveToUser
     }
 
+    /// A full-screen window has a Space of its own on the user's screen,
+    /// and is never an agent's (`borrow` and `open` refuse them). Nothing
+    /// that tidies the agent displays moves, resizes or closes one: while
+    /// an agent display overlaps the user's screen (macOS mirrored it, or
+    /// placed it on top) their full-screen windows look like they're on it,
+    /// and moving or resizing one risks taking it out of full screen (#98).
+    static func isFullScreen(_ ax: AXUIElement) -> Bool {
+        AX.bool(ax, "AXFullScreen") == true
+    }
+
     /// Center a window on the user's main display, shrunk to fit (shrunk
-    /// first, so AppKit doesn't push it back to a screen it fits).
+    /// first, so AppKit doesn't push it back to a screen it fits). Not a
+    /// full-screen one (see `isFullScreen`): false, and it stays.
     @discardableResult
     static func putOnUserScreen(_ ax: AXUIElement, bounds: CGRect) -> Bool {
+        guard !isFullScreen(ax) else { return false }
         guard let target = userScreen(main: CGMainDisplayID(), users: AgentDisplay.userDisplayIDs()) else { return false }
         let main = CGDisplayBounds(target)
         let w = min(bounds.width, main.width - 80), h = min(bounds.height, main.height - 120)
@@ -1320,8 +1332,10 @@ public final class WindowManager {
         // (macOS put it here, or it's being taken over), and its session
         // moves it to its own. It counts as left, so the display stays
         // until it's gone.
+        // Never a full-screen window (see `isFullScreen`): the user's.
         let found = windows(on: bounds).filter { !isRegistered($0.id) }
             .compactMap { info in AX.window(pid: info.pid, id: info.id).map { (info, $0) } }
+            .filter { !isFullScreen($0.1) }
         let present = Set(found.map(\.0.id))
         let toClose = found.filter { leftoverFate($0.0.id, agentMade: wasAgentMade($0.0.id), kept: kept) == .close }
         for (info, ax) in found where !toClose.contains(where: { $0.0.id == info.id }) {
@@ -1370,8 +1384,7 @@ public final class WindowManager {
                     guard let ax = AX.window(pid: info.pid, id: info.id) else { continue }
                     let first = !isKept(info.id)
                     guard claimForRescue(info.id, registered: isRegistered) else { continue }
-                    putOnUserScreen(ax, bounds: info.bounds)
-                    guard first else { continue }
+                    guard putOnUserScreen(ax, bounds: info.bounds), first else { continue }
                     Log.info("moved \(info.owner) window \(info.id) from a display a crashed copy left to the user's screen")
                     FocusGuard.shared?.record("moved a \(info.owner) window from a leftover agent display to your screen")
                 }
@@ -1623,7 +1636,7 @@ public final class WindowManager {
             }
             guard cause == .user, age < 1500,
                   let ax = AX.window(pid: info.pid, id: info.id),
-                  AX.string(ax, "AXSubrole") == "AXStandardWindow" else { continue }
+                  AX.string(ax, "AXSubrole") == "AXStandardWindow", !Self.isFullScreen(ax) else { continue }
             let main = CGDisplayBounds(CGMainDisplayID())
             let w = min(info.bounds.width, main.width - 80), h = min(info.bounds.height, main.height - 120)
             AX.setPosition(ax, CGPoint(x: main.midX - w / 2, y: main.midY - h / 2))
@@ -1681,6 +1694,8 @@ public final class WindowManager {
             func retire() { lock.lock(); seenOnUser[info.id] = -1; lock.unlock() }
             guard cause == .agent, nowMs() - firstSeen < Self.agentJudgeMs else { retire(); continue }
             guard let ax = AX.window(pid: info.pid, id: info.id) else { continue }
+            // The user's, whatever the step did (see `isFullScreen`).
+            if Self.isFullScreen(ax) { retire(); continue }
             // In the app the user is in, only whole windows and dialogs: a
             // browser's hover cards and bubbles over their window are
             // windows too.
