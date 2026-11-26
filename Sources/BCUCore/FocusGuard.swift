@@ -203,6 +203,9 @@ public final class FocusGuard {
     private var lastMouseDownPoint = CGPoint.zero
     /// It was the left button, without control.
     private var lastDownPlainLeft = false
+    /// When a mouse button last came up, and whether away from where it went down.
+    private var lastMouseUpMs = -Double.infinity
+    private var lastUpDragged = false
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
@@ -698,7 +701,7 @@ public final class FocusGuard {
                 if kept && !wasKept && self.gate.acting.contains(pid) {
                     wasKept = true
                     // From now on a window it opens may be the click's (`linkClickKeptBack`).
-                    self.lock.lock(); self.keptOnClick[pid] = click.ms; self.lock.unlock()
+                    self.lock.lock(); if self.lastClick.ms == click.ms { self.keptOnClick[pid] = click.ms }; self.lock.unlock()
                 }
                 self.lock.lock()
                 let now = self.lastClick.ms == click.ms ? self.lastClick : click
@@ -1061,7 +1064,7 @@ public final class FocusGuard {
                 self.lock.lock()
                 let current = self.rechecking[pid] == atMs
                 let now = self.lastClick.ms == click.ms ? self.lastClick : click
-                let movedOn = self.lastUserMouseDownMs > atMs || self.arrivals.contains { $0.ms > atMs && $0.pid != pid }
+                let movedOn = self.lastUserMouseDownMs > atMs || self.arrivals.contains { $0.ms > atMs && $0.pid != pid } || self.spaceChangedMs > atMs
                     || (self.userFrontPid != user && self.userFrontPid != pid)
                 self.lock.unlock()
                 guard current else { return }
@@ -1722,6 +1725,7 @@ public final class FocusGuard {
             lock.lock(); let from = lastMouseDownPoint; let plain = lastDownPlainLeft; lock.unlock()
             let p = event.location
             let dragged = hypot(p.x - from.x, p.y - from.y) > 4
+            lock.lock(); lastMouseUpMs = nowMs(); lastUpDragged = dragged; lock.unlock()
             gate.pointer(down: false, ms: Self.clickLiftMs, dragEnded: dragged)
             // A completed plain left click (a right or control click asks for
             // a menu) may have opened a link in an app the gate kept back.
@@ -2109,6 +2113,15 @@ public final class FocusGuard {
         }
         guard let gateOn, gateOn != app, gate.acting.contains(app) else { return }
         DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(80)) {
+            // Only once the click is complete, not dragged (a Dock icon
+            // dragged to another place in the Dock), within a second.
+            var released = false
+            while nowMs() - clickMs < 1000 {
+                self.lock.lock(); let up = self.lastMouseUpMs > clickMs ? self.lastUpDragged : nil; self.lock.unlock()
+                if let dragged = up { if dragged { return }; released = true; break }
+                sleepMs(20)
+            }
+            guard released else { return }
             // Not once the user has clicked, typed, switched or come to another app since.
             self.lock.lock()
             let same = self.lastClick.ms == clickMs && self.lastUserKeyMs < clickMs && self.lastUserSwitchKeyMs < clickMs
