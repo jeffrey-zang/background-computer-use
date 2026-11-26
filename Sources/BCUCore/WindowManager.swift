@@ -1081,7 +1081,7 @@ public final class WindowManager {
                         // (Not in accessibility yet: look again next time round.)
                         guard let dialog = AX.window(pid: w.pid, id: info.id) else { continue }
                         looked.insert(info.id)
-                        let said = Self.texts(in: dialog).joined(separator: " ")
+                        let said = PageDialog.message(texts: Self.texts(in: dialog))
                         if Self.answerLeave(dialog) { asked = said }
                     }
                     sleepMs(10)
@@ -1091,7 +1091,7 @@ public final class WindowManager {
             if closed(withinMs: 1500) {
                 unregister(id)
                 for other in windows where other.kind == .caught && WindowList.info(other.id) == nil { unregister(other.id) }
-                if let asked { return "closed window \(id) (the page asked \"\(asked)\"; answered Leave)" }
+                if let asked { return "closed window \(id) (the page asked \"\(asked)\"; answered that it may leave)" }
                 if discarded { return "closed window \(id) (threw away its unsaved changes)" }
                 return "closed window \(id)"
             }
@@ -1108,7 +1108,7 @@ public final class WindowManager {
                     if closed(withinMs: 1500) {
                         unregister(id)
                         if window(dialog.id) != nil { unregister(dialog.id) }
-                        return "closed window \(id) (the page asked \"\(said.joined(separator: " "))\"; answered Leave)"
+                        return "closed window \(id) (the page asked \"\(PageDialog.message(texts: said))\"; answered that it may leave)"
                     }
                     continue
                 }
@@ -1153,14 +1153,16 @@ public final class WindowManager {
     }
 
     /// A small dialog asking whether to leave a page (Chromium's "Leave
-    /// site?", with Leave and Cancel): press Leave. Only ever for a window
-    /// known to be an agent's (a session's own, or on an agent display),
-    /// about a window the agent is done with.
+    /// site?", with Leave and Cancel; Safari's "Are you sure you want to
+    /// leave this page?", with Stay on Page and Leave Page): press the one
+    /// that leaves. Only ever for a window known to be an agent's (a
+    /// session's own, or on an agent display), about a window the agent is
+    /// done with.
     @discardableResult
     static func answerLeave(_ dialog: AXUIElement) -> Bool {
         let found = buttons(in: dialog)
-        guard found.count <= 4, let leave = found.first(where: { $0.title == "Leave" }),
-              found.contains(where: { $0.title == "Cancel" }) else { return false }
+        guard let title = PageDialog.leaveButton(found.map(\.title)),
+              let leave = found.first(where: { $0.title == title }) else { return false }
         return AX.perform(leave.element, "AXPress") == .success
     }
 

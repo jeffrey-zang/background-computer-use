@@ -98,6 +98,9 @@ public final class Engine {
     private var isChromium: [pid_t: Bool] = [:]
     /// Answers of watches that ended before the next call took them.
     private var leaveNotes: [String] = []
+    /// The page dialog the last step left showing (see `pageDialogNote`),
+    /// for a batch to stop at.
+    private var lastPageDialog: String?
     /// Steps that take key focus in the app the user is in wait for a pause
     /// in their input (see `QuietWait`), within this session's budget.
     private let waitBudget = WaitBudget()
@@ -673,7 +676,20 @@ public final class Engine {
         }
         // Opening or borrowing a window is what needs a display.
         if tool == "open_window" || tool == "borrow_window" { try ensureDisplay() }
-        return try dispatch(tool: tool, args: args)
+        // A step that raises a page's dialog (leave this page?, alert)
+        // reports it, rather than success while the page stays where it is.
+        lastPageDialog = nil
+        var watched: (window: AgentWindow, before: Set<AXUIElement>)?
+        if PageDialog.watchedTools.contains(tool), let id = windowID, let w = windows.window(id), !w.handedOff,
+           PageDialog.watches(bundleID: w.bundleID), let ax = AX.window(pid: w.pid, id: w.id) {
+            watched = (w, Set(PageDialog.all(pid: w.pid, window: ax, id: w.id, caught: caughtWindows(of: w.pid))))
+        }
+        var result = try dispatch(tool: tool, args: args)
+        if let watched, let note = pageDialogNote(watched.window, before: watched.before) {
+            result.text += note
+            lastPageDialog = note
+        }
+        return result
     }
 
     /// Whether the user's session is locked (the lock screen, also after
@@ -1960,9 +1976,11 @@ public final class Engine {
         }
         let previous = snapshots[w.id]
         func take() -> AXSnapshotResult {
-            let popups = popupWindows(of: w, frame: AX.frame(ax))
+            let frame = AX.frame(ax)
+            let dialogs = PageDialog.watches(bundleID: w.bundleID) ? PageDialog.all(pid: w.pid, window: ax, id: w.id, caught: caughtWindows(of: w.pid)) : []
+            let popups = popupWindows(of: w, frame: frame).filter { !dialogs.contains($0) }
             return AXSnapshot.take(window: ax, windowID: w.id, title: AX.string(ax, "AXTitle") ?? title, appName: w.appName, pid: w.pid,
-                                   maxElements: maxElements, popups: popups, previous: previous)
+                                   maxElements: maxElements, popups: popups, dialogs: dialogs, previous: previous)
         }
         var snap = take()
         if fresh && snap.nodes.count < 12 {
@@ -1977,6 +1995,10 @@ public final class Engine {
             if nowMs() < earliest { sleepMs(earliest - nowMs()); snap = take() }
             var stableSince = nowMs()
             while nowMs() < deadline {
+                // A page dialog holds the page until it's answered: the
+                // window is as settled as it gets (and while it's up, Safari
+                // answers accessibility slowly, a second or more a read).
+                if snap.pageDialog { break }
                 if !isLoading(snap) && nowMs() - stableSince >= 400 { break }
                 sleepMs(130)
                 let again = take()
@@ -2107,6 +2129,14 @@ public final class Engine {
                 var line = "\(i + 1). \(tool): \(first)"
                 if !waitNotes.isEmpty { line += " (\(waitNotes.joined(separator: "; ")))"; waitedNotes += waitNotes.count; waitNotes = [] }
                 lines.append(line)
+                // The page waits for an answer: the rest would act on a
+                // page that didn't go on.
+                if let note = lastPageDialog {
+                    lines.append(note.trimmingCharacters(in: .newlines))
+                    if i + 2 == steps.count { lines.append("Stopped; action \(i + 2) didn't run.") }
+                    if i + 2 < steps.count { lines.append("Stopped; actions \(i + 2)–\(steps.count) didn't run.") }
+                    break
+                }
             } catch {
                 lines.append("\(i + 1). \(tool) FAILED: \(error)")
                 waitNotes = []
@@ -2134,6 +2164,42 @@ public final class Engine {
         var result = ToolResult(text: lines.joined(separator: "\n"), images: images)
         if failed { result.isError = true }
         return result
+    }
+
+    /// This session's caught windows of `pid` (a dialog the watchdog
+    /// caught on the user's screen is one, see `PageDialog.windows`).
+    private func caughtWindows(of pid: pid_t) -> Set<CGWindowID> {
+        Set(windows.windows.filter { $0.pid == pid && $0.kind == .caught }.map(\.id))
+    }
+
+    /// A step in a watched browser (see `PageDialog.watches`) that left a
+    /// page dialog showing that wasn't there before it: the note for its
+    /// result. A page's dialog comes up a moment after the step that raised
+    /// it (about 200 ms for a link that leaves a page with unsaved
+    /// changes), so this looks for `PageDialog.stepWaitMs`. The read that
+    /// usually follows a step waits that long anyway (see `getWindowState`).
+    private func pageDialogNote(_ w: AgentWindow, before: Set<AXUIElement>) -> String? {
+        // While Safari puts a dialog up it answers accessibility slowly (a
+        // read can take a second and still miss it), so the last look
+        // always begins after the wait is over.
+        let until = nowMs() + PageDialog.stepWaitMs
+        while true {
+            let began = nowMs()
+            if let ax = AX.window(pid: w.pid, id: w.id) {
+                for dialog in PageDialog.all(pid: w.pid, window: ax, id: w.id, caught: caughtWindows(of: w.pid)) where !before.contains(dialog) {
+                    let buttons = PageDialog.buttons(dialog)
+                    // (No buttons yet: it's still coming up.)
+                    if buttons.isEmpty { continue }
+                    let message = PageDialog.message(dialog)
+                    log("a page in \(w.appName) asked \"\(message)\" (\(buttons.joined(separator: " / "))) after a step in window \(w.id)")
+                    return PageDialog.stepNote(message: message, buttons: buttons, window: w.id)
+                }
+            } else if WindowList.info(w.id) == nil {
+                return nil
+            }
+            if began >= until { return nil }
+            sleepMs(20)
+        }
     }
 
     /// The app's other accessibility windows that aren't standard windows and

@@ -31,6 +31,8 @@ public struct AXSnapshotResult {
     let nextIndex: Int
     /// True when numbering restarted at 1, so numbers from the last read mean nothing.
     public let renumbered: Bool
+    /// A dialog of the page's (see `PageDialog`) is over the window, waiting for an answer.
+    public var pageDialog = false
 }
 
 /// Walks a window's accessibility tree and lists the elements worth acting on.
@@ -93,7 +95,7 @@ public enum AXSnapshot {
     /// and new elements get new ones, so a diff between two reads is
     /// meaningful. When most elements are new and most of the old ones are
     /// gone (another page), numbering restarts at 1.
-    public static func take(window: AXUIElement, windowID: CGWindowID, title: String, appName: String, pid: pid_t, maxElements: Int = 250, popups: [AXUIElement] = [], previous: AXSnapshotResult? = nil) -> AXSnapshotResult {
+    public static func take(window: AXUIElement, windowID: CGWindowID, title: String, appName: String, pid: pid_t, maxElements: Int = 250, popups: [AXUIElement] = [], dialogs: [AXUIElement] = [], previous: AXSnapshotResult? = nil) -> AXSnapshotResult {
         let windowFrame = AX.frame(window) ?? .zero
         // Collected first and numbered after the walk. `element` is nil for a
         // plain text line (the popup heading).
@@ -171,6 +173,19 @@ public enum AXSnapshot {
         // child, after everything else in it, and in a big web page the walk
         // would hit max_elements or its visit budget before getting there.
         // The window takes no input until the sheet is answered: list it first.
+        // A page's dialog (leave this page?, alert, confirm, prompt; see
+        // `PageDialog`) holds the page the same way, and it's a window of
+        // its own or replaces the page in the tab: listed first too, with
+        // what it says and its buttons in the header, so a read that only
+        // lists changes says it as well.
+        var dialogButtons: [(message: String, buttons: [(title: String, element: AXUIElement)])] = []
+        for dialog in dialogs where !walkedApart.contains(dialog) {
+            let clip = AX.frame(dialog).map { $0.union(windowFrame) } ?? windowFrame
+            entries.append(Entry(element: nil, indent: "", body: "Dialog from the page, waiting for an answer (the page takes no input until it's answered):", node: nil))
+            walk(dialog, depth: 0, indent: 1, clip: clip)
+            walkedApart.insert(dialog)
+            dialogButtons.append((PageDialog.message(dialog), WindowManager.buttons(in: dialog)))
+        }
         let sheets = AX.children(window).filter { AX.string($0, "AXRole") == "AXSheet" }
         for sheet in sheets {
             // A sheet can reach past a small window's edges.
@@ -179,8 +194,8 @@ public enum AXSnapshot {
             walk(sheet, depth: 0, indent: 1, clip: clip)
             walkedApart.insert(sheet)
         }
-        if !sheets.isEmpty {
-            entries.append(Entry(element: nil, indent: "", body: "The window behind the sheet:", node: nil))
+        if !sheets.isEmpty || !dialogButtons.isEmpty {
+            entries.append(Entry(element: nil, indent: "", body: "The window behind the \(sheets.isEmpty ? "dialog" : "sheet"):", node: nil))
         }
         walk(window, depth: 0, indent: 0, clip: windowFrame)
         // Popups the window opened (suggestion lists, menus, dropdowns) are
@@ -249,12 +264,18 @@ public enum AXSnapshot {
 
         var header = "Window \(windowID) \"\(clean(title, 80))\" of \(appName) (pid \(pid)), \(Int(windowFrame.width))x\(Int(windowFrame.height)) points. Coordinates are window-relative points; the screenshot is 1 pixel per point."
         if listed == 0 { header += "\nNo accessible elements found. Use the screenshot and x/y clicks." }
+        for d in dialogButtons {
+            let numbered = d.buttons.compactMap { b in indexByElement[b.element].map { (index: $0, title: b.title) } }
+            header += "\n" + PageDialog.stateLine(message: d.message, buttons: numbered)
+        }
         var footer: [String] = []
         if truncated { footer.append("(more elements not listed; raise max_elements or scroll)") }
         if skippedOffscreen > 0 { footer.append("(\(skippedOffscreen) elements scrolled out of view not listed)") }
         let text = ([header] + listing + footer).joined(separator: "\n")
-        return AXSnapshotResult(windowID: windowID, nodes: nodes, text: text, visited: visited, header: header, footer: footer,
-                                lines: lineByIndex, indexByElement: indexByElement, unlisted: unlisted, scrolledOut: scrolledOut, hiddenLines: hiddenLines, nextIndex: next, renumbered: renumber && previous != nil)
+        var result = AXSnapshotResult(windowID: windowID, nodes: nodes, text: text, visited: visited, header: header, footer: footer,
+                                      lines: lineByIndex, indexByElement: indexByElement, unlisted: unlisted, scrolledOut: scrolledOut, hiddenLines: hiddenLines, nextIndex: next, renumbered: renumber && previous != nil)
+        result.pageDialog = !dialogButtons.isEmpty
+        return result
     }
 
     /// Numbering restarts only when most listed elements are new and most

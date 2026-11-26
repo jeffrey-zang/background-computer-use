@@ -33,7 +33,8 @@ public enum ToolCatalog {
     can't wait (a dialog or toast about to close, a hover then a click, a code about to expire).
     Popups your window opens (address-bar suggestions, menus, dropdowns) are listed after the window's \
     elements in `get_window_state`; click their rows by number. A sheet over your window (a file picker, a save \
-    panel, an alert) is listed first. To pick or save a file by path, use `choose_file`, sent in one `batch` \
+    panel, an alert) is listed first, and so is a web page's own dialog (Safari's "leave this page?", alert, \
+    confirm, prompt): answer it by clicking its buttons. To pick or save a file by path, use `choose_file`, sent in one `batch` \
     with the click that opens the picker: the user's typing can be lost while the picker is open. \
     In a browser, to go to a URL use \
     `navigate` (it sends no keys, so it doesn't wait for the user to pause unless they're in that same browser); in a browser it doesn't support, \
