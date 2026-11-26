@@ -676,7 +676,7 @@ public final class Engine {
         let fresh = BeepWatch.shared.beeps(after: beepSeq)
         guard let last = fresh.last else { return nil }
         beepSeq = last.seq
-        let mine = BeepWatch.agents(fresh, steps: BeepWatch.shared.recentSteps, owner: sessionID)
+        let mine = BeepWatch.shared.attribute(fresh, owner: sessionID)
         guard !mine.isEmpty else { return nil }
         for (b, _) in mine { Log.info("beeps: \(b.app) (pid \(b.pid)) action \(b.action) at \(b.at.timeIntervalSince1970), seen \(Int(Date().timeIntervalSince(b.at) * 1000)) ms later, during \(tool)") }
         return BeepWatch.note(mine, current: current)

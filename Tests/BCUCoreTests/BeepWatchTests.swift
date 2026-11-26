@@ -92,6 +92,31 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertEqual(BeepWatch.agents([b], steps: w.recentSteps, owner: "b").count, 1)
     }
 
+    /// A beep reported to one session isn't taken over by input another
+    /// session starts after it.
+    func testALaterInputCantTakeAReportedBeep() {
+        let w = BeepWatch()
+        let t0 = Date()
+        w.record(step(t0, 0, 0.2, owner: "a"))
+        let b = beep(t0, 0.29)
+        XCTAssertEqual(w.attribute([b], owner: "a").count, 1)
+        w.record(step(t0, 0.29, 0.5, key: "return", owner: "b"))
+        XCTAssertTrue(w.attribute([b], owner: "b").isEmpty)
+        XCTAssertEqual(w.attribute([b], owner: "a").count, 1)
+        // And input that began after the request can't win it at all.
+        XCTAssertEqual(BeepWatch.agents([beep(t0, 0.31)], steps: [step(t0, 0, 0.2, owner: "a"), step(t0, 0.32, 0.5, owner: "b")], owner: nil).first?.step.owner, "a")
+    }
+
+    /// Completed input is pruned on the begin/finish path too.
+    func testFinishPrunes() {
+        let w = BeepWatch()
+        for _ in 0..<300 {
+            let id = w.begin(BeepWatch.Step(start: Date(), end: .distantFuture, key: nil, pids: [1], owner: "a", call: Date()))
+            w.finish(id)
+        }
+        XCTAssertLessThanOrEqual(w.recentSteps.count, 200)
+    }
+
     /// Keys sent to an open or save panel's service: its beeps count.
     func testAPanelServiceBeepCounts() {
         let t0 = Date()

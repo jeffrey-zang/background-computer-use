@@ -200,17 +200,45 @@ public final class BeepWatch {
         lock.lock(); defer { lock.unlock() }
         guard let i = open.removeValue(forKey: id), i < steps.count else { return }
         steps[i].end = Date()
+        prune()
+    }
+
+    /// Under `lock`. Only while nothing is being sent: `open` holds indexes.
+    private func prune() {
+        let cutoff = Date().addingTimeInterval(-60)
+        if open.isEmpty, steps.count > 200 || steps.first.map({ $0.end < cutoff }) == true {
+            steps = steps.filter { $0.end >= cutoff }.suffix(200)
+        }
+        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 } }
+    }
+
+    /// Which input each beep was put down to, once some session has: later
+    /// input can't take it over (and report it a second time).
+    private var assigned: [Int: Step] = [:]
+
+    /// `agents` over the steps listed now, keeping each beep with the input
+    /// it was first put down to.
+    public func attribute(_ beeps: [Beep], owner: String, tail: TimeInterval = 1.0) -> [(beep: Beep, step: Step)] {
+        lock.lock(); defer { lock.unlock() }
+        var out: [(beep: Beep, step: Step)] = []
+        for b in beeps {
+            let step: Step
+            if let s = assigned[b.seq] {
+                step = s
+            } else if let s = Self.agents([b], steps: steps, owner: nil, tail: tail).first?.step {
+                assigned[b.seq] = s
+                step = s
+            } else { continue }
+            if step.owner == owner { out.append((b, step)) }
+        }
+        return out
     }
 
     /// Every session's input goes here, so a beep is put down to one step.
     public func record(_ step: Step) {
         lock.lock(); defer { lock.unlock() }
         steps.append(step)
-        // Pruned only while nothing is being sent (`open` holds indexes).
-        let cutoff = Date().addingTimeInterval(-60)
-        if open.isEmpty, steps.count > 200 || steps.first.map({ $0.end < cutoff }) == true {
-            steps = steps.filter { $0.end >= cutoff }.suffix(200)
-        }
+        prune()
     }
 
     public var recentSteps: [Step] { lock.lock(); defer { lock.unlock() }; return steps }
@@ -220,11 +248,14 @@ public final class BeepWatch {
     /// came during or up to `tail` after (the app beeps once it has handled
     /// the key: 0.2 s after it in TextEdit), and counts only if that input
     /// was `owner`'s. A beep with no such input is the user's own.
-    public static func agents(_ beeps: [Beep], steps: [Step], owner: String, tail: TimeInterval = 1.0) -> [(beep: Beep, step: Step)] {
+    /// `owner` nil: whoever's it is.
+    public static func agents(_ beeps: [Beep], steps: [Step], owner: String?, tail: TimeInterval = 1.0) -> [(beep: Beep, step: Step)] {
         beeps.compactMap { b in
-            let step = steps.filter { $0.pids.contains(b.pid) && b.at >= $0.start.addingTimeInterval(-0.05) && b.at <= $0.end.addingTimeInterval(tail) }
+            // Input that began after the request can't have caused it (10 ms
+            // for the log's and this process's clocks).
+            let step = steps.filter { $0.pids.contains(b.pid) && $0.start <= b.at.addingTimeInterval(0.01) && b.at <= $0.end.addingTimeInterval(tail) }
                 .max { $0.start < $1.start }
-            guard let step, step.owner == owner else { return nil }
+            guard let step, owner == nil || step.owner == owner else { return nil }
             return (b, step)
         }
     }
