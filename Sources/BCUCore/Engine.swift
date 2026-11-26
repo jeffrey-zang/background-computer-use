@@ -1578,6 +1578,14 @@ public final class Engine {
         (s.prefix(1).uppercased() + s.dropFirst()) + "."
     }
 
+    /// The process an accessibility element is in (a file panel's runs in
+    /// its own service), for listing input to it.
+    static func owner(of element: AXUIElement) -> Set<pid_t>? {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid > 0 else { return nil }
+        return [pid]
+    }
+
     /// `pids`: where the input goes (an open or save panel's service for
     /// panel input), the window's app when nil.
     private func guarded<T>(_ w: AgentWindow, cause: String, pids: Set<pid_t>? = nil, _ body: () throws -> T) throws -> T {
@@ -2826,7 +2834,7 @@ public final class Engine {
             throw ToolError("Go to Folder didn't open in the file panel, so nothing was chosen. Read the window and pick the file by clicking its row, then the panel's button.")
         }
         try stillGoing()
-        let err = try guarded(w, cause: "entering the path") { AX.set(field, "AXValue", goTo as CFString) }
+        let err = try guarded(w, cause: "entering the path", pids: Self.owner(of: field)) { AX.set(field, "AXValue", goTo as CFString) }
         guard err == .success, waitUntil(500, everyMs: Self.panelPollMs, { AX.string(field, "AXValue") == goTo }) else {
             try? press("escape")
             throw ToolError("couldn't enter the path in Go to Folder (\(AX.errorName(err))), so nothing was chosen")
@@ -2840,7 +2848,7 @@ public final class Engine {
         if saving {
             guard let nameField = Panel.nameField(panel.sheet) else { throw ToolError("went to \(goTo), but found no file name field in the save panel") }
             try stillGoing()
-            let e = try guarded(w, cause: "entering the file name") { AX.set(nameField, "AXValue", name as CFString) }
+            let e = try guarded(w, cause: "entering the file name", pids: Self.owner(of: nameField)) { AX.set(nameField, "AXValue", name as CFString) }
             guard e == .success, waitUntil(500, everyMs: Self.panelPollMs, { AX.string(nameField, "AXValue") == name }) else {
                 throw ToolError("went to \(goTo), but couldn't enter the name \"\(name)\" (\(AX.errorName(e)))")
             }
@@ -2861,7 +2869,7 @@ public final class Engine {
             throw ToolError("\(what), but \"\(title)\" is disabled: the panel may not accept this kind of file")
         }
         try stillGoing()
-        let e = try guarded(w, cause: "pressing \(title)") { AX.perform(button, "AXPress") }
+        let e = try guarded(w, cause: "pressing \(title)", pids: Self.owner(of: button)) { AX.perform(button, "AXPress") }
         guard e == .success else { throw ToolError("\(what), but pressing \"\(title)\" failed (\(AX.errorName(e)))") }
         let closed = waitUntil(3000, everyMs: Self.panelPollMs) {
             guard let now = AX.window(pid: w.pid, id: w.id).flatMap(AX.sheet(of:)) else { return true }
