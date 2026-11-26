@@ -552,6 +552,23 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(st.result.contains("confi"), st.result)
     }
 
+    func testAFieldListedByItsValueAloneIsHidden() {
+        XCTAssertEqual(RecordingText.hideValues("[3] TextField \"confidentia\" @(0,0 10x10) [settable]"), "[3] TextField \"(hidden)\" @(0,0 10x10) [settable]")
+        XCTAssertEqual(RecordingText.hideValues("[4] Button \"Save\" @(0,0 10x10)"), "[4] Button \"Save\" @(0,0 10x10)")
+    }
+
+    func testALongKeyRunSeenMidwayIsHidden() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        func key(_ c: Character) { let k = log.begin(tool: "press_key", args: ["key": String(c), "window_id": 1]); log.setFocus(secure: false); log.end(k, result: "Pressed.", isError: false) }
+        let first = String(repeating: "a", count: 160) + "secretsuff"
+        for c in first { key(c) }
+        let st = log.begin(tool: "status", args: [:], tracked: false)
+        for c in "ixmore" { key(c) }
+        log.end(st, result: "1: TextEdit \"\(first)\"", isError: false)
+        log.redactAgain()
+        XCTAssertFalse(st.result.contains("secretsuff"), st.result)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

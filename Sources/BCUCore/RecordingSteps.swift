@@ -232,6 +232,9 @@ public enum RecordingText {
         // last on the line: a value can hold quotes and brackets itself.
         text.replacingOccurrences(of: #"value="[^\n]*"(?= @\(-?\d+,-?\d+ \d+x\d+\))|value="[^\n]*"$"#, with: "value=(hidden)",
                                   options: [.regularExpression])
+            // A field whose value is its name is listed by name alone.
+            .replacingOccurrences(of: #"((?:TextField|TextArea|SearchField|ComboBox)(?:\([^)\n]*\))?) "[^\n]*"(?= @\(-?\d+,-?\d+ \d+x\d+\))"#,
+                                  with: "$1 \"(hidden)\"", options: [.regularExpression])
     }
 
     /// The exact form a hidden value is replaced with.
@@ -400,13 +403,24 @@ public final class StepLog {
     /// show any start of it, so the starts are taken out of results too
     /// (worked out when needed, not stored as forms).
     private var pastRuns: [String] = []
-    private func runStarts() -> [String] {
-        var out: Set<String> = []
-        for run in Array(keyRuns.values) + pastRuns {
-            let chars = Array(run.prefix(RecordingText.longestClip))
-            if chars.count >= 3 { for n in 3...chars.count { out.insert(String(chars[0..<n])) } }
+    /// `text` with any start of a key run (3+ characters) taken out: found
+    /// by where the run's first characters occur and how far each match
+    /// goes, so a long run costs no more than the text it's looked for in.
+    private func redactRunStarts(_ text: String) -> String {
+        let runs = (Array(keyRuns.values) + pastRuns).map(Array.init).filter { $0.count >= 3 }
+        guard !runs.isEmpty else { return text }
+        var chars = Array(text)
+        for run in runs {
+            var i = 0
+            while i + 3 <= chars.count {
+                guard chars[i] == run[0], chars[i + 1] == run[1], chars[i + 2] == run[2] else { i += 1; continue }
+                var k = 3
+                while k < run.count, i + k < chars.count, chars[i + k] == run[k] { k += 1 }
+                chars.replaceSubrange(i..<(i + k), with: Array("(hidden)"))
+                i += 8
+            }
         }
-        return out.sorted { $0.count > $1.count }
+        return String(chars)
     }
     /// All of it, longest first (a shorter one replaced first could break up
     /// a longer one that holds it).
@@ -547,7 +561,7 @@ public final class StepLog {
         // first could break up the `value="` it looks for), then text hidden
         // in an earlier step, wherever it shows up again.
         var result = hidValues ? RecordingText.hideValues(result) : result
-        result = RecordingText.redact(result, secrets: hiddenTexts)
+        result = RecordingText.redact(redactRunStarts(result), secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
             if s.args[key] is String, let secret = s.original[key] ?? s.args[key] as? String {
@@ -614,7 +628,9 @@ public final class StepLog {
     /// it stopped failed): its result and whether it failed change.
     public func amend(_ s: RecordedStep, result: String, isError: Bool) {
         lock.lock(); defer { lock.unlock() }
-        s.result = RecordingText.redact(RecordingText.redact(result, secrets: hiddenTexts), secrets: runStarts())
+        // Key runs first: a stored clipped form of one replaced first would
+        // break up a longer start of it.
+        s.result = RecordingText.redact(redactRunStarts(result), secrets: hiddenTexts)
         s.isError = isError
     }
 
@@ -635,9 +651,8 @@ public final class StepLog {
     public func redactAgain() {
         lock.lock(); defer { lock.unlock() }
         guard !hiddenTexts.isEmpty || !keyRuns.isEmpty || !pastRuns.isEmpty else { return }
-        let starts = runStarts()
         for s in Self.flatten(steps) where s.end != nil {
-            s.result = RecordingText.redact(RecordingText.redact(s.result, secrets: hiddenTexts), secrets: starts)
+            s.result = RecordingText.redact(redactRunStarts(s.result), secrets: hiddenTexts)
             s.args = Self.redacted(s.args, hiddenTexts) as? JSONObject ?? s.args
             if let t = s.target {
                 s.target = StepTarget(element: t.element, role: t.role, label: RecordingText.redact(t.label, secrets: hiddenTexts), frame: t.frame, secure: t.secure)

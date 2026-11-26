@@ -219,7 +219,7 @@ public final class AgentRecording {
             // the session's to film any more, wherever it is.
             guard owns(windowID) else { lock.lock(); windowReleased = true; lock.unlock(); return nil }
             guard let wb = WindowList.info(windowID)?.bounds else { lock.lock(); windowGone = true; lock.unlock(); return nil }
-            guard let image = Capture.windowFrame(windowID) else { return nil }
+            guard let image = Capture.recordingWindowFrame(windowID) else { return nil }
             if nowMs() - lastWindowFrameMs >= 500 {
                 lastWindowFrameMs = nowMs()
                 onWindowFrame(windowID, image)
@@ -260,6 +260,9 @@ public final class AgentRecording {
             let b = live.isEmpty ? display.bounds : live
             var covers: [CGWindowID: CGRect] = [:]
             for id in steps.coverWindows() {
+                // The recorded window itself: where this frame shows it (the
+                // same reading of its place as the mapping), not a later one.
+                if id == windowID { covers[id] = source; continue }
                 if let wb = WindowList.info(id)?.bounds { covers[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
             }
             lock.lock(); mappings.append((pts, map)); coverMaps.append(covers); lock.unlock()

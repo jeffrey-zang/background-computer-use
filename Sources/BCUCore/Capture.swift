@@ -38,6 +38,11 @@ public enum Capture {
         return Shot.window(id)
     }
 
+    /// One window for an agent's recording: not marked as the app's last
+    /// capture, so other sessions' history, which waits for a pause in
+    /// those, isn't held up for as long as a recording runs.
+    static func recordingWindowFrame(_ id: CGWindowID) -> CGImage? { Shot.window(id) }
+
     public static func window(_ id: CGWindowID) throws -> CGImage {
         mark()
         if let image = Shot.window(id) ?? BCUCaptureWindow(id) { return image }
@@ -88,7 +93,7 @@ public enum Capture {
     /// smaller than the display's Retina pixels, so quicker to take).
     public static func display(_ display: AgentDisplay, pixelsPerPoint: CGFloat) -> CGImage? {
         guard display.isRunning else { return nil }
-        mark()
+        // Not marked (see `recordingWindowFrame`).
         return Shot.display(display.displayID, pixelsPerPoint: pixelsPerPoint)
     }
 
