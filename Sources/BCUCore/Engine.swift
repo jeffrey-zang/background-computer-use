@@ -2918,7 +2918,8 @@ public final class Engine {
         guard let field = Self.safariAddressField(in: ax) else {
             throw ToolError("couldn't find \(w.appName)'s address field in window \(w.id) (its toolbar may be hidden). Click the address bar, type_text the URL and \"\\n\".")
         }
-        let before = Self.webArea(in: ax).flatMap(Self.webAreaURL)
+        let webBefore = Self.webArea(in: ax)
+        let before = webBefore.flatMap(Self.webAreaURL)
         let sent = try guarded(w, cause: "loading a URL") { () -> Bool in
             guard AX.set(field, "AXValue", url as CFString) == .success else { return false }
             return AX.perform(field, "AXConfirm") == .success
@@ -2934,11 +2935,19 @@ public final class Engine {
         let since = nowMs()
         var now: String?
         var done = false
+        // Whether a load has been seen to start: the page said it was
+        // loading, or another document took the old one's place. Until then
+        // the old page can't count, even when it's at the URL asked for
+        // (a reload of the page that's showing).
+        var started = false
         while nowMs() - since < 3000 {
             sleepMs(40)
             let web = Self.webArea(in: ax)
             now = web.flatMap(Self.webAreaURL)
-            if Self.safariLoaded(before: before, now: now, wanted: url, loading: web.flatMap { AX.bool($0, "AXLoaded") }.map { !$0 }) {
+            let loading = web.flatMap { AX.bool($0, "AXLoaded") }.map { !$0 }
+            if loading == true { started = true }
+            if let web, let webBefore, !CFEqual(web, webBefore) { started = true }
+            if Self.safariLoaded(before: before, now: now, wanted: url, loading: loading, started: started) {
                 done = true
                 break
             }
@@ -2998,27 +3007,30 @@ public final class Engine {
     /// Whether the page Safari shows is the one asked for (or at least a
     /// new one: a redirect, or Safari's own form of the URL) and is done
     /// loading. `loading`: what the page says, if it says.
-    static func safariLoaded(before: String?, now: String?, wanted: String, loading: Bool?) -> Bool {
+    static func safariLoaded(before: String?, now: String?, wanted: String, loading: Bool?, started: Bool) -> Bool {
         guard let now, !now.isEmpty else { return false }
         if loading == true { return false }
+        // Nothing has happened yet: the page showing is the one from before.
+        if !started && now == before { return false }
         if comparableURL(now) == comparableURL(wanted) { return true }
         return now != before
     }
 
     /// A URL as Safari would show it, for comparing: scheme and host in
     /// lower case (they're case-insensitive), path, query and fragment as
-    /// given (they aren't: /a and /A are different pages), no trailing
-    /// slash, and a file URL under /private/tmp or /private/var as /tmp or
-    /// /var (Safari reports the /private form).
+    /// given and still percent-encoded (/a and /A, a/b and a%2Fb are
+    /// different pages), no trailing slash, and a file URL under
+    /// /private/tmp or /private/var as /tmp or /var (Safari reports the
+    /// /private form).
     static func comparableURL(_ s: String) -> String {
         guard var c = URLComponents(string: s) else { return s }
         c.scheme = c.scheme?.lowercased()
         c.host = c.host?.lowercased()
-        var path = c.path
+        var path = c.percentEncodedPath
         if c.scheme == "file", path.hasPrefix("/private/") { path = String(path.dropFirst("/private".count)) }
         while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
         if path == "/" && c.host != nil { path = "" }
-        c.path = path
+        c.percentEncodedPath = path
         return c.string ?? s
     }
 
