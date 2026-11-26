@@ -686,16 +686,20 @@ public final class FocusGuard {
     /// nothing says the click was meant to bring it: only a link, or a
     /// window that's new (not a title that changed, which an inbox's
     /// unread count does by itself), counts (`LateLook.keptOpened`).
-    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false, clickedIn: pid_t? = nil) {
+    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false, clickedIn: pid_t? = nil, keptAtClick: Bool = false) {
         let name = { (p: pid_t) in NSRunningApplication(processIdentifier: p)?.localizedName ?? "pid \(p)" }
         DispatchQueue.global(qos: .userInitiated).async {
             // For the kept path: the gate kept it back at some point (an
             // agent acting on it) since the click. An app it let through
             // could come forward by itself, and didn't.
-            var wasKept = false
+            var wasKept = keptAtClick
             while nowMs() - click.ms < LateLook.forMs {
                 sleepMs(LateLook.everyMs)
-                if kept && self.gate.acting.contains(pid) { wasKept = true }
+                if kept && !wasKept && self.gate.acting.contains(pid) {
+                    wasKept = true
+                    // From now on a window it opens may be the click's (`linkClickKeptBack`).
+                    self.lock.lock(); self.keptOnClick[pid] = click.ms; self.lock.unlock()
+                }
                 self.lock.lock()
                 let now = self.lastClick.ms == click.ms ? self.lastClick : click
                 let inputSince = LateLook.inputSince(clickMs: click.ms, putBackMs: putBackMs, mouseDownMs: self.lastUserMouseDownMs, keyMs: self.lastUserKeyMs)
@@ -813,8 +817,10 @@ public final class FocusGuard {
             self.lock.lock(); let c = self.lastClick; self.lock.unlock()
             guard c.point == p else { return }
             for pid in apps where pid != on && pid != self.userFront {
-                self.lock.lock(); self.keptOnClick[pid] = c.ms; self.lock.unlock()
-                self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true, clickedIn: on)
+                // Kept back at the click already: an agent was acting on it.
+                let keptNow = acting.contains(pid)
+                if keptNow { self.lock.lock(); self.keptOnClick[pid] = c.ms; self.lock.unlock() }
+                self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true, clickedIn: on, keptAtClick: keptNow)
             }
         }
     }
