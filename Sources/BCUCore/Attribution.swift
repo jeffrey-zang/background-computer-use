@@ -109,6 +109,14 @@ struct CmdTabSwitch {
         open = false
         return true
     }
+
+    /// A click while the switcher is open ends it: on an app in it, the
+    /// click is the switch (and counts as the user's click), anywhere else
+    /// it closes the switcher. Either way command coming up after switches
+    /// nothing, so it mustn't count as a second switch.
+    mutating func mouseDown() {
+        open = false
+    }
 }
 
 /// Where a click of the user's landed, for whether it explains an app

@@ -1540,7 +1540,7 @@ public final class FocusGuard {
             // A click can bring any app forward (its window, the Dock, a
             // link that opens in the browser): the gate opens before it goes on.
             openGate(for: type, event)
-            lock.lock(); lastUserMouseDownMs = nowMs(); let holdAll = !holdTokens.isEmpty || draining; let anySwap = !swapping.isEmpty; lock.unlock()
+            lock.lock(); lastUserMouseDownMs = nowMs(); cmdTabSwitch.mouseDown(); let holdAll = !holdTokens.isEmpty || draining; let anySwap = !swapping.isEmpty; lock.unlock()
             noteClick(at: event.location)
             if AgentDisplay.fenced(at: event.location) != nil {
                 Log.info("guard: dropped a click on an agent display at \(Int(event.location.x)),\(Int(event.location.y))")

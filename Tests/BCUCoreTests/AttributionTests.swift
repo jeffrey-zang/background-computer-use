@@ -149,7 +149,7 @@ final class AttributionTests: XCTestCase {
 
     // MARK: A cmd+Tab switches when command comes up
 
-    private enum Key { case command(down: Bool), keyDown(Int64) }
+    private enum Key { case command(down: Bool), keyDown(Int64), click }
 
     /// The user's last cmd+Tab as the guard's tap records it, from keys at
     /// times relative to `now`.
@@ -164,6 +164,8 @@ final class AttributionTests: XCTestCase {
                 if cmdTab.flagsChanged(command: down) { last = now + ms }
             case .keyDown(let code):
                 if cmdTab.keyDown(code: code, command: command) { last = now + ms }
+            case .click:
+                cmdTab.mouseDown()
             }
         }
         return last
@@ -194,6 +196,22 @@ final class AttributionTests: XCTestCase {
         XCTAssertTrue(Attribution.agentCaused(facts(step: running, switchKey: copy)))
         let cancelled = switchKey([(-1000, .command(down: true)), (-900, .keyDown(48)), (-300, .keyDown(53)), (-6, .command(down: false))])
         XCTAssertTrue(Attribution.agentCaused(facts(step: running, switchKey: cancelled)))
+    }
+
+    /// The user picks an app in the switcher with a click, command still
+    /// held: the click switched. Command coming up 300 ms later switches
+    /// nothing, so an agent's app coming forward just after is the agent's
+    /// (review of #91).
+    func testCommandComingUpAfterAClickInTheSwitcherSaysNothing() {
+        let key = switchKey([(-1500, .command(down: true)), (-1400, .keyDown(48)), (-600, .click), (-50, .command(down: false))])
+        XCTAssertLessThan(key, now - 1000, "command coming up counted as a switch")
+        XCTAssertTrue(Attribution.agentCaused(facts(step: running, mouseDown: now - 600, switchKey: key, arrivedElsewhere: now - 550)))
+    }
+
+    /// A click with no switcher open leaves a later cmd+Tab alone.
+    func testAClickBeforeACmdTabDoesntCancelIt() {
+        let key = switchKey([(-2000, .click), (-1000, .command(down: true)), (-900, .keyDown(48)), (-6, .command(down: false))])
+        XCTAssertEqual(key, now - 6)
     }
 
     /// Once the slow cmd+Tab has brought the user somewhere, it's used up.
