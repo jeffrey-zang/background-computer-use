@@ -60,7 +60,11 @@ public final class Engine {
     private let exporting = DispatchGroup()
     /// The folder of the recording under way, which `Hub` routes a
     /// subagent's stop_recording by.
-    var recordingDir: String? { stateLock.lock(); defer { stateLock.unlock() }; return _recording?.dir.path }
+    var recordingDir: String? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        // A recording saved when its display went away still waits for that stop.
+        return _recording?.dir.path ?? (try? endedRecording?.get())?.dir.path
+    }
     var currentRecording: AgentRecording? { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
     /// Test support: a list of steps kept as a recording would, with no video.
     var testStepLog: StepLog?

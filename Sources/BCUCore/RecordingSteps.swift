@@ -301,7 +301,9 @@ public final class StepLog {
 
     public func setTarget(_ target: StepTarget) {
         lock.lock(); defer { lock.unlock() }
-        current?.target = target
+        // An element can be named after text hidden earlier (a row with the file name typed).
+        current?.target = StepTarget(element: target.element, role: target.role,
+                                     label: RecordingText.redact(target.label, secrets: hiddenTexts), frame: target.frame, secure: target.secure)
     }
 
     public func setPoint(_ p: CGPoint, click: Bool, dragTo: CGPoint? = nil) {

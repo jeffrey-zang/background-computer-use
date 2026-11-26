@@ -266,6 +266,16 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(RecordingText.caption(tool: "scroll", args: ["dy": Int.min], target: nil, hidden: false), "scroll up 9223372036854775808")
     }
 
+    func testATargetNamedAfterHiddenTextIsRedacted() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "budget-2027.xlsx", "element": 2])
+        log.end(t, result: "Typed 16 characters.", isError: false)
+        let c = log.begin(tool: "click", args: ["element": 9])
+        log.setTarget(StepTarget(element: 9, role: "AXRow", label: "budget-2027.xlsx", frame: .zero, secure: false))
+        log.end(c, result: "Pressed.", isError: false)
+        XCTAssertEqual(c.target?.label, "(hidden)")
+    }
+
     func testTypingFailuresAreLoggedWithoutWhatWasTyped() {
         XCTAssertEqual(Engine.loggable("type_text FAILED: Typed 4 of 7 characters (\"hunt\"), nothing after that."),
                        "type_text FAILED: Typed 4 of 7 characters (\"(hidden)\"), nothing after that.")
