@@ -837,6 +837,14 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(RecordedStep.reachesAnotherField("\n"))
     }
 
+    func testARunningPasswordWriteIsFollowedAlready() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        _ = log.begin(tool: "type_text", args: ["text": "hunter2", "element": 5])
+        log.setCover(CGRect(x: 0, y: 0, width: 400, height: 300), window: 7)
+        log.setTarget(StepTarget(element: 5, role: "TextField", label: "Password", frame: CGRect(x: 10, y: 10, width: 100, height: 20), secure: true))
+        XCTAssertEqual(log.coverWindows(), [7])
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

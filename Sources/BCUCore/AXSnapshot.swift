@@ -211,15 +211,18 @@ public enum AXSnapshot {
         for e in entries {
             guard let el = e.element, let n = e.node else { listing.append(e.indent + e.body); continue }
             var idx: Int
+            var wasSecure = false
             if !renumber, let old = previous!.indexByElement[el], !used.contains(old) {
                 idx = old
+                // Once a password field, still one (a "show password" reveal changes its role).
+                wasSecure = previous!.nodes[old]?.secure == true
             } else {
                 idx = next
                 next += 1
             }
             used.insert(idx)
             let line = e.indent + "[\(idx)] " + e.body
-            nodes[idx] = AXNode(index: idx, element: el, role: n.0, frame: n.1, actions: n.2, valueSettable: n.3, label: e.label, secure: e.secure)
+            nodes[idx] = AXNode(index: idx, element: el, role: n.0, frame: n.1, actions: n.2, valueSettable: n.3, label: e.label, secure: e.secure || wasSecure)
             lineByIndex[idx] = line
             indexByElement[el] = idx
             listing.append(line)

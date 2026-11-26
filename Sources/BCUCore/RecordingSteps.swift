@@ -641,10 +641,16 @@ public final class StepLog {
 
     /// Password fields hidden typing went into (without hide_typing), by
     /// step number, to cover where each is in every frame.
+    /// Hidden typing (default mode), or typing into a password field still running.
+    static func secureWrite(_ s: RecordedStep) -> Bool {
+        s.textHidden || (s.end == nil && (s.target?.secure == true || s.focusSecure))
+    }
+
     public func coverFields() -> [(String, AXUIElement)] {
         lock.lock(); defer { lock.unlock() }
         guard !redactAll else { return [] }
-        return Self.flatten(steps).compactMap { s in s.textHidden && !s.multiField ? s.field.map { (s.number, $0) } : nil }
+        // Running ones into a password field too: it can move before the write ends.
+        return Self.flatten(steps).compactMap { s in Self.secureWrite(s) && !s.multiField ? s.field.map { (s.number, $0) } : nil }
     }
 
     public func setCover(_ rect: CGRect, window: CGWindowID? = nil) {
@@ -675,7 +681,7 @@ public final class StepLog {
         // Without hide_typing, only hidden typing that could fill more than one field covers its window.
         // Without hide_typing, hidden typing into a password field covers that
         // field, following its window (and with a Tab, the whole window).
-        guard redactAll else { return Set(Self.flatten(steps).filter { $0.textHidden }.compactMap(\.coverWindow)) }
+        guard redactAll else { return Set(Self.flatten(steps).filter(Self.secureWrite).compactMap(\.coverWindow)) }
         // Running ones too: the window can move while the typing goes on.
         return Set(Self.flatten(steps).filter { $0.textHidden || ($0.end == nil && $0.hidesText(redactAll: true)) }.compactMap(\.coverWindow))
     }
