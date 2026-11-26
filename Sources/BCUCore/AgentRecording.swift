@@ -43,6 +43,11 @@ public final class AgentRecording {
     private let started = Date()
     private let size: CGSize
     private let onDisplayFrame: (CGImage) -> Void
+    /// Gets a window recording's frames (at most twice a second), so the
+    /// history, which waits for a pause in the app's captures that a
+    /// recording never leaves, keeps up.
+    private let onWindowFrame: (CGWindowID, CGImage) -> Void
+    private var lastWindowFrameMs = 0.0
     /// Whether the session still has a window (a recording of one stops
     /// showing it once it's released: it may be the user's again).
     private let owns: (CGWindowID) -> Bool
@@ -102,12 +107,14 @@ public final class AgentRecording {
     /// then needs no captures of its own meanwhile).
     init(display: AgentDisplay, windowID: CGWindowID?, fps: Int, label: String, redactAll: Bool,
          owns: @escaping (CGWindowID) -> Bool = { _ in true },
+         onWindowFrame: @escaping (CGWindowID, CGImage) -> Void = { _, _ in },
          onDisplayFrame: @escaping (CGImage) -> Void) throws {
         self.display = display
         self.windowID = windowID
         self.fps = min(30, max(2, fps))
         self.label = label
         self.onDisplayFrame = onDisplayFrame
+        self.onWindowFrame = onWindowFrame
         self.owns = owns
         let fm = FileManager.default
         try fm.createDirectory(at: Self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -213,6 +220,10 @@ public final class AgentRecording {
             guard owns(windowID) else { lock.lock(); windowReleased = true; lock.unlock(); return nil }
             guard let wb = WindowList.info(windowID)?.bounds else { lock.lock(); windowGone = true; lock.unlock(); return nil }
             guard let image = Capture.windowFrame(windowID) else { return nil }
+            if nowMs() - lastWindowFrameMs >= 500 {
+                lastWindowFrameMs = nowMs()
+                onWindowFrame(windowID, image)
+            }
             let covered = Capture.coveredRect(image, bounds: wb, display: b)
             return (image, covered.offsetBy(dx: -b.minX, dy: -b.minY))
         }

@@ -781,9 +781,11 @@ public final class Engine {
         // it moves focus away (a PIN field that submits itself).
         if tool == "press_key", RecordedStep.typesACharacter(args.raw), let rec = recordingSteps,
            let id = windowID, let w = windows.window(id) {
-            if passwordFieldFocused(w) { rec.setFocusSecure() }
             let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
-            recordFocusTarget(w, focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil), rec)
+            let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
+            // Not knowing the field it goes to counts as secret, as for type_text.
+            if mine == nil || Self.isSecureField(mine) || passwordFieldFocused(w) { rec.setFocusSecure() }
+            recordFocusTarget(w, mine, rec)
         }
         return try dispatch(tool: tool, args: args)
     }
@@ -3173,6 +3175,7 @@ public final class Engine {
                                      label: label, redactAll: args.bool("hide_typing") ?? false,
                                      // Not one handed to the user, or that they have now.
                                      owns: { [weak self] in self?.windows.window($0).map { !$0.handedOff && !$0.withUser } ?? false },
+                                     onWindowFrame: { [weak self] in self?.recorder.windowShot($0, $1) },
                                      onDisplayFrame: { [weak self] in self?.recordPreview($0) })
         let what = windowID.map { "window \($0)" } ?? "your display"
         let text = "Recording \(what) at up to \(rec.fps) fps. Every tool call from now on is drawn on the video and listed, failures included. Call stop_recording when you're done: it saves recording.mp4 with actions.md and actions.json into \(rec.dir.path)."

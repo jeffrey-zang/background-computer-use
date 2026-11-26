@@ -541,6 +541,17 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(r.result.contains("aaa"), String(r.result.prefix(80)))
     }
 
+    func testAReadDuringAKeyRunLosesWhatItSaw() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        func key(_ c: Character) { let k = log.begin(tool: "press_key", args: ["key": String(c), "window_id": 1]); log.setFocus(secure: false); log.end(k, result: "Pressed.", isError: false) }
+        for c in "confi" { key(c) }
+        let st = log.begin(tool: "status", args: [:], tracked: false)
+        for c in "dential" { key(c) }
+        log.end(st, result: "Your windows: 1: TextEdit \"confi\"", isError: false)
+        log.redactAgain()
+        XCTAssertFalse(st.result.contains("confi"), st.result)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

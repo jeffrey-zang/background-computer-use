@@ -396,6 +396,18 @@ public final class StepLog {
     /// not piled up key by key.
     private var runForms: [UInt32: [String]] = [:]
     private var sortedCache: [String]?
+    /// Every key run so far, as typed: a read answered while a run grew may
+    /// show any start of it, so the starts are taken out of results too
+    /// (worked out when needed, not stored as forms).
+    private var pastRuns: [String] = []
+    private func runStarts() -> [String] {
+        var out: Set<String> = []
+        for run in Array(keyRuns.values) + pastRuns {
+            let chars = Array(run.prefix(RecordingText.longestClip))
+            if chars.count >= 3 { for n in 3...chars.count { out.insert(String(chars[0..<n])) } }
+        }
+        return out.sorted { $0.count > $1.count }
+    }
     /// All of it, longest first (a shorter one replaced first could break up
     /// a longer one that holds it).
     private var hiddenTexts: [String] {
@@ -576,6 +588,7 @@ public final class StepLog {
             }
         } else if Self.endsKeyRun.contains(s.tool) || (s.tool == "press_key" && !s.typesCharacter) {
             // Something that changes the input or where it goes; reads don't.
+            if let run = keyRuns[w] { pastRuns.append(run) }
             keyRuns[w] = nil
             // The run is over: its whole text stays hidden, once.
             if let forms = runForms.removeValue(forKey: w) { addHidden(forms) }
@@ -601,7 +614,7 @@ public final class StepLog {
     /// it stopped failed): its result and whether it failed change.
     public func amend(_ s: RecordedStep, result: String, isError: Bool) {
         lock.lock(); defer { lock.unlock() }
-        s.result = RecordingText.redact(result, secrets: hiddenTexts)
+        s.result = RecordingText.redact(RecordingText.redact(result, secrets: hiddenTexts), secrets: runStarts())
         s.isError = isError
     }
 
@@ -621,9 +634,10 @@ public final class StepLog {
     /// ended before a later one hid its text (answered meanwhile) gets it too.
     public func redactAgain() {
         lock.lock(); defer { lock.unlock() }
-        guard !hiddenTexts.isEmpty else { return }
+        guard !hiddenTexts.isEmpty || !keyRuns.isEmpty || !pastRuns.isEmpty else { return }
+        let starts = runStarts()
         for s in Self.flatten(steps) where s.end != nil {
-            s.result = RecordingText.redact(s.result, secrets: hiddenTexts)
+            s.result = RecordingText.redact(RecordingText.redact(s.result, secrets: hiddenTexts), secrets: starts)
             s.args = Self.redacted(s.args, hiddenTexts) as? JSONObject ?? s.args
             if let t = s.target {
                 s.target = StepTarget(element: t.element, role: t.role, label: RecordingText.redact(t.label, secrets: hiddenTexts), frame: t.frame, secure: t.secure)
