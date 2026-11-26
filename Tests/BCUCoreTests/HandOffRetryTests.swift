@@ -60,4 +60,53 @@ final class HandOffRetryTests: XCTestCase {
         XCTAssertFalse(KeyScope.shouldRetryHandOff(appFront: false, swapping: false, parked: false, key: 9, agentKey: 7, userWindowExists: true))
         XCTAssertFalse(KeyScope.shouldRetryHandOff(appFront: false, swapping: false, parked: false, key: 7, agentKey: 7, userWindowExists: false))
     }
+
+    // MARK: Later tries run as a swap (review of #90)
+
+    /// The records of a later try are sent inside the guard's swap, so a
+    /// click on the app meanwhile is held rather than undone by them.
+    func testALaterTryRunsInsideASwap() {
+        var events: [String] = []
+        let outcome = KeyScope.deferredHandOff(
+            swapping: { false }, beginSwap: { events.append("begin") }, endSwap: { events.append("end") },
+            shouldRetry: { events.append("check"); return true },
+            attempt: { events.append("records"); return true })
+        XCTAssertEqual(outcome, .handed)
+        XCTAssertEqual(events, ["begin", "check", "records", "end"])
+    }
+
+    /// Whether to send anything is decided once the swap has begun: a click
+    /// just before it (the app came forward, key moved) means nothing is sent.
+    func testALaterTryChecksAfterTheSwapBegins() {
+        var events: [String] = []
+        let outcome = KeyScope.deferredHandOff(
+            swapping: { false }, beginSwap: { events.append("begin") }, endSwap: { events.append("end") },
+            shouldRetry: { events.append("check"); return false },
+            attempt: { events.append("records"); return true })
+        XCTAssertEqual(outcome, .skipped)
+        XCTAssertEqual(events, ["begin", "check", "end"])
+    }
+
+    /// A step already swapping in the app goes first; no swap is begun.
+    func testALaterTryIsSkippedWhileAStepSwaps() {
+        var began = false
+        let outcome = KeyScope.deferredHandOff(
+            swapping: { true }, beginSwap: { began = true }, endSwap: {},
+            shouldRetry: { true }, attempt: { XCTFail("records sent mid-swap"); return true })
+        XCTAssertEqual(outcome, .skipped)
+        XCTAssertFalse(began)
+    }
+
+    func testAMissedTryEndsTheSwapToo() {
+        var ended = false
+        XCTAssertEqual(KeyScope.deferredHandOff(swapping: { false }, beginSwap: {}, endSwap: { ended = true },
+                                                shouldRetry: { true }, attempt: { false }), .missed)
+        XCTAssertTrue(ended)
+    }
+
+    /// The catalog's `guard_report` is still dispatched and read-only (review of #90).
+    func testGuardReportKeepsItsCatalogName() {
+        XCTAssertTrue(Engine.readOnlyTools.contains("guard_report"))
+        XCTAssertFalse(Engine.readOnlyTools.contains("fgreport"))
+    }
 }

@@ -220,6 +220,24 @@ public final class KeyScope {
         !appFront && !swapping && !parked && key == agentKey && userWindowExists
     }
 
+    enum DeferredHandOff: Equatable { case skipped, handed, missed }
+
+    /// One later try at a hand-off that didn't take, run as a swap like any
+    /// step's (`FocusGuard.beginSwap`): from the moment it starts, a click on
+    /// the app (on another of the user's windows, say) is held until key has
+    /// moved and goes on after, so these records can't undo what the click
+    /// picked. Skipped if a step is already swapping there; `shouldRetry`
+    /// is checked once the swap has begun, so a click just before it (which
+    /// brings the app forward or moves key) is seen and nothing is sent.
+    static func deferredHandOff(swapping: () -> Bool, beginSwap: () -> Void, endSwap: () -> Void,
+                                shouldRetry: () -> Bool, attempt: () -> Bool) -> DeferredHandOff {
+        if swapping() { return .skipped }
+        beginSwap()
+        defer { endSwap() }
+        guard shouldRetry() else { return .skipped }
+        return attempt() ? .handed : .missed
+    }
+
     @discardableResult
     static func postRecords(pid: pid_t, from current: CGWindowID?, to target: CGWindowID, settle: Double = settleMs) -> Bool {
         var ok = true

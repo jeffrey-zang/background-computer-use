@@ -501,7 +501,7 @@ public final class Engine {
         }
     }
 
-    static let readOnlyTools: Set<String> = ["status", "fgreport", "list_apps", "list_windows", "release_window", "screenshot", "get_window_state"]
+    static let readOnlyTools: Set<String> = ["status", "guard_report", "list_apps", "list_windows", "release_window", "screenshot", "get_window_state"]
 
     /// Why a call is turned away before it runs, if it is. `notes` gives the
     /// user's notes for the agent (taking them).
@@ -608,7 +608,7 @@ public final class Engine {
                 }
                 if let note = takeLeaveNotes() { result.text += note }
                 if let note = takeUserNotes() { result.text += note }
-                if tool != "status" && tool != "fgreport" {
+                if tool != "status" && tool != "guard_report" {
                     log("\(tool) (\(Int(nowMs() - startMs)) ms): \(result.text.split(separator: "\n").first.map(String.init) ?? "")")
                 }
                 return result
@@ -722,7 +722,7 @@ public final class Engine {
         case "choose_file": return try chooseFile(args)
         case "handoff": return try handoff(args)
         case "take_back": return try takeBack(args)
-        case "fgreport": return guardReport()
+        case "guard_report": return guardReport()
         case "capture_audio": return try captureAudio(args)
         case "batch": return try batch(args)
         // Maintenance, not in the agent tool catalog.
@@ -1007,7 +1007,7 @@ public final class Engine {
             return Chaos.shared.status()
         case "admin_chaos_stop":
             return Chaos.shared.stop()
-        case "admin_fgevents":
+        case "admin_guard_events":
             // Test: the guard's recent events, cleared after.
             let events = focusGuard.recentEvents.map(\.summary)
             if args.bool("clear") ?? true { focusGuard.clearEvents() }
@@ -1310,19 +1310,28 @@ public final class Engine {
                 let appLock = Engine.inputLock(pid)
                 appLock.lock()
                 defer { appLock.unlock() }
-                guard KeyScope.shouldRetryHandOff(appFront: BCUFrontProcessPID() == pid, swapping: fg.isSwapping(pid),
-                                                  parked: fg.parkedKey(pid) != nil, key: AX.focusedWindowID(pid),
-                                                  agentKey: agentKey, userWindowExists: WindowList.info(user) != nil) else {
+                let outcome = KeyScope.deferredHandOff(
+                    swapping: { fg.isSwapping(pid) }, beginSwap: { fg.beginSwap(pid) }, endSwap: { fg.endSwap(pid) },
+                    shouldRetry: {
+                        KeyScope.shouldRetryHandOff(appFront: BCUFrontProcessPID() == pid, swapping: false,
+                                                    parked: fg.parkedKey(pid) != nil, key: AX.focusedWindowID(pid),
+                                                    agentKey: agentKey, userWindowExists: WindowList.info(user) != nil)
+                    },
+                    attempt: {
+                        _ = KeyScope.postRecords(pid: pid, from: agentKey, to: user, settle: KeyScope.handOffSettles.last ?? 120)
+                        KeyScope.awaitKey(pid: pid, target: user, budgetMs: 400)
+                        return AX.focusedWindowID(pid) == user
+                    })
+                switch outcome {
+                case .skipped:
                     state.lock(); done = true; state.unlock()
-                    return
-                }
-                _ = KeyScope.postRecords(pid: pid, from: agentKey, to: user, settle: KeyScope.handOffSettles.last ?? 120)
-                KeyScope.awaitKey(pid: pid, target: user, budgetMs: 400)
-                if AX.focusedWindowID(pid) == user {
+                case .handed:
                     state.lock(); done = true; state.unlock()
                     Log.info("swap: key handed to the user's window \(user) in \(appName) on a later try (\(Int(nowMs() - t0)) ms after the step)")
-                } else if ms == 1200 {
-                    Log.info("swap: still could not hand key to the user's window \(user) in \(appName); the guard sorts it out when they come to the app")
+                case .missed:
+                    if ms == 1200 {
+                        Log.info("swap: still could not hand key to the user's window \(user) in \(appName); the guard sorts it out when they come to the app")
+                    }
                 }
             }
         }
