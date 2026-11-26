@@ -149,7 +149,7 @@ public final class Engine {
     /// How far this session has looked at `BeepWatch`'s beeps, and when its
     /// recent input steps ran (whose beeps are the agent's).
     private var beepSeq = 0
-    private var inputSteps: [(start: Date, end: Date)] = []
+    private var inputSteps: [BeepWatch.Step] = []
 
     private static let inputLocksLock = NSLock()
     private static var inputLocks: [pid_t: NSRecursiveLock] = [:]
@@ -609,8 +609,8 @@ public final class Engine {
                 }
                 let soundNotes = audioClaims.takeNotes()
                 if !soundNotes.isEmpty { result.text += "\n[sound] " + soundNotes.joined(separator: " ") }
-                if input { noteInputStep(start: stepStart) }
-                if let beeps = beepNote(tool: tool, args: args) { result.text += "\n[beep] " + beeps }
+                if input { noteInputStep(start: stepStart, tool: tool, args: args) }
+                if let beeps = beepNote(tool: tool, current: stepStart) { result.text += "\n[beep] " + beeps }
                 if monitored, let focusNote = focusReport() {
                     focusGuard.record("\(tool): \(focusNote)")
                     result.text += "\n[focus guard] \(focusNote)"
@@ -627,8 +627,8 @@ public final class Engine {
                     focusGuard.record("\(tool): \(focusNote)")
                     text += "\n[focus guard] \(focusNote)"
                 }
-                if input { noteInputStep(start: stepStart) }
-                if let beeps = beepNote(tool: tool, args: args) { text += "\n[beep] " + beeps }
+                if input { noteInputStep(start: stepStart, tool: tool, args: args) }
+                if let beeps = beepNote(tool: tool, current: stepStart) { text += "\n[beep] " + beeps }
                 if let note = takeUserNotes() { text += note }
                 log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
                 return .error(text)
@@ -637,24 +637,24 @@ public final class Engine {
     }
 
     /// This call sent input (so a beep from its app now is the agent's).
-    private func noteInputStep(start: Date) {
-        inputSteps.append((start, Date()))
+    private func noteInputStep(start: Date, tool: String, args: JSONObject) {
+        let key: String? = tool == "press_key" ? ((args["modifiers"] as? [String] ?? []) + [args["key"] as? String ?? "the key"]).joined(separator: "+") : nil
+        inputSteps.append(BeepWatch.Step(start: start, end: Date(), key: key))
         let cutoff = Date().addingTimeInterval(-60)
         inputSteps = inputSteps.filter { $0.end >= cutoff }.suffix(20)
     }
 
     /// The beeps this session's input set off since it last looked: during
     /// this call, or logged after the last one returned.
-    private func beepNote(tool: String, args: JSONObject) -> String? {
+    private func beepNote(tool: String, current: Date) -> String? {
         let fresh = BeepWatch.shared.beeps(after: beepSeq)
         guard let last = fresh.last else { return nil }
         beepSeq = last.seq
         let pids = Set(windows.windows.map(\.pid)).union(touched)
         let mine = BeepWatch.agents(fresh, pids: pids, steps: inputSteps)
         guard !mine.isEmpty else { return nil }
-        for b in mine { Log.info("beeps: \(b.app) (pid \(b.pid)) action \(b.action) at \(b.at.timeIntervalSince1970), seen \(Int(Date().timeIntervalSince(b.at) * 1000)) ms later, during \(tool)") }
-        let key: String? = tool == "press_key" ? ((args["modifiers"] as? [String] ?? []) + [args["key"] as? String ?? "the key"]).joined(separator: "+") : nil
-        return BeepWatch.note(mine, key: key)
+        for (b, _) in mine { Log.info("beeps: \(b.app) (pid \(b.pid)) action \(b.action) at \(b.at.timeIntervalSince1970), seen \(Int(Date().timeIntervalSince(b.at) * 1000)) ms later, during \(tool)") }
+        return BeepWatch.note(mine, current: current)
     }
 
     /// What this session's apps did to the user's front app since it last

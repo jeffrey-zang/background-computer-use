@@ -27,7 +27,7 @@ final class BeepWatchTests: XCTestCase {
 
     func testOnlyTheAgentsAppsDuringItsStepsCount() {
         let t0 = Date()
-        let step = (start: t0, end: t0.addingTimeInterval(0.35))
+        let step = BeepWatch.Step(start: t0, end: t0.addingTimeInterval(0.35), key: "escape")
         func beep(_ dt: TimeInterval, pid: pid_t = 62902) -> BeepWatch.Beep {
             BeepWatch.Beep(at: t0.addingTimeInterval(dt), pid: pid, app: "TextEdit", action: 4096, seq: 1)
         }
@@ -38,6 +38,27 @@ final class BeepWatchTests: XCTestCase {
         // Long after the step, or before it: the user's own.
         XCTAssertTrue(BeepWatch.agents([beep(3), beep(-1)], pids: [62902], steps: [step]).isEmpty)
         XCTAssertTrue(BeepWatch.agents([beep(0.17)], pids: [62902], steps: []).isEmpty)
+    }
+
+    /// A beep logged after its step returned goes to that step's key, not
+    /// to the call that finds it.
+    func testALateBeepIsPutDownToItsOwnStep() {
+        let t0 = Date()
+        let escape = BeepWatch.Step(start: t0, end: t0.addingTimeInterval(0.3), key: "escape")
+        let save = BeepWatch.Step(start: t0.addingTimeInterval(2), end: t0.addingTimeInterval(2.3), key: "cmd+s")
+        let b = BeepWatch.Beep(at: t0.addingTimeInterval(0.2), pid: 7, app: "TextEdit", action: 4096, seq: 1)
+        let found = BeepWatch.agents([b], pids: [7], steps: [escape, save])
+        XCTAssertEqual(found.first?.step.key, "escape")
+        let note = BeepWatch.note(found, current: save.start)!
+        XCTAssertTrue(note.hasPrefix("After your previous step: TextEdit beeped"), note)
+        XCTAssertTrue(note.contains("escape most likely did nothing"), note)
+        XCTAssertFalse(note.contains("cmd+s"), note)
+        // Found by its own step: no "previous".
+        let own = BeepWatch.note(found, current: escape.start)!
+        XCTAssertTrue(own.hasPrefix("TextEdit beeped"), own)
+        // Overlapping windows: the latest step it fits.
+        let b2 = BeepWatch.Beep(at: t0.addingTimeInterval(2.1), pid: 7, app: "TextEdit", action: 4096, seq: 2)
+        XCTAssertEqual(BeepWatch.agents([b2], pids: [7], steps: [BeepWatch.Step(start: t0, end: t0.addingTimeInterval(1.5), key: "escape"), save]).first?.step.key, "cmd+s")
     }
 
     func testNoteNamesTheAppAndTheKey() {

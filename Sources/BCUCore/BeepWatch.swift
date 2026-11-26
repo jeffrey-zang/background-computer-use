@@ -69,7 +69,8 @@ public final class BeepWatch {
                 self.unavailable = true
                 Log.info("beeps: log stream exited (\(p.terminationStatus)); app beeps won't be reported")
             }
-            self.process = nil
+            // Not a replacement started since this one was stopped.
+            if self.process === p { self.process = nil }
             self.lock.unlock()
         }
         do {
@@ -157,19 +158,46 @@ public final class BeepWatch {
 
     // MARK: Whose beep
 
-    /// Which of `beeps` the agent's steps set off: from an app it acted on,
-    /// at a moment one of its input steps ran, or shortly after one (the
-    /// app beeps once it has handled the key: 0.2 s after it in TextEdit).
-    /// A beep at any other time is the user's own.
-    public static func agents(_ beeps: [Beep], pids: Set<pid_t>, steps: [(start: Date, end: Date)], tail: TimeInterval = 1.0) -> [Beep] {
-        beeps.filter { b in
-            pids.contains(b.pid) && steps.contains { b.at >= $0.start.addingTimeInterval(-0.05) && b.at <= $0.end.addingTimeInterval(tail) }
+    /// One of the agent's input steps: when it ran, and the key it
+    /// pressed (for the note), if it pressed one.
+    public struct Step {
+        public let start: Date
+        public var end: Date
+        public let key: String?
+        public init(start: Date, end: Date, key: String?) { self.start = start; self.end = end; self.key = key }
+    }
+
+    /// Which of `beeps` the agent's steps set off, each with the step: from
+    /// an app it acted on, at a moment one of its input steps ran, or
+    /// shortly after one (the app beeps once it has handled the key: 0.2 s
+    /// after it in TextEdit). A beep at any other time is the user's own.
+    public static func agents(_ beeps: [Beep], pids: Set<pid_t>, steps: [Step], tail: TimeInterval = 1.0) -> [(beep: Beep, step: Step)] {
+        beeps.compactMap { b in
+            guard pids.contains(b.pid) else { return nil }
+            // The latest step it can be from.
+            let step = steps.last { b.at >= $0.start.addingTimeInterval(-0.05) && b.at <= $0.end.addingTimeInterval(tail) }
+            return step.map { (b, $0) }
         }
     }
 
     /// The step result's note for the beeps it set off (and any from the
     /// step before, logged after it returned).
-    public static func note(_ beeps: [Beep], key: String?) -> String? {
+    /// `current`: the step this note goes with; beeps from an earlier step
+    /// (logged after it returned) are put down to that step's key.
+    public static func note(_ found: [(beep: Beep, step: Step)], current: Date) -> String? {
+        guard !found.isEmpty else { return nil }
+        let now = found.filter { $0.step.start == current }
+        let earlier = found.filter { $0.step.start != current }
+        var parts: [String] = []
+        if !now.isEmpty { parts.append(note(now.map(\.beep), key: now[0].step.key)!) }
+        if !earlier.isEmpty {
+            let key = earlier.last!.step.key
+            parts.append("After your previous step: " + note(earlier.map(\.beep), key: key, earlier: true)!)
+        }
+        return parts.joined(separator: " ")
+    }
+
+    public static func note(_ beeps: [Beep], key: String?, earlier: Bool = false) -> String? {
         guard !beeps.isEmpty else { return nil }
         var byApp: [String: (alerts: Int, other: Int)] = [:]
         var order: [String] = []
@@ -185,7 +213,7 @@ public final class BeepWatch {
             }
             return "\(app) played a system sound on the user's speakers"
         }
-        let what = key.map { "\($0) most likely did nothing there" } ?? "the input most likely did nothing there"
+        let what = key.map { "\($0) most likely did nothing there" } ?? (earlier ? "that step's input most likely did nothing there" : "the input most likely did nothing there")
         let alerts = beeps.contains { $0.action == alertAction }
         return parts.joined(separator: "; ") + "." + (alerts ? " An app beeps when it refuses input: \(what). Check the window before going on, and don't send keys that would only beep." : "")
     }
