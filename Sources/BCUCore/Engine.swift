@@ -195,7 +195,8 @@ public final class Engine {
             return self.userInControl || (self.windows.window(id)?.handedOff ?? false)
         }
         interference.onChange = { [weak self] c in
-            self?.focusGuard.record("interference: window \(c.window) (\(c.app)): \(c.what), while the agent wasn't acting")
+            // The guard log is every session's: no field values in it.
+            self?.focusGuard.record("interference: window \(c.window) (\(c.app)): \(c.shared), while the agent wasn't acting")
         }
     }
 

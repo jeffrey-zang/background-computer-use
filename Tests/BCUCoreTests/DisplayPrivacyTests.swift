@@ -48,6 +48,22 @@ final class DisplayPrivacyTests: XCTestCase {
         XCTAssertEqual(what, "a password field \"Password\"'s value was changed")
     }
 
+    /// Some apps mark a password field only by its subrole.
+    func testPasswordValuesAreNeverQuotedWhenOnlyTheSubroleSaysSo() {
+        let what = InterferenceWatch.describe(notification: value, role: "AXTextField", subrole: "AXSecureTextField", title: "Password",
+                                              value: "hunter2", idleMs: 9000, appIsFront: false, withUser: false)
+        XCTAssertEqual(what, "a password field \"Password\"'s value was changed")
+        XCTAssertFalse(what?.contains("hunter2") == true)
+    }
+
+    /// The guard report is shared by every session in the engine: what goes
+    /// there leaves the value out (the session's own step result keeps it).
+    func testTheSharedSummaryLeavesTheValueOut() {
+        let shared = InterferenceWatch.describe(notification: value, role: "AXTextArea", subrole: nil, title: nil,
+                                                value: nil, idleMs: 9000, appIsFront: false, withUser: false)
+        XCTAssertEqual(shared, "a text area's value was changed")
+    }
+
     /// In the app the user is in, their own clicks and keys move focus.
     func testFocusMovesAreReportedOnlyWhenTheUserIsntInThatApp() {
         XCTAssertEqual(InterferenceWatch.describe(notification: focus, role: "AXButton", subrole: nil, title: "Send",

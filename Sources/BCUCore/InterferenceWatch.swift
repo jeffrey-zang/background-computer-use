@@ -22,6 +22,9 @@ final class InterferenceWatch {
         let what: String
         /// The same element and kind of change: coalesced.
         var key: String = ""
+        /// `what` without the field's value, for places other sessions can
+        /// read (the guard report is shared by every session in the engine).
+        var shared: String = ""
     }
 
     /// Accessibility notifications watched on each app.
@@ -47,7 +50,8 @@ final class InterferenceWatch {
         switch notification {
         case kAXValueChangedNotification:
             guard let role, inputRoles.contains(role) else { return nil }
-            if role == "AXSecureTextField" { return "\(name)'s value was changed" }
+            // A password field, by role or subrole: never its value.
+            if role == "AXSecureTextField" || subrole == "AXSecureTextField" { return "\(name)'s value was changed" }
             guard let value else { return "\(name)'s value was changed" }
             return "\(name)'s value was changed to \"\(clip(value))\""
         case kAXFocusedUIElementChangedNotification:
@@ -61,7 +65,7 @@ final class InterferenceWatch {
 
     static func elementName(role: String?, subrole: String?, title: String?) -> String {
         let kind: String
-        switch role ?? "" {
+        switch subrole == "AXSecureTextField" ? "AXSecureTextField" : role ?? "" {
         case "AXTextArea": kind = "a text area"
         case "AXTextField", "AXSearchField", "AXComboBox": kind = subrole == "AXSearchField" ? "a search field" : "a text field"
         case "AXSecureTextField": kind = "a password field"
@@ -183,8 +187,11 @@ final class InterferenceWatch {
         guard let what = Self.describe(notification: notification, role: role, subrole: AX.string(element, "AXSubrole"),
                                        title: AX.string(element, "AXTitle") ?? AX.string(element, "AXDescription"),
                                        value: value, idleMs: idle, appIsFront: front, withUser: withUser(id)) else { return }
+        let shared = Self.describe(notification: notification, role: role, subrole: AX.string(element, "AXSubrole"),
+                                   title: AX.string(element, "AXTitle") ?? AX.string(element, "AXDescription"),
+                                   value: nil, idleMs: idle, appIsFront: front, withUser: false) ?? what
         let change = Change(ms: nowMs(), window: id, app: entry.app, what: what,
-                            key: "\(notification)|\(role ?? "")|\(CFHash(element))")
+                            key: "\(notification)|\(role ?? "")|\(CFHash(element))", shared: shared)
         lock.lock(); ledger.add(change); lock.unlock()
         onChange?(change)
     }

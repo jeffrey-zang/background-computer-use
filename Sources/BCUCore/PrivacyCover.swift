@@ -103,6 +103,9 @@ public final class PrivacyCover {
         p.isOpaque = false
         p.backgroundColor = NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.12, alpha: Self.alpha)
         p.hasShadow = false
+        // A panel hides whenever its app stops being active (opening BCU's
+        // Settings and switching away would take the cover down).
+        p.hidesOnDeactivate = false
         p.ignoresMouseEvents = true
         p.isReleasedWhenClosed = false
         p.animationBehavior = .none
