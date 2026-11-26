@@ -755,7 +755,8 @@ public final class StepLog {
     /// ended before a later one hid its text (answered meanwhile) gets it too.
     public func redactAgain() {
         lock.lock(); defer { lock.unlock() }
-        guard !hiddenTexts.isEmpty || !keyRuns.isEmpty || !pastRuns.isEmpty else { return }
+        // Structural masking runs even with no remembered secret (a short one isn't kept).
+        guard !hiddenTexts.isEmpty || !keyRuns.isEmpty || !pastRuns.isEmpty || hidValues || hideFieldValues else { return }
         for s in Self.flatten(steps) where s.end != nil {
             if hidValues, Self.reads.contains(s.tool), (s.end ?? 0) >= hidValuesFrom { s.result = Self.readLeftOut; continue }
             if (s.end ?? 0) >= min(hidValuesFrom, hideFieldValuesFrom) { s.result = RecordingText.hideTitles(RecordingText.hideValues(s.result)) }

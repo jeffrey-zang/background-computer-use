@@ -338,6 +338,13 @@ public final class Hub {
             }
             caller = takeOver(windowID, for: caller, id: id)
         }
+        // A recording this agent started on a relative's session lists its
+        // other calls too (status, list_windows...), still run by its own session.
+        lock.lock(); let route = recordingAt[id]; lock.unlock()
+        if let route, caller.recordingDir == nil, Self.routeHolds(dir: route.dir, current: route.owner.recordingDir) {
+            let me = caller
+            return route.owner.logCall(tool, args) { me.call(tool: tool, args: args) }
+        }
         return caller.call(tool: tool, args: args)
     }
 

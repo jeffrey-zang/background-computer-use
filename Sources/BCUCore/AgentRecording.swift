@@ -254,6 +254,9 @@ public final class AgentRecording {
         guard input.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
         let pts = Int64(elapsedMs.rounded())
         guard pts > lastPts else { return }
+        // A capture that finishes past the cap: its steps aren't drawn, so neither is it.
+        lock.lock(); let cut = cutoffMs; lock.unlock()
+        if let cut, Double(pts) > cut { return }
         var buffer: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
         guard let buffer else { return }
@@ -286,6 +289,9 @@ public final class AgentRecording {
                 if let wb = WindowList.info(id)?.bounds {
                     let now = wb.offsetBy(dx: -b.minX, dy: -b.minY)
                     covers[id] = coversBefore[id].map { $0.union(now) } ?? now
+                } else if let then = coversBefore[id] {
+                    // Gone meanwhile: the frame may still show it where it was.
+                    covers[id] = then
                 }
             }
             var fields: [String: CGRect] = [:]
@@ -295,6 +301,8 @@ public final class AgentRecording {
                 if let f = AX.frame(el), f.width > 0 {
                     let now = f.offsetBy(dx: -b.minX, dy: -b.minY)
                     fields[key] = fieldsBefore[key].map { $0.union(now) } ?? now
+                } else if let then = fieldsBefore[key] {
+                    fields[key] = then
                 }
             }
             lock.lock(); mappings.append((pts, map)); coverMaps.append(covers); fieldMaps.append(fields); lock.unlock()

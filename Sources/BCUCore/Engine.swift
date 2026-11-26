@@ -605,6 +605,12 @@ public final class Engine {
         return queue.sync { recorded(tool, args) { callOnQueue(tool: tool, args: args) } }
     }
 
+    /// Another session's call (no window to route it by) listed in this
+    /// session's recording, which that session started here. Runs `body` as is.
+    public func logCall(_ tool: String, _ args: JSONObject, _ body: () -> ToolResult) -> ToolResult {
+        recorded(tool, args, tracked: false, body)
+    }
+
     /// `body`'s call, listed in the recording under way, if any.
     /// `tracked`: false for a call answered off the session's queue.
     private func recorded(_ tool: String, _ args: JSONObject, tracked: Bool = true, _ body: () -> ToolResult) -> ToolResult {

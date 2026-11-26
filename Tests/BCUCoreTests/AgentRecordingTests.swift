@@ -751,6 +751,17 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(st.result.contains("confidentia"), st.result)
     }
 
+    func testAShortPasswordStillMasksAStatusDuringItsWrite() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let w = log.begin(tool: "type_text", args: ["text": "xy", "element": 5])
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: .zero, secure: true))
+        let st = log.begin(tool: "status", args: [:], tracked: false)
+        log.end(st, result: "Your windows:\n  7: TextEdit [opened] \"x\"", isError: false)
+        log.end(w, result: "Typed.", isError: false)
+        log.redactAgain()
+        XCTAssertTrue(st.result.contains("\"(hidden)\""), st.result)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))
