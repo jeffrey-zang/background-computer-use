@@ -801,12 +801,23 @@ public final class AgentDisplay {
         return retina
     }
 
-    /// The displays to take out of mirroring so the agent display mirrors
-    /// nothing and nothing mirrors it: itself when it mirrors a display, and
-    /// each display that mirrors it. `mirrorOf` is what each online display
-    /// mirrors (0: none).
-    static func unmirrorTargets(agent: CGDirectDisplayID, mirrorOf: [CGDirectDisplayID: CGDirectDisplayID]) -> [CGDirectDisplayID] {
-        mirrorOf.filter { id, of in of != 0 && (id == agent || of == agent) }.map(\.key).sorted()
+    /// What to change so the agent display mirrors nothing and nothing
+    /// mirrors it, as (display, what it should mirror now; 0: nothing).
+    /// `mirrorOf` is what each online display mirrors (0: none). The agent
+    /// display mirroring a user display stops. User displays mirroring the
+    /// agent display stop too, but when there are two or more the mirroring
+    /// among them is the user's: one of them (`main` if it's one, else the
+    /// lowest ID) stops and becomes the source the others mirror, so only
+    /// the agent display leaves the set.
+    static func unmirrorPlan(agent: CGDirectDisplayID, main: CGDirectDisplayID,
+                             mirrorOf: [CGDirectDisplayID: CGDirectDisplayID]) -> [(display: CGDirectDisplayID, source: CGDirectDisplayID)] {
+        var plan: [(display: CGDirectDisplayID, source: CGDirectDisplayID)] = []
+        if let of = mirrorOf[agent], of != 0 { plan.append((agent, 0)) }
+        let mirroringAgent = mirrorOf.filter { id, of in id != agent && of == agent }.map(\.key).sorted()
+        guard let source = mirroringAgent.contains(main) ? main : mirroringAgent.first else { return plan }
+        plan.append((source, 0))
+        for id in mirroringAgent where id != source { plan.append((id, source)) }
+        return plan
     }
 
     /// A user display mirroring the agent display (Control Center's Screen
@@ -821,11 +832,12 @@ public final class AgentDisplay {
     private func unmirror() {
         var mirrorOf: [CGDirectDisplayID: CGDirectDisplayID] = [:]
         for id in Self.onlineDisplayIDs() { mirrorOf[id] = CGDisplayMirrorsDisplay(id) }
-        let targets = Self.unmirrorTargets(agent: displayID, mirrorOf: mirrorOf)
-        guard !targets.isEmpty else { return }
+        let plan = Self.unmirrorPlan(agent: displayID, main: CGMainDisplayID(), mirrorOf: mirrorOf)
+        guard !plan.isEmpty else { return }
+        let targets = plan.map(\.display)
         var config: CGDisplayConfigRef?
         CGBeginDisplayConfiguration(&config)
-        for id in targets { CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay) }
+        for step in plan { CGConfigureDisplayMirrorOfDisplay(config, step.display, step.source) }
         let err = CGCompleteDisplayConfiguration(config, .forSession)
         Self.noteChange()
         // (A failure repeated every second is logged once.)
