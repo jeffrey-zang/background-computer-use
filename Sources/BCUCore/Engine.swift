@@ -744,7 +744,7 @@ public final class Engine {
                 // It may have filled other fields: the video covers the window.
                 if let bounds = WindowList.info(w.id)?.bounds {
                     let b = display.bounds
-                    rec.setCover(bounds.offsetBy(dx: -b.minX, dy: -b.minY))
+                    rec.setCover(bounds.offsetBy(dx: -b.minX, dy: -b.minY), window: id)
                 }
             }
             // A character key pressed into a password field (a PIN typed key
@@ -766,6 +766,14 @@ public final class Engine {
         }
         // Opening or borrowing a window is what needs a display.
         if tool == "open_window" || tool == "borrow_window" || tool == "start_recording" { try ensureDisplay() }
+        // Typing that may be hidden: under hide_typing the video covers its
+        // whole window from then on, following it (a field can scroll, the
+        // window can move).
+        if ["type_text", "set_value"].contains(tool) || (tool == "press_key" && RecordedStep.typesACharacter(args.raw)),
+           let rec = recordingSteps, let id = windowID, let bounds = WindowList.info(id)?.bounds {
+            let b = display.bounds
+            rec.setCover(bounds.offsetBy(dx: -b.minX, dy: -b.minY), window: id)
+        }
         // A character key into a password field is hidden even if pressing
         // it moves focus away (a PIN field that submits itself).
         if tool == "press_key", RecordedStep.typesACharacter(args.raw), let rec = recordingSteps,

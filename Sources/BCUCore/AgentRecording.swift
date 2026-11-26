@@ -55,6 +55,9 @@ public final class AgentRecording {
     private let lock = NSLock()
     /// Per frame written: its time (ms) and where display points land in it.
     private var mappings: [(t: Int64, map: FrameMapping)] = []
+    /// Per frame, where the windows that hidden typing went into were then
+    /// (display points), so their cover follows them.
+    private var coverMaps: [[CGWindowID: CGRect]] = []
     private var lastPts: Int64 = -1
     /// Captures under way (on `queue`), and a group to wait for them.
     private var pending = 0
@@ -239,7 +242,12 @@ public final class AgentRecording {
         if adaptor.append(buffer, withPresentationTime: CMTime(value: pts, timescale: 1000)) {
             let scale = fit.width / max(source.width, 1)
             let map = FrameMapping(scale: scale, offset: CGPoint(x: fit.minX - source.minX * scale, y: fit.minY - source.minY * scale))
-            lock.lock(); mappings.append((pts, map)); lock.unlock()
+            let b = display.bounds
+            var covers: [CGWindowID: CGRect] = [:]
+            for id in steps.coverWindows() {
+                if let wb = WindowList.info(id)?.bounds { covers[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
+            }
+            lock.lock(); mappings.append((pts, map)); coverMaps.append(covers); lock.unlock()
             lastPts = pts
         }
     }
@@ -263,7 +271,7 @@ public final class AgentRecording {
         writer.endSession(atSourceTime: CMTime(value: max(lastPts, 0) + 1, timescale: 1000))
         writer.finishWriting { done.signal() }
         done.wait()
-        lock.lock(); let maps = mappings; let wasCapped = capped; let gone = windowGone, released = windowReleased; lock.unlock()
+        lock.lock(); let maps = mappings; let covers = coverMaps; let wasCapped = capped; let gone = windowGone, released = windowReleased; lock.unlock()
         defer { Self.markActive(dir, false) }
         var notes: [String] = []
         if wasCapped { notes.append("Capture stopped after \(Int(Self.maxMs / 60_000)) minutes; later steps are listed but not in the video.") }
@@ -292,7 +300,7 @@ public final class AgentRecording {
         do {
             // Past the cap, steps are in the lists only.
             lock.lock(); let cutoff = cutoffMs; lock.unlock()
-            try render(raw: rawURL, to: video, maps: maps, steps: all, endMs: min(durationMs, cutoff ?? .infinity), cutoff: cutoff)
+            try render(raw: rawURL, to: video, maps: maps, covers: covers, steps: all, endMs: min(durationMs, cutoff ?? .infinity), cutoff: cutoff)
         } catch {
             let message = "\(error), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it."
             failing?(message)
@@ -319,7 +327,8 @@ public final class AgentRecording {
 
     /// Reads `raw` back frame by frame, draws the steps over each and writes `out`.
     /// `cutoff`: capture stopped there (at `maxMs`); nothing after it is drawn.
-    private func render(raw: URL, to out: URL, maps: [(t: Int64, map: FrameMapping)], steps all: [RecordedStep], endMs: Double,
+    private func render(raw: URL, to out: URL, maps: [(t: Int64, map: FrameMapping)], covers: [[CGWindowID: CGRect]] = [],
+                        steps all: [RecordedStep], endMs: Double,
                         cutoff: Double? = nil) throws {
         let asset = AVURLAsset(url: raw)
         guard let track = try Capture.blocking(timeoutMs: 30_000, { try await asset.loadTracks(withMediaType: .video) }).first else {
@@ -374,6 +383,10 @@ public final class AgentRecording {
             while mi + 1 < maps.count && maps[mi + 1].t <= ms { mi += 1 }
             return maps[mi].map
         }
+        func coversAt(_ ms: Int64) -> [CGWindowID: CGRect] {
+            _ = mapping(ms)
+            return mi < covers.count ? covers[mi] : [:]
+        }
         /// The last captured picture again, at `ms`, with what's going on then.
         func copyOfLast(at ms: Int64) throws {
             guard ms > lastMs, let pool = ad.pixelBufferPool else { return }
@@ -391,7 +404,7 @@ public final class AgentRecording {
                     ctx.fill(CGRect(origin: .zero, size: size))
                 }
                 RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: mapping(ms),
-                                      label: label, redactAll: steps.redactAll)
+                                      label: label, redactAll: steps.redactAll, covers: coversAt(ms))
             }
             CVPixelBufferUnlockBaseAddress(buffer, [])
             try waitForWriter()
@@ -411,7 +424,7 @@ public final class AgentRecording {
             if let ctx = context(px) {
                 prevRaw = raw
                 RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: mapping(ms),
-                                      label: label, redactAll: steps.redactAll)
+                                      label: label, redactAll: steps.redactAll, covers: coversAt(ms))
             }
             CVPixelBufferUnlockBaseAddress(px, [])
             try waitForWriter()

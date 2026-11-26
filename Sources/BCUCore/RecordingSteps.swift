@@ -51,6 +51,8 @@ public final class RecordedStep {
     /// Display points its typing may have reached beyond its target (a Tab
     /// moves on to other fields): the video covers it too when typing is hidden.
     public internal(set) var cover: CGRect?
+    /// The window that `cover` is, followed from frame to frame.
+    public internal(set) var coverWindow: CGWindowID?
     /// The focused field was a password field when text was typed without `element`.
     var focusSecure = false
     /// Its text (or key) was taken out of its arguments when it ended.
@@ -85,7 +87,7 @@ public final class RecordedStep {
         // A character key on its own is typing one key at a time (a PIN).
         if tool == "press_key" {
             guard Self.typesACharacter(args) else { return false }
-            return redactAll || focusSecure || end == nil || !focusChecked
+            return redactAll || focusSecure || target?.secure == true || end == nil || !focusChecked
         }
         guard tool == "type_text" || tool == "set_value" else { return false }
         // Not knowing where it went (refused before it got that far) counts as secret.
@@ -441,9 +443,17 @@ public final class StepLog {
     }
 
     /// Where typing without `element` goes was looked at: `secure` if a password field.
-    public func setCover(_ rect: CGRect) {
+    public func setCover(_ rect: CGRect, window: CGWindowID? = nil) {
         lock.lock(); defer { lock.unlock() }
         current?.cover = rect
+        if let window { current?.coverWindow = window }
+    }
+
+    /// Windows hidden typing went into, to follow in the video.
+    public func coverWindows() -> Set<CGWindowID> {
+        lock.lock(); defer { lock.unlock() }
+        guard redactAll else { return [] }
+        return Set(Self.flatten(steps).filter(\.textHidden).compactMap(\.coverWindow))
     }
 
     public func setFocus(secure: Bool) {
@@ -494,12 +504,15 @@ public final class StepLog {
         }
         // Keys pressed one by one add up to text in a field.
         if s.tool == "press_key" && s.textHidden, let key = s.secret {
-            keyRun += key
+            // What it put in the field: shift makes a letter a capital.
+            let shifted = ((s.args["modifiers"] as? [Any]) ?? []).contains { KeyMap.modifierNames["\($0)".trimmingCharacters(in: .whitespaces).lowercased()] == .maskShift }
+            keyRun += shifted ? key.uppercased() : key
             if RecordingText.redactsLater(keyRun) {
                 hiddenTexts += RecordingText.forms(of: keyRun)
                 hiddenTexts.sort { $0.count > $1.count }
             }
-        } else if s.tool != "batch" && s.tool != "status" {
+        } else if Self.endsKeyRun.contains(s.tool) || s.tool == "press_key" {
+            // Something that changes the input or where it goes; reads don't.
             keyRun = ""
         }
         s.original = [:]
@@ -533,6 +546,9 @@ public final class StepLog {
         if let o = value as? JSONObject { return o.mapValues { redacted($0, secrets) } }
         return value
     }
+
+    static let endsKeyRun: Set<String> = ["click", "type_text", "set_value", "navigate", "open_window", "borrow_window", "release_window",
+                                          "choose_file", "drag", "perform_action", "press_menu_item", "handoff", "take_back"]
 
     /// Every step, batch steps after their batch, in the order they started.
     /// In the order they started: a call answered off the session's queue

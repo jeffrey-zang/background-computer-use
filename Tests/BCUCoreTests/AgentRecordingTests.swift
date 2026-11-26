@@ -448,6 +448,42 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertGreaterThan(data[i + 1], 100)
     }
 
+    func testShiftedKeysAndReadsInBetweenAreHidden() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        for ch in "confidential" {
+            let k = log.begin(tool: "press_key", args: ["key": String(ch), "modifiers": ["shift"]]); log.setFocus(secure: false)
+            log.end(k, result: "Pressed.", isError: false)
+            let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "No changes.", isError: false)
+        }
+        let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "value=\"CONFIDENTIAL\"", isError: false)
+        XCTAssertFalse(r.result.contains("CONFIDENTIAL"), r.result)
+    }
+
+    func testAKeyIntoAKnownPasswordFieldIsHidden() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let k = log.begin(tool: "press_key", args: ["key": "7"])
+        log.setTarget(StepTarget(element: 0, role: "AXTextField", label: "focused field", frame: .zero, secure: true))
+        log.setFocus(secure: false)
+        log.end(k, result: "Pressed 7.", isError: false)
+        XCTAssertEqual(k.args["key"] as? String, "(hidden, 1 characters)")
+    }
+
+    func testTheCoverFollowsTheWindow() throws {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let s = log.begin(tool: "type_text", args: ["text": "secret words", "element": 1])
+        log.setCover(CGRect(x: 0, y: 0, width: 100, height: 100), window: 42)
+        log.end(s, result: "Typed.", isError: false)
+        XCTAssertEqual(log.coverWindows(), [42])
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
+        RecordingOverlay.draw(in: ctx, size: CGSize(width: 800, height: 500), t: 1000, flat: log.all, total: 1, mapping: FrameMapping(scale: 1, offset: .zero),
+                              label: "A", redactAll: true, covers: [42: CGRect(x: 400, y: 100, width: 100, height: 100)])
+        let image = try XCTUnwrap(ctx.makeImage())
+        let data = try XCTUnwrap(image.dataProvider?.data) as Data
+        XCTAssertGreaterThan(data[150 * image.bytesPerRow + 450 * 4 + 1], 100, "covered where the window is now")
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))

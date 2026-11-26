@@ -62,7 +62,7 @@ public enum RecordingOverlay {
     /// Draws over `ctx`, a `size` frame (bottom-left origin, as CoreGraphics
     /// has it), at `t` ms into the video. `total`: tool calls in the recording.
     public static func draw(in ctx: CGContext, size: CGSize, t: Double, flat: [RecordedStep], total: Int,
-                            mapping: FrameMapping, label: String, redactAll: Bool) {
+                            mapping: FrameMapping, label: String, redactAll: Bool, covers: [CGWindowID: CGRect] = [:]) {
         let W = size.width, H = size.height
         let u = max(0.55, min(1.4, W / 1600))
         func flip(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: H - r.maxY, width: r.width, height: r.height) }
@@ -74,8 +74,11 @@ public enum RecordingOverlay {
         // from then on (a password field shows only dots anyway).
         if redactAll {
             for s in flat where s.t <= t && s.hidesText(redactAll: true) {
-                guard let target = s.target, !target.secure || s.cover != nil else { continue }
-                let r = flip(mapping.rect(s.cover ?? target.frame).insetBy(dx: -2 * u, dy: -2 * u))
+                // The window it went into, where that window is in this frame
+                // (the field can scroll, the window can move), else where it was.
+                let area = s.coverWindow.flatMap { covers[$0] } ?? s.cover ?? s.target.flatMap { $0.secure ? nil : $0.frame }
+                guard let area else { continue }
+                let r = flip(mapping.rect(area).insetBy(dx: -2 * u, dy: -2 * u))
                 ctx.setFillColor(CGColor(gray: 0.55, alpha: 1))
                 ctx.addPath(CGPath(roundedRect: r, cornerWidth: 5 * u, cornerHeight: 5 * u, transform: nil)); ctx.fillPath()
                 let l = line("hidden", font(min(18 * u, r.height * 0.6), bold: true), CGColor(gray: 1, alpha: 1))
