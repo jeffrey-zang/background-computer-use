@@ -2905,9 +2905,9 @@ public final class Engine {
     }
 
     /// Load a URL in one of the agent's Safari windows through
-    /// accessibility, with no key focus and no keystrokes: the URL is set
-    /// as the value of the window's address field ("smart search field")
-    /// and confirmed there (AXConfirm), as Return would. Nothing goes
+    /// accessibility, with no key focus and no keystrokes: the window's
+    /// address field ("smart search field") is focused, the URL set as its
+    /// value and confirmed there (AXConfirm), as Return would. Nothing goes
     /// through the keyboard, so the user's window keeps key even when
     /// they're in Safari, and there's no pause of theirs to wait for.
     /// Before, navigate refused Safari, and every page load there was a
@@ -2921,6 +2921,12 @@ public final class Engine {
         let webBefore = Self.webArea(in: ax)
         let before = webBefore.flatMap(Self.webAreaURL)
         let sent = try guarded(w, cause: "loading a URL") { () -> Bool in
+            // Focused first, so the field is being edited: with a secure
+            // (https) page showing, Safari ignores AXConfirm on a field that
+            // isn't, and the old page stays (measured: 0 of 2 loads without
+            // it, 4 of 4 with it). This moves focus inside the agent's
+            // window only: the user's window keeps key.
+            AX.set(field, "AXFocused", kCFBooleanTrue)
             guard AX.set(field, "AXValue", url as CFString) == .success else { return false }
             return AX.perform(field, "AXConfirm") == .success
         }
