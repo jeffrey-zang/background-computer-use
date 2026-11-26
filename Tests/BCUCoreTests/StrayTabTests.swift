@@ -299,4 +299,12 @@ final class StrayTabTests: XCTestCase {
         XCTAssertNil(WindowManager.keyAfterLateMove(userIn: true, userKey: 5, keyNow: 5, made: 9))
         XCTAssertNil(WindowManager.keyAfterLateMove(userIn: true, userKey: nil, keyNow: 9, made: 9))
     }
+
+    /// A window that would be the pending handout's but for a title its
+    /// page changed is held out of attribution, not caught on a guess.
+    func testAnUnresolvedLateCandidateIsHeldOut() {
+        XCTAssertTrue(WindowManager.unresolvedLateCandidate(stepSince: true, qualifiesWithoutTitle: true))
+        XCTAssertFalse(WindowManager.unresolvedLateCandidate(stepSince: true, qualifiesWithoutTitle: false))
+        XCTAssertFalse(WindowManager.unresolvedLateCandidate(stepSince: false, qualifiesWithoutTitle: true))
+    }
 }

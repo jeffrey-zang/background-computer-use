@@ -157,8 +157,18 @@ final class AudioClaims {
         }
         // Not a button that's in another window now (a tab handed out to the
         // user since it was named): pressing it would act in theirs.
+        // Under the app's input lock, which a tab handout holds while it
+        // moves a tab, and not while one from that window is pending: the
+        // check and the press can't straddle a move.
         let pressed = zip(hit, flipped).map { c, flip in
-            c.mute.map { m in flip ? AXError.success : Self.movedAway(windowOf: m, from: c.window) ? AXError.invalidUIElement : AX.perform(m, "AXPress") }
+            c.mute.map { m -> AXError in
+                if flip { return .success }
+                let appLock = Engine.inputLock(c.pid)
+                guard appLock.lock(before: Date(timeIntervalSinceNow: 0.5)) else { return .cannotComplete }
+                defer { appLock.unlock() }
+                if WindowManager.handoutPending(from: c.window) || Self.movedAway(windowOf: m, from: c.window) { return .invalidUIElement }
+                return AX.perform(m, "AXPress")
+            }
         }
         let pids = Set(hit.map(\.pid))
         let deadline = nowMs() + settleMs

@@ -1963,6 +1963,12 @@ public final class WindowManager {
         return !pending.title.isEmpty && windowShowsTab(windowTitle: windowTitle, tabTitle: pending.title, browser: browser)
     }
 
+    /// A new window that would be a pending handout's but for its title:
+    /// held out of attribution rather than judged.
+    static func unresolvedLateCandidate(stepSince: Bool, qualifiesWithoutTitle: Bool) -> Bool {
+        stepSince && qualifiesWithoutTitle
+    }
+
     /// A late window can be told only by its title (a step ran since the
     /// handout) and the title couldn't be read.
     static func lateHandoutNeedsTitle(stepSince: Bool, title: String?) -> Bool {
@@ -2095,7 +2101,20 @@ public final class WindowManager {
             }
             guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
                                      windowTitle: title, stepSince: stepSince,
-                                     pending: late[info.pid], nowMs: nowMs(), browser: info.owner) else { continue }
+                                     pending: late[info.pid], nowMs: nowMs(), browser: info.owner) else {
+                // Could be the moved tab with a title its page changed since
+                // (it loaded, redirected), or a popup of the step's: neither
+                // is told for sure, so it's left out of the sweep's
+                // attribution while the handout is pending (10 s), not
+                // caught on a guess meanwhile. After that the sweep judges it
+                // as any new window, by the agent's steps then.
+                if Self.unresolvedLateCandidate(stepSince: stepSince,
+                                                qualifiesWithoutTitle: Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
+                                                                                         windowTitle: nil, stepSince: false, pending: late[info.pid], nowMs: nowMs(), browser: info.owner)) {
+                    unread.insert(info.id)
+                }
+                continue
+            }
             // Taken once: the same pending handout (still there, the one
             // this sweep saw) can't also claim another window, in this
             // sweep or another session's.
