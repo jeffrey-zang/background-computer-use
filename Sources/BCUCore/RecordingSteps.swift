@@ -478,6 +478,10 @@ public final class StepLog {
     /// show no field values at all (an edited or partly typed value matches
     /// no text that was typed).
     private var hidValues = false
+    /// Something went into a password field: later reads show no field
+    /// values (an edited copy, revealed by "show password", matches no
+    /// typed text). Reads stay; names of other elements too.
+    private var hideFieldValues = false
     /// When that started (ms into the video): reads that end after it are left out.
     private var hidValuesFrom = Double.infinity
     /// What a read's result becomes once typing is hidden.
@@ -582,7 +586,9 @@ public final class StepLog {
     public func coverWindows() -> Set<CGWindowID> {
         lock.lock(); defer { lock.unlock() }
         // Without hide_typing, only hidden typing that could fill more than one field covers its window.
-        guard redactAll else { return Set(Self.flatten(steps).filter { $0.multiField && $0.textHidden }.compactMap(\.coverWindow)) }
+        // Without hide_typing, hidden typing into a password field covers that
+        // field, following its window (and with a Tab, the whole window).
+        guard redactAll else { return Set(Self.flatten(steps).filter { $0.textHidden }.compactMap(\.coverWindow)) }
         // Running ones too: the window can move while the typing goes on.
         return Set(Self.flatten(steps).filter { $0.textHidden || ($0.end == nil && $0.hidesText(redactAll: true)) }.compactMap(\.coverWindow))
     }
@@ -613,7 +619,8 @@ public final class StepLog {
         // Under hide_typing, once something was typed, a read is left out
         // whole: a window can echo typed text in more ways (titles, labels,
         // layouts) than can be matched.
-        var result = hidValues && Self.reads.contains(s.tool) ? Self.readLeftOut : (hidValues ? RecordingText.hideValues(result) : result)
+        var result = hidValues && Self.reads.contains(s.tool) ? Self.readLeftOut
+            : (hidValues || hideFieldValues ? RecordingText.hideValues(result) : result)
         result = RecordingText.redact(redactRunStarts(result), secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
@@ -666,6 +673,7 @@ public final class StepLog {
             // The run is over: its whole text stays hidden, once.
             if let forms = runForms.removeValue(forKey: w) { addHidden(forms) }
         }
+        if s.textHidden && !redactAll && (s.target?.secure == true || s.focusSecure) { hideFieldValues = true }
         if s.textHidden && redactAll {
             if !hidValues { hidValuesFrom = s.t }
             hidValues = true

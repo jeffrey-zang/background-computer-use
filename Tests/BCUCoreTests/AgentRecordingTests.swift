@@ -671,6 +671,34 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(log.coverWindows(), [7])
     }
 
+    func testReadsAfterAPasswordWriteShowNoFieldValues() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let w = log.begin(tool: "set_value", args: ["value": "confidential", "element": 5])
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: .zero, secure: true))
+        log.end(w, result: "Set.", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[5] TextField \"Password\" value=\"confidentia\" @(0,0 10x10)\n[6] Button \"Save\" @(0,0 10x10)", isError: false)
+        XCTAssertFalse(r.result.contains("confidentia"), r.result)
+        XCTAssertTrue(r.result.contains("Button \"Save\""), "a read stays, other names too")
+    }
+
+    func testAPasswordCoverFollowsItsWindow() throws {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let s = log.begin(tool: "set_value", args: ["value": "hunter2", "element": 5])
+        log.setCover(CGRect(x: 0, y: 0, width: 400, height: 300), window: 7)
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: CGRect(x: 100, y: 100, width: 200, height: 40), secure: true))
+        log.end(s, result: "Set.", isError: false)
+        XCTAssertEqual(log.coverWindows(), [7])
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
+        RecordingOverlay.draw(in: ctx, size: CGSize(width: 800, height: 500), t: 1000, flat: log.all, total: 1, mapping: FrameMapping(scale: 1, offset: .zero),
+                              label: "A", redactAll: false, covers: [7: CGRect(x: 300, y: 50, width: 400, height: 300)])
+        let image = try XCTUnwrap(ctx.makeImage())
+        let data = try XCTUnwrap(image.dataProvider?.data) as Data
+        XCTAssertGreaterThan(data[170 * image.bytesPerRow + 590 * 4 + 1], 100, "the field where its window moved to")
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

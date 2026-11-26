@@ -84,7 +84,15 @@ public enum RecordingOverlay {
                     area = s.coverWindow.flatMap { covers[$0] } ?? s.cover ?? s.target?.frame
                 } else if !redactAll, s.textHidden || s.target?.secure == true || s.focusSecure {
                     // Typing with a Tab can have filled more fields: its window.
-                    area = s.multiField ? (s.coverWindow.flatMap { covers[$0] } ?? s.cover ?? s.target?.frame) : s.target?.frame
+                    let live = s.coverWindow.flatMap { covers[$0] }
+                    if s.multiField {
+                        area = live ?? s.cover ?? s.target?.frame
+                    } else if let field = s.target?.frame, let live, let then = s.cover {
+                        // The field where its window is now.
+                        area = field.offsetBy(dx: live.minX - then.minX, dy: live.minY - then.minY)
+                    } else {
+                        area = s.target?.frame
+                    }
                 }
                 if let area, !areas.contains(area) { areas.append(area) }
             }

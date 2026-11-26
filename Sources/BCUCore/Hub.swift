@@ -324,6 +324,10 @@ public final class Hub {
         // to the session that owns the window, on that session's display.
         if let windowID = (args["window_id"] as? NSNumber)?.uint32Value, caller.windows.window(windowID) == nil {
             if let (ownerID, owner) = relative(of: id, owning: windowID) {
+                // One recording at a time: not while the caller records on its own.
+                if tool == "start_recording", let mine = caller.recordingDir {
+                    return .error("a recording you started is already under way (into \(mine)). Call stop_recording first.")
+                }
                 lock.lock(); usedBy[ownerID, default: []].insert(id); lock.unlock()
                 let result = owner.call(tool: tool, args: args)
                 // The folder this very call made (the owner could start another right after).
