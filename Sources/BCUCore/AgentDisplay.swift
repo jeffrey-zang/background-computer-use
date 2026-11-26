@@ -449,7 +449,11 @@ public final class AgentDisplay {
             // Not with a window on it (an app put one there since): it would
             // land on the user's screen. Clean it up first (closed if an
             // agent's, else put on the user's screen); next time, then.
-            let busy = gone.filter { !WindowManager.windows(on: CGDisplayBounds($0.id)).isEmpty }
+            // (A window that's also on a user display, the spare lying over
+            // it, stays where it is when the spare goes: not one that holds
+            // the spare, the same rule `closeLeftovers` uses.)
+            let users = userDisplayIDs().map { CGDisplayBounds($0) }
+            let busy = gone.filter { WindowManager.windows(on: CGDisplayBounds($0.id)).contains { WindowManager.strandedOnStray($0.bounds, userDisplays: users) } }
             gone.removeAll { g in busy.contains { $0.id == g.id } }
             // (After the busy ones are held back: one of those staying means
             // the spares before it stay too.)
