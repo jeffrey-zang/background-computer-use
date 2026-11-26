@@ -70,7 +70,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // one in Applications instead.
             showOnboarding(step: .connect)
         } else {
-            if !AX.isTrusted || !Capture.hasPermission { showSettings() }
+            if !AX.isTrusted || !Capture.hasPermission {
+                showSettings()
+            } else if SetupGate.asksForAudioAtLaunch(setupDone: true, audio: .current,
+                                                     asked: UserDefaults.standard.bool(forKey: OnboardingModel.audioAskedKey)) {
+                // Set up before setup asked for System Audio Recording: ask
+                // now, on the user's screen, not when an agent first wants
+                // its sound kept off their speakers.
+                UserDefaults.standard.set(true, forKey: OnboardingModel.audioAskedKey)
+                showOnboarding(step: .systemAudio)
+            }
             // If the app moved since setup, agents' entries point at a bcu that's gone.
             let bundle = Bundle.main.bundleURL
             if !AgentSetup.isTemporaryLocation(bundle) {

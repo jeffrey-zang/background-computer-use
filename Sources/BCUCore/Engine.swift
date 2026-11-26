@@ -92,6 +92,13 @@ public final class Engine {
     /// A Chromium browser's own id for each of this session's windows of it
     /// (`navigate` names the window by it), found the first time it's needed.
     private var browserWindowIDs: [CGWindowID: String] = [:]
+    /// The agent's windows whose tab this session muted with the app's own
+    /// menu item (Safari's Window > Mute This Tab; see `muteTab`).
+    private var mutedTabs: Set<CGWindowID> = []
+    /// Windows already told their muted tab is playing (once each).
+    private var toldMutedTab: Set<CGWindowID> = []
+    /// This session's apps that were sending sound at the end of its last call.
+    private var playingSeen: Set<pid_t>?
     /// The watch for "Leave site?" in each browser this session acts in
     /// (see `LeaveWatch`), and whether each app is a Chromium browser.
     private var leaveWatches: [pid_t: LeaveWatch] = [:]
@@ -586,6 +593,10 @@ public final class Engine {
             }
             let monitored = !readOnly.contains(tool) || tool == "get_window_state"
             let startMs = nowMs()
+            // Which of its apps were sending sound when it last looked (at
+            // the end of the last call): one that starts since may be the
+            // agent's doing (a page it loaded starts playing a moment later).
+            let soundBefore = tool == "status" || tool == "guard_report" ? nil : (playingSeen ?? playingApps())
             waitNotes = []
             agentWaitNotes = []
             waitBudget.step()
@@ -600,7 +611,8 @@ public final class Engine {
                     result.text += "\n[other agents] " + agentWaitNotes.map(Self.sentence).joined(separator: " ") + " That's expected: the step ran, don't repeat it."
                     agentWaitNotes = []
                 }
-                let soundNotes = audioClaims.takeNotes()
+                var soundNotes = audioClaims.takeNotes()
+                if let before = soundBefore { soundNotes += soundStarted(since: before) }
                 if !soundNotes.isEmpty { result.text += "\n[sound] " + soundNotes.joined(separator: " ") }
                 if monitored, let focusNote = focusReport() {
                     focusGuard.record("\(tool): \(focusNote)")
@@ -1706,12 +1718,17 @@ public final class Engine {
         // Not while macOS is still to ask the user: with its prompt up,
         // starting and stopping the recorder each block for about two
         // minutes, and the user taking the app back would wait that long.
-        // (Its other answers aren't to be trusted: allowed in System Settings
-        // after a denial still reads as denied. A tap that doesn't take is
-        // caught below.)
+        // Nor is it asked for here: mid-task, macOS's prompt comes up over
+        // whichever window is key (often the agent's, where the user never
+        // sees it) and holds the agent up until they answer. Setup asks for
+        // it, and so does the app at launch for a setup done before it did
+        // (`SetupGate.asksForAudioAtLaunch`). (Its other answers aren't to be
+        // trusted: allowed in System Settings after a denial still reads as
+        // denied. A tap that doesn't take is caught below.)
         if BCUAudioCapturePreflight() == 2 {
-            BCUAudioCaptureRequest()
-            throw ToolError("macOS is asking the user to allow System Audio Recording for Background Computer Use. Until they do, your sound can't be kept off their speakers: don't play sound yet, and call this again once they've answered.")
+            log("An agent wanted to keep its sound off your speakers, but System Audio Recording isn't allowed yet: allow it in Settings")
+            if mutedTabs.contains(w.id) { return ToolResult(text: Self.mutedTabOnly(w, why: "System Audio Recording isn't allowed for Background Computer Use yet (it's asked for in its setup and Settings, not mid-task)")) }
+            throw ToolError(Self.audioNotAllowed(appName: w.appName))
         }
         var mute: AXNode?
         if args.int("mute_element") != nil {
@@ -1751,16 +1768,138 @@ public final class Engine {
             audioClaims.remove(w.id)
             audio.keepRecording = !audioClaims.isIdle
             audio.routeNow(audioApps())
+            if mutedTabs.contains(w.id) { return ToolResult(text: Self.mutedTabOnly(w, why: "\(w.appName)'s sound can't be recorded: \(why)")) }
             throw ToolError("\(w.appName)'s sound can't be kept off the user's speakers: \(why). Don't play sound in it; if the task needs sound, tell the user.")
         }
+        // Muted on the speakers now, so the recording can have the tab's sound.
+        let unmuted = unmuteTab(w) ? " Your tab, muted when the window opened, is unmuted so its sound is recorded." : ""
         if agentsOnly {
-            return ToolResult(text: "Only agents have windows in \(w.appName), so its sound stays off the user's speakers and is recorded to \(audio.url.path)\(opening). Play it now.")
+            return ToolResult(text: "Only agents have windows in \(w.appName), so its sound stays off the user's speakers and is recorded to \(audio.url.path)\(opening). Play it now.\(unmuted)")
         }
         log("Muted \(w.appName) on your speakers while the agent plays sound in it")
         let then = mute == nil
             ? "Once your window has a mute or pause button for it (a tab's mute button shows only once it plays), call this again with it as mute_element: when the user starts using \(w.appName), it plays on their speakers again, and that button is pressed to silence yours first."
             : "When the user starts using \(w.appName), \(muteName) is pressed to silence yours and the app plays on their speakers again; you're told on your next call."
-        return ToolResult(text: "\(w.appName)'s sound is muted on the user's speakers and recorded to \(audio.url.path)\(opening). Play yours now. " + then)
+        return ToolResult(text: "\(w.appName)'s sound is muted on the user's speakers and recorded to \(audio.url.path)\(opening). Play yours now. " + then + unmuted)
+    }
+
+    /// capture_audio couldn't claim the app, but the window's tab is muted.
+    static func mutedTabOnly(_ w: AgentWindow, why: String) -> String {
+        "\(why), so nothing is recorded. Your window \(w.id)'s tab is muted, though, so sound you play in it doesn't reach the user's speakers: play it if the task needs it to play, but you can't get what it says."
+    }
+
+    /// Menu items that mute or unmute the key window's tab: Safari's, in
+    /// its Window menu. Its tab's sound is the page's, so muting it there
+    /// keeps the user's windows of the app playing.
+    static let muteTabTitles = ["Mute This Tab"]
+    static let unmuteTabTitles = ["Unmute This Tab"]
+
+    /// The app's menu item with one of these titles, in any of its menus.
+    private static func menuItem(_ pid: pid_t, titled titles: [String]) -> AXUIElement? {
+        guard let bar = AX.element(AX.app(pid), "AXMenuBar") else { return nil }
+        for top in AX.children(bar) {
+            for menu in AX.children(top) where AX.string(menu, "AXRole") == "AXMenu" {
+                if let item = AX.children(menu).first(where: { titles.contains(AX.string($0, "AXTitle") ?? "") }) { return item }
+            }
+        }
+        return nil
+    }
+
+    /// Mute a new window's tab with its app's own menu item, so the agent's
+    /// sound in it never reaches the user's speakers, whether or not the
+    /// user has windows in that app (their windows play as before) and
+    /// whether or not System Audio Recording is allowed. Only apps with
+    /// such an item (Safari). The note for the agent, or nil.
+    private func muteTab(_ w: AgentWindow) -> String? {
+        guard !mutedTabs.contains(w.id), toggleTab(w, cause: "muting your tab") else { return nil }
+        mutedTabs.insert(w.id)
+        Log.info("audio: muted window \(w.id)'s tab in \(w.appName)")
+        return "Its tab is muted (\(w.appName)'s Window > Mute This Tab), so sound you play in it doesn't reach the user's speakers. A tab you open in it yourself isn't muted. To record its sound, call capture_audio."
+    }
+
+    /// Unmute the agent's tab once its app is muted on the speakers and
+    /// recorded (a claim): the recording should have its sound.
+    private func unmuteTab(_ w: AgentWindow) -> Bool {
+        guard mutedTabs.contains(w.id), toggleTab(w, cause: "unmuting your tab") else { return false }
+        mutedTabs.remove(w.id)
+        Log.info("audio: unmuted window \(w.id)'s tab in \(w.appName)")
+        return true
+    }
+
+    /// Press the item with the agent's window key. It toggles the key
+    /// window's tab, whatever it's titled: over accessibility its title
+    /// stays the one it had for the window last shown in the menu (the
+    /// user's), so `mutedTabs` is what says which way it goes.
+    private func toggleTab(_ w: AgentWindow, cause: String) -> Bool {
+        guard let item = Self.menuItem(w.pid, titled: Self.muteTabTitles + Self.unmuteTabTitles) else { return false }
+        do {
+            let err = try keyed(w, cause: cause) { check, _ -> AXError in
+                try check()
+                return AX.perform(item, "AXPress")
+            }
+            if err == .success { return true }
+            Log.info("audio: \(cause) in window \(w.id) of \(w.appName) failed (\(AX.errorName(err)))")
+        } catch {
+            Log.info("audio: \(cause) in window \(w.id) of \(w.appName) failed: \(error)")
+        }
+        return false
+    }
+
+    /// This session's apps sending sound to an output now. Any thread.
+    private func playingApps() -> Set<pid_t> {
+        Set(Set(windows.windows.map(\.pid)).filter { pid in
+            NSRunningApplication(processIdentifier: pid).map(SessionAudio.isPlaying) ?? false
+        })
+    }
+
+    /// Apps of this session's that started sending sound during the step:
+    /// what the agent is told about each, unless Background Computer Use is
+    /// keeping it off the speakers already.
+    private func soundStarted(since before: Set<pid_t>) -> [String] {
+        let now = playingApps()
+        playingSeen = now
+        let started = now.subtracting(before)
+        guard !started.isEmpty else { return [] }
+        let routed = audio.routedPids
+        let onAgent = Self.appsOnAgent(checking: started)
+        let access = AudioAccess.current
+        return started.sorted().compactMap { pid -> String? in
+            let mine = windows.windows.filter { $0.pid == pid }
+            guard let name = mine.first?.appName else { return nil }
+            let shared = onAgent[pid] != true || mine.contains(where: \.withUser)
+            return Self.soundNote(appName: name, routed: routed.contains(pid), shared: shared,
+                                  mutedTabs: mine.filter { mutedTabs.contains($0.id) }.map(\.id),
+                                  unmutedWindows: mine.filter { !mutedTabs.contains($0.id) }.count,
+                                  told: { id in !self.toldMutedTab.insert(id).inserted },
+                                  access: access)
+        }
+    }
+
+    /// What the agent hears about an app of its that started making sound.
+    /// `told(id)` records the window's muted tab was mentioned; true if it
+    /// was before.
+    static func soundNote(appName: String, routed: Bool, shared: Bool, mutedTabs: [CGWindowID], unmutedWindows: Int,
+                          told: (CGWindowID) -> Bool, access: AudioAccess) -> String? {
+        if routed { return nil }
+        if unmutedWindows == 0, let id = mutedTabs.first {
+            if told(id) { return nil }
+            return "\(appName) started playing sound. Your window \(id)'s tab is muted, so if it's yours the user doesn't hear it (and it isn't recorded: call capture_audio first if you need it)."
+        }
+        let why: String
+        if shared {
+            why = "the user has \(appName) windows of their own, and sound comes from the app as a whole"
+        } else if access != .allowed {
+            why = "System Audio Recording isn't allowed for Background Computer Use, which it needs to mute an app"
+        } else {
+            why = "\(appName) isn't muted yet"
+        }
+        return "\(appName) started sending sound to the user's speakers during this step, and it isn't being kept off them (\(why)). If it's yours, stop or mute it now. Call capture_audio before you play sound."
+    }
+
+    /// capture_audio's answer while System Audio Recording hasn't been
+    /// asked for: nothing is asked mid-task (see `captureAudio`).
+    static func audioNotAllowed(appName: String) -> String {
+        "System Audio Recording isn't allowed for Background Computer Use yet, so \(appName)'s sound can't be kept off the user's speakers or recorded. Nothing was asked of the user: Background Computer Use asks for it in its setup and Settings, not in the middle of a task. Don't play sound in \(appName); if the task needs sound, tell the user it needs System Audio Recording allowed for Background Computer Use."
     }
 
     /// The user is using a claimed app: silence the agent's sound, then
@@ -1797,7 +1936,15 @@ public final class Engine {
         return ToolResult(text: lines.joined(separator: "\n"))
     }
 
+    /// A new window, its tab muted where its app can (`muteTab`): once the
+    /// open is over, with the user's input no longer held for it.
     private func openWindow(_ args: Args) throws -> ToolResult {
+        var (result, w) = try openNewWindow(args)
+        if let muted = muteTab(w) { result.text += "\n[sound] " + muted }
+        return result
+    }
+
+    private func openNewWindow(_ args: Args) throws -> (ToolResult, AgentWindow) {
         let app = try args.requireString("app")
         // A new window becomes its app's key window until it's handed back;
         // hold the user's input meanwhile if they're in that app.
@@ -1873,7 +2020,7 @@ public final class Engine {
         touched.insert(w.pid)
         let frame = WindowList.info(w.id)?.bounds ?? .zero
         let text = "Opened window \(w.id) of \(w.appName) on your display (\(Int(frame.width))x\(Int(frame.height))). Next: get_window_state window_id=\(w.id).\nNotes: \(result.notes.joined(separator: "; "))"
-        return ToolResult(text: text)
+        return (ToolResult(text: text), w)
     }
 
     private func listWindows(_ args: Args) throws -> ToolResult {
@@ -1940,6 +2087,8 @@ public final class Engine {
         snapshots[id] = nil
         focusedText[id] = nil
         browserWindowIDs[id] = nil
+        mutedTabs.remove(id)
+        toldMutedTab.remove(id)
         return ToolResult(text: text)
     }
 

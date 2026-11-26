@@ -9,6 +9,14 @@ public enum SetupGate {
         if done { return false }
         return !ready()
     }
+
+    /// At launch, after setup was done before it asked for System Audio
+    /// Recording (or was skipped past it): show setup's step for it once,
+    /// on the user's screen, rather than leave macOS to ask mid-task.
+    /// `asked`: it was shown, or asked for, already.
+    public static func asksForAudioAtLaunch(setupDone: Bool, audio: AudioAccess, asked: Bool) -> Bool {
+        setupDone && audio == .notAsked && !asked
+    }
 }
 
 /// System Audio Recording as setup shows it, from TCC's preflight answer

@@ -50,6 +50,8 @@ final class OnboardingModel: ObservableObject {
     static let stepKey = "onboardingStep"
     /// Set by Quit & Reopen, read once by the next launch.
     static let reopenedKey = "onboardingReopened"
+    /// System Audio Recording's step was shown, or the app asked for it.
+    static let audioAskedKey = "systemAudioAsked"
 
     @Published var step: Step
     @Published var accessibility = false
@@ -173,6 +175,7 @@ final class OnboardingModel: ObservableObject {
             return
         }
         askingAudio = true
+        UserDefaults.standard.set(true, forKey: Self.audioAskedKey)
         AudioAccess.request { [weak self] in
             guard let self else { return }
             self.askingAudio = false
