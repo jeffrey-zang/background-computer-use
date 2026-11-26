@@ -51,8 +51,11 @@ public enum Capture {
     /// app the user is in from the menu bar.
     public static func composite(display: AgentDisplay, width: Int? = nil, wholeDisplay: Bool = false) -> CGImage? {
         guard display.isRunning else { return nil }
-        mark()
+        // Not yet placed (a display being replaced, see `AgentDisplay.recreate`):
+        // nothing to draw, and no size to draw it at.
         let b = display.bounds
+        guard b.width >= 1, b.height >= 1 else { return nil }
+        mark()
         let outW = width ?? Int(b.width)
         let scale = CGFloat(outW) / b.width
         let outH = Int(b.height * scale)

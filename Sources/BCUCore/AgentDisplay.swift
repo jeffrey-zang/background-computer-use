@@ -663,8 +663,13 @@ public final class AgentDisplay {
         do {
             try makeSeparate(onMain: onMain, canRecreate: true)
         } catch {
-            Log.info("agent display \(slot + 1) (\(displayID)) removed: it isn't a screen of its own")
-            try? onMain { self.stop(remove: true) }
+            // Not removed while a display after it is in use: that one would
+            // move, and its windows cross the user's screen (see
+            // `reapSpares`). Set aside instead; it's checked again when an
+            // agent takes it.
+            let remove = Self.mayRecreate(sessionEmpty: true, slot: slot, runningSlots: Self.running.filter { $0 !== self }.map(\.slot))
+            Log.info("agent display \(slot + 1) (\(displayID)) \(remove ? "removed" : "set aside, a display after it being in use"): it isn't a screen of its own")
+            try? onMain { self.stop(remove: remove) }
             throw error
         }
     }
