@@ -410,14 +410,20 @@ public final class StepLog {
         let runs = (Array(keyRuns.values) + pastRuns).map(Array.init).filter { $0.count >= 3 }
         guard !runs.isEmpty else { return text }
         var chars = Array(text)
-        for run in runs {
-            var i = 0
-            while i + 3 <= chars.count {
-                guard chars[i] == run[0], chars[i + 1] == run[1], chars[i + 2] == run[2] else { i += 1; continue }
+        var i = 0
+        while i + 3 <= chars.count {
+            // The longest match of any run here (one can start another: "secret", "secretsuffix").
+            var best = 0
+            for run in runs where chars[i] == run[0] && chars[i + 1] == run[1] && chars[i + 2] == run[2] {
                 var k = 3
                 while k < run.count, i + k < chars.count, chars[i + k] == run[k] { k += 1 }
-                chars.replaceSubrange(i..<(i + k), with: Array("(hidden)"))
+                best = max(best, k)
+            }
+            if best >= 3 {
+                chars.replaceSubrange(i..<(i + best), with: Array("(hidden)"))
                 i += 8
+            } else {
+                i += 1
             }
         }
         return String(chars)
@@ -508,8 +514,11 @@ public final class StepLog {
     public func setTarget(_ target: StepTarget) {
         lock.lock(); defer { lock.unlock() }
         // An element can be named after text hidden earlier (a row with the file name typed).
-        current?.target = StepTarget(element: target.element, role: target.role,
-                                     label: RecordingText.redact(target.label, secrets: hiddenTexts), frame: target.frame, secure: target.secure)
+        // A text field's name can be its (edited) contents, once typing was hidden.
+        let textInput = ["TextField", "TextArea", "SearchField", "ComboBox"].contains(target.role)
+        let label = hidValues && textInput && !target.label.isEmpty && target.label != "focused field"
+            ? "(hidden)" : RecordingText.redact(redactRunStarts(target.label), secrets: hiddenTexts)
+        current?.target = StepTarget(element: target.element, role: target.role, label: label, frame: target.frame, secure: target.secure)
     }
 
     public func setPoint(_ p: CGPoint, click: Bool, dragTo: CGPoint? = nil) {
