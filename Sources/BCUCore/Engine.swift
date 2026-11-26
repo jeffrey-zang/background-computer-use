@@ -765,8 +765,10 @@ public final class Engine {
         // A character key into a password field is hidden even if pressing
         // it moves focus away (a PIN field that submits itself).
         if tool == "press_key", RecordedStep.typesACharacter(args.raw), let rec = recordingSteps,
-           let id = windowID, let w = windows.window(id), passwordFieldFocused(w) {
-            rec.setFocusSecure()
+           let id = windowID, let w = windows.window(id) {
+            if passwordFieldFocused(w) { rec.setFocusSecure() }
+            let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
+            recordFocusTarget(w, focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil), rec)
         }
         return try dispatch(tool: tool, args: args)
     }
@@ -2424,13 +2426,7 @@ public final class Engine {
             let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
             let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
             rec.setFocus(secure: Self.isSecureField(mine) || passwordFieldFocused(w))
-            // Where it goes, for the video's cover under hide_typing: the
-            // focused field, else (not known) the whole window.
-            let b = display.bounds
-            if let frame = mine.flatMap(AX.frame) ?? WindowList.info(w.id)?.bounds {
-                rec.setTarget(StepTarget(element: 0, role: mine.flatMap { AX.string($0, "AXRole") } ?? "AXWindow", label: "focused field",
-                                         frame: frame.offsetBy(dx: -b.minX, dy: -b.minY), secure: Self.isSecureField(mine)))
-            }
+            recordFocusTarget(w, mine, rec)
         }
 
         // An open or save panel takes keys in its own process, without the
@@ -3120,6 +3116,15 @@ public final class Engine {
     private func passwordFieldFocused(_ w: AgentWindow) -> Bool {
         if Self.isSecureField(AX.element(AX.app(w.pid), "AXFocusedUIElement")) { return true }
         return snapshots[w.id]?.nodes.values.contains { $0.secure && AX.bool($0.element, "AXFocused") == true } ?? false
+    }
+
+    /// Where keys without an element go, for the video's cover under
+    /// hide_typing: the focused field, else (not known) the whole window.
+    private func recordFocusTarget(_ w: AgentWindow, _ field: AXUIElement?, _ rec: StepLog) {
+        let b = display.bounds
+        guard let frame = field.flatMap(AX.frame) ?? WindowList.info(w.id)?.bounds else { return }
+        rec.setTarget(StepTarget(element: 0, role: field.flatMap { AX.string($0, "AXRole") } ?? "AXWindow", label: "focused field",
+                                 frame: frame.offsetBy(dx: -b.minX, dy: -b.minY), secure: Self.isSecureField(field)))
     }
 
     static func isSecureField(_ el: AXUIElement?) -> Bool {

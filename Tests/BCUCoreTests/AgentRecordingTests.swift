@@ -399,6 +399,24 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(r.result.contains("confid"), r.result)
     }
 
+    func testAClippedLongerSecretGoesBeforeAShorterOne() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let a = log.begin(tool: "type_text", args: ["text": "Ada", "element": 3]); log.end(a, result: "ok", isError: false)
+        let b = log.begin(tool: "type_text", args: ["text": "Ada Lovelace", "element": 3]); log.end(b, result: "ok", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "value=\"\(String(repeating: "x", count: 150))Ada Lovela…\"", isError: false)
+        XCTAssertFalse(r.result.contains("Lovela"), r.result)
+    }
+
+    func testTheClippedScanIsQuickForALongSecret() {
+        let secret = String(repeating: "lorem ipsum ", count: 700)
+        let start = Date()
+        let out = RecordingText.redact("[4] Image \"logo…\" and value=\"\(secret.prefix(160))…\"", secrets: [secret])
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+        XCTAssertFalse(out.contains("lorem"), String(out.prefix(200)))
+        XCTAssertTrue(out.contains("logo…"))
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))

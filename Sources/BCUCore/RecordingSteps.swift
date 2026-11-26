@@ -302,17 +302,43 @@ public enum RecordingText {
     /// ("…confidenti…"), that start of it too.
     public static func redact(_ text: String, secrets: [String]) -> String {
         var out = text
+        // Clipped first: a shorter secret replaced first could break up the
+        // start of a longer one just before the ellipsis.
+        if out.contains("…") { out = redactClipped(out, secrets: secrets.filter(redactsLater)) }
         for s in secrets where !s.isEmpty { out = out.replacingOccurrences(of: s, with: "(hidden)") }
-        guard out.contains("…") else { return out }
-        for s in secrets where redactsLater(s) {
-            let chars = Array(s)
-            // Longest start first, down to 3 characters, each just before an ellipsis.
-            for n in stride(from: chars.count - 1, through: 3, by: -1) {
-                let cut = String(chars[0..<n]) + "…"
-                if out.contains(cut) { out = out.replacingOccurrences(of: cut, with: "(hidden)…") }
-            }
-        }
         return out
+    }
+
+    /// The most a read keeps of a value before "…" (`AXSnapshot.clean`).
+    static let longestClip = 160
+
+    /// Where a read clipped a value partway through a secret ("…aaaconfidenti…"),
+    /// the start of the secret right before each ellipsis is replaced. Only
+    /// the text just before each ellipsis is looked at, up to `longestClip`.
+    static func redactClipped(_ text: String, secrets: [String]) -> String {
+        guard !secrets.isEmpty else { return text }
+        var chars = Array(text)
+        var i = 0
+        while i < chars.count {
+            guard chars[i] == "…" else { i += 1; continue }
+            var best = 0
+            for s in secrets {
+                let sc = Array(s.prefix(longestClip))
+                // The longest start of `s` (3+ characters, short of all of it) that ends at i.
+                var k = min(sc.count - (sc.count == s.count ? 1 : 0), i)
+                while k >= 3 {
+                    if Array(chars[(i - k)..<i]) == Array(sc[0..<k]) { break }
+                    k -= 1
+                }
+                if k >= 3 { best = max(best, k) }
+            }
+            if best > 0 {
+                chars.replaceSubrange((i - best)..<i, with: Array("(hidden)"))
+                i += 8 - best
+            }
+            i += 1
+        }
+        return String(chars)
     }
 
     /// A number from the agent, as a whole number when it is one that fits
