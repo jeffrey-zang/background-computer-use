@@ -212,6 +212,23 @@ final class SelfActivationTests: XCTestCase {
         XCTAssertFalse(Attribution.revert(left(.click, target: .app(agent), wasIn: nil), pid: agent))
     }
 
+    /// A click accessibility says was on the app's Dock icon stays, whatever
+    /// the look from before (the Dock may have been hidden then) had there.
+    func testAConfirmedDockClickOnTheAppStays() {
+        XCTAssertFalse(Attribution.revert(left(.click, target: .dock(agent), wasIn: user), pid: agent))
+    }
+
+    /// For an app kept back on a click: a title that changed by itself is
+    /// nothing; a new window is; a changed title is after a link.
+    func testAKeptAppIsBroughtForwardOnlyForWhatTheClickCouldHaveOpened() {
+        let before: [CGWindowID: String] = [10: "Inbox (3)"]
+        XCTAssertNil(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (4)"]))
+        XCTAssertNil(LateLook.keptOpened(element: nil, before: before, now: [10: "Inbox (4)"]))
+        XCTAssertEqual(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (3)", 11: "New"]), 11)
+        XCTAssertEqual(LateLook.keptOpened(element: .link, before: before, now: [10: "Example"]), 10)
+        XCTAssertNil(LateLook.keptOpened(element: .link, before: nil, now: [10: "Example"]))
+    }
+
     func testACmdTabStaysUnlessTheSwitcherWasUp() {
         XCTAssertFalse(Attribution.revert(left(.switchKey), pid: agent))
         XCTAssertTrue(Attribution.revert(left(.switchKey, switcher: true), pid: agent))

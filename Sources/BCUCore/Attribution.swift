@@ -147,6 +147,9 @@ enum Attribution {
         case .switchKey: return l.switcherOpen
         case .click:
             if !l.clickTarget.explains(pid) { return true }
+            // Accessibility named the app's Dock icon: the look from before
+            // can't know the Dock had come up over that spot.
+            if case .dock = l.clickTarget { return false }
             if let was = l.clickWasIn, was != pid { return true }
             return false
         }
@@ -276,6 +279,17 @@ enum LateLook {
     static func opened(before: [CGWindowID: String]?, now: [CGWindowID: String]) -> CGWindowID? {
         guard let before else { return nil }
         return now.keys.sorted().first { id in before[id].map { $0 != now[id] } ?? true }
+    }
+
+    /// For an app the gate kept back on the click (it never asked to come
+    /// forward as far as anyone can tell): a click on a link may have
+    /// opened a page in it (a new window, or a window showing another
+    /// title); anything else only if a new window came up. A title that
+    /// changes by itself (an unread count) isn't the click's.
+    static func keptOpened(element: ClickElement?, before: [CGWindowID: String]?, now: [CGWindowID: String]) -> CGWindowID? {
+        if element == .link { return opened(before: before, now: now) }
+        guard let before else { return nil }
+        return now.keys.sorted().first { before[$0] == nil }
     }
 }
 

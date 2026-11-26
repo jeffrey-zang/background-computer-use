@@ -668,7 +668,11 @@ public final class FocusGuard {
     /// elsewhere (`click`). If the click opened something there after all (a
     /// link in their chat app, opening in the browser an agent works in),
     /// bring the app forward with it once it shows (`LateLook`).
-    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double) {
+    /// `kept`: the app never came forward (the gate kept it back), so
+    /// nothing says the click was meant to bring it: only a link, or a
+    /// window that's new (not a title that changed, which an inbox's
+    /// unread count does by itself), counts (`LateLook.keptOpened`).
+    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false) {
         let name = { (p: pid_t) in NSRunningApplication(processIdentifier: p)?.localizedName ?? "pid \(p)" }
         DispatchQueue.global(qos: .userInitiated).async {
             while nowMs() - click.ms < LateLook.forMs {
@@ -681,7 +685,8 @@ public final class FocusGuard {
                 let mine = Dictionary(WindowList.of(pid: pid, onScreenOnly: true)
                     .filter { $0.layer == 0 && !Self.onAgentDisplay($0.id) }.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
                 let front = BCUFrontProcessPID() == pid
-                let facts = LateLook.Facts(front: front, inputSince: inputSince, opened: LateLook.opened(before: now.windows, now: mine))
+                let opened = kept ? LateLook.keptOpened(element: now.element, before: now.windows, now: mine) : LateLook.opened(before: now.windows, now: mine)
+                let facts = LateLook.Facts(front: front, inputSince: inputSince, opened: opened)
                 guard let window = LateLook.bringForward(facts) else {
                     if front || inputSince { return }
                     continue
@@ -756,7 +761,7 @@ public final class FocusGuard {
             }
             self.lock.lock(); let c = self.lastClick; self.lock.unlock()
             guard c.point == p else { return }
-            for pid in acting where pid != on && pid != self.userFront { self.lookLate(at: pid, click: c, putBackMs: c.ms) }
+            for pid in acting where pid != on && pid != self.userFront { self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true) }
         }
     }
 
