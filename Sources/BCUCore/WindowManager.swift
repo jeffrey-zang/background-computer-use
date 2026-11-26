@@ -1594,6 +1594,18 @@ public final class WindowManager {
         return true
     }
 
+    /// Whether the new tab at `at` was opened by a page of the window (by
+    /// `window.open` or a link with a target, however long after the
+    /// agent's step): Chromium puts such a tab right after the tab that
+    /// opened it, and a link handed over by another app (`open`, Mail,
+    /// Codex) at the end of the strip. So a new tab with a tab seen before
+    /// to its right is the page's. At the end, it could be either's.
+    /// `known`: per tab of the strip, whether it was there at the last look.
+    static func openedByPage(known: [Bool], at: Int) -> Bool {
+        guard known.indices.contains(at) else { return false }
+        return known[(at + 1)...].contains(true)
+    }
+
     /// A browser window's tabs, from its tab strip (nil: none found, or a
     /// read that came back incomplete).
     static func tabs(of window: AXUIElement) -> [AXUIElement]? {
@@ -1666,6 +1678,14 @@ public final class WindowManager {
                 guard let stray = zip(added, selected).first(where: { $0.1 == true })?.0,
                       Self.strayTab(newSelected: true, lastActionMs: focusGuard.lastActionMs(w.pid),
                                     sinceMs: before.ms, userDriving: userArranging) else { continue }
+                // However long after a step: a tab placed before one seen
+                // before was opened by a page of the window (a delayed
+                // window.open), not by another app.
+                let known = tabs.map { t in before.tabs.contains { CFEqual($0, t) } }
+                if let at = tabs.firstIndex(where: { CFEqual($0, stray) }), Self.openedByPage(known: known, at: at) {
+                    Log.info("tabs: a new tab in the agent's \(w.appName) window \(w.id) sits next to the tab that opened it, not at the end where a link from another app goes; the agent's page opened it, it stays")
+                    continue
+                }
                 switch handOutSelectedTab(w, tab: stray, sinceMs: before.ms) {
                 case .handedOut:
                     // The tabs as they were before the handout, less the one
@@ -1716,17 +1736,16 @@ public final class WindowManager {
     }
 
     /// Give the user the selected tab of the agent's window, in a window of
-    /// its own on their screen: the browser's Tab > Move Tab to New Window,
-    /// with the agent's window key, then the new window goes to the user's
-    /// screen and stays theirs.
+    /// its own on their screen, then the new window goes to the user's
+    /// screen and stays theirs. The move is the tab's own context menu
+    /// (Move Tab to New Window, or Move Tab to Another Window > New Window
+    /// when the browser has other windows), opened through accessibility:
+    /// it works on that tab whichever window has key and whichever app is
+    /// in front. The menu bar's Tab > Move Tab to New Window, which acts on
+    /// the key window's tab and is disabled for the agent's window while the
+    /// browser is in front with no window of the user's (another engine's
+    /// front gate lets it through), is the fallback.
     private func handOutSelectedTab(_ w: AgentWindow, tab: AXUIElement, sinceMs: Double) -> HandOut {
-        // Whether the browser has the item at all; whether it's enabled
-        // depends on the key window (another window of the browser with one
-        // tab disables it), so that's asked once the agent's window has key.
-        guard Self.menuItem(pid: w.pid, titled: "Move Tab to New Window", enabledOnly: false) != nil else {
-            Log.info("tabs: another app opened a tab in the agent's \(w.appName) window \(w.id), and \(w.appName) has no Move Tab to New Window item; it stays")
-            return .failed
-        }
         // Not while a session is opening a window: its catcher would take
         // the new window for the one it asked for.
         guard Self.openLock.try() else { return .later }
@@ -1743,43 +1762,59 @@ public final class WindowManager {
         // Upkeep, not a step: a retry still sees the tab as another app's.
         focusGuard.beginAction(pid: w.pid, cause: "handing the user a tab another app opened in the agent's window", upkeep: true)
         defer { focusGuard.endAction(pid: w.pid, upkeep: true) }
+        // The user's keys are held while it lasts (a context menu takes the
+        // keyboard while it's open), and ended as soon as key is back where
+        // it belongs, not after the window has settled.
         focusGuard.beginSwap(w.pid)
-        // Ended as soon as key is back where it belongs, not after the
-        // window has settled: the user's keys are held while it lasts.
         var swapping = true
         defer { if swapping { focusGuard.endSwap(w.pid) } }
         let userIn = BCUFrontProcessPID() == w.pid
         let before = Set(WindowList.of(pid: w.pid).map(\.id))
-        guard let scope = try? KeyScope.enter(pid: w.pid, window: w.id, giveBackTo: userIn ? focusGuard.userWindow(of: w.pid) : nil) else {
-            return .later
-        }
         let inWindow = AX.window(pid: w.pid, id: w.id).flatMap(Self.tabs(of:))?.contains { CFEqual($0, tab) } ?? false
         lock.lock(); let current = registry[w.id]; lock.unlock()
         let agentsWindow = current.map { !$0.handedOff && !$0.withUser } ?? false
         guard Self.strayStillSelected(agentsWindow: agentsWindow, selected: AX.bool(tab, "AXValue"), inWindow: inWindow,
                                       lastActionMs: focusGuard.lastActionMs(w.pid), sinceMs: sinceMs, userDriving: userArranging) else {
-            scope.exit()
             Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, a step came first, or the window went to the user; left it")
             return .later
         }
-        var item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window")
-        let itemBy = nowMs() + 300
-        while item == nil && nowMs() < itemBy { sleepMs(20); item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window") }
-        guard let item else {
-            scope.exit()
-            Log.info("tabs: Move Tab to New Window stayed disabled in \(w.appName) with the agent's window \(w.id) key; the tab stays")
-            return .failed
-        }
         let tabTitle = AX.string(tab, "AXTitle") ?? ""
-        let pressed = AX.perform(item.element, "AXPress")
+        var scope: KeyScope?
+        var route = "the tab's menu"
+        var pressed: AXError
+        if let viaTab = Self.moveViaTabMenu(pid: w.pid, tab: tab) {
+            pressed = viaTab
+        } else {
+            // The menu bar's item acts on the key window's selected tab.
+            // Whether the browser has it at all; whether it's enabled depends
+            // on the key window, so that's asked once the agent's has key.
+            guard Self.menuItem(pid: w.pid, titled: "Move Tab to New Window", enabledOnly: false) != nil else {
+                Log.info("tabs: another app opened a tab in the agent's \(w.appName) window \(w.id); its menu has no Move Tab to New Window, and \(w.appName) has no such menu bar item; it stays")
+                return .failed
+            }
+            guard let entered = try? KeyScope.enter(pid: w.pid, window: w.id, giveBackTo: userIn ? focusGuard.userWindow(of: w.pid) : nil) else {
+                return .later
+            }
+            scope = entered
+            route = "the menu bar"
+            var item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window")
+            let itemBy = nowMs() + 300
+            while item == nil && nowMs() < itemBy { sleepMs(20); item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window") }
+            guard let item else {
+                entered.exit()
+                Log.info("tabs: the tab's menu didn't come up, and Move Tab to New Window stayed disabled in \(w.appName) with the agent's window \(w.id) key; the tab stays")
+                return .failed
+            }
+            pressed = AX.perform(item.element, "AXPress")
+        }
         if Self.menuPressMayHaveRun(pressed) {
             // The agent's element numbers for the window may be the moved
             // tab's: its next step re-reads it first (`Engine.guarded`).
             Self.sharedLock.lock(); Self.tabMovedOut[w.id] = nowMs(); Self.sharedLock.unlock()
         }
         guard Self.menuPressMayHaveRun(pressed) else {
-            scope.exit()
-            Log.info("tabs: Move Tab to New Window in \(w.appName) failed (\(pressed.rawValue)); the tab stays")
+            scope?.exit()
+            Log.info("tabs: Move Tab to New Window (\(route)) in \(w.appName) failed (\(pressed.rawValue)); the tab stays")
             return .failed
         }
         var made: CGWindowID?
@@ -1795,7 +1830,7 @@ public final class WindowManager {
             if made == nil { sleepMs(10) }
         }
         guard let made else {
-            scope.exit()
+            scope?.exit()
             // It may still come: whichever new standard window the browser
             // shows next is the user's tab, not a window the agent's step
             // opened (see `claimLateHandouts`).
@@ -1815,12 +1850,20 @@ public final class WindowManager {
             let movedBy = nowMs() + 300
             while nowMs() < movedBy, let b = WindowList.info(made)?.bounds, AgentDisplay.containing(CGPoint(x: b.midX, y: b.midY)) != nil { sleepMs(15) }
         }
-        if userIn { scope.exit() } else { scope.handOff(to: made) }
+        if let scope {
+            if userIn { scope.exit() } else { scope.handOff(to: made) }
+        } else if !userIn && AX.focusedWindowID(w.pid) != made {
+            // The browser counts the window that last had key as its
+            // current one, and opens the next link from another app there:
+            // the user's new window, not the agent's.
+            _ = KeyScope.postRecords(pid: w.pid, from: AX.focusedWindowID(w.pid), to: made, settle: 5)
+            KeyScope.awaitKey(pid: w.pid, target: made, budgetMs: 250)
+        }
         focusGuard.endSwap(w.pid); swapping = false
         let placed = settleOnUserScreen(pid: w.pid, id: made)
         if userIn { focusGuard.scheduleReclaim(w.pid) }
         focusGuard.record("another app opened a tab in your agent's \(w.appName) window; it's in a window of yours on your screen now")
-        Log.info("tabs: moved a tab another app opened in the agent's \(w.appName) window \(w.id) to window \(made)\(placed ? " on the user's screen" : " (couldn't move it to the user's screen)")")
+        Log.info("tabs: moved a tab another app opened in the agent's \(w.appName) window \(w.id) to window \(made) (with \(route))\(placed ? " on the user's screen" : " (couldn't move it to the user's screen)")")
         return .handedOut
     }
 
@@ -1937,6 +1980,86 @@ public final class WindowManager {
             sleepMs(30)
         }
         return false
+    }
+
+    /// Move `tab` to a window of its own with its context menu, opened
+    /// through accessibility (Chromium's tabs offer AXShowMenu). Nil: no
+    /// such menu, or no move item in it (closed again); else what pressing
+    /// the item returned.
+    static func moveViaTabMenu(pid: pid_t, tab: AXUIElement) -> AXError? {
+        guard AX.actions(tab).contains("AXShowMenu") else { return nil }
+        // The browser runs the menu's tracking loop inside the call, so it
+        // doesn't answer until the menu closes: don't wait for it.
+        AXUIElementSetMessagingTimeout(tab, 0.1)
+        _ = AX.perform(tab, "AXShowMenu")
+        AXUIElementSetMessagingTimeout(tab, 1.5)
+        let app = AX.app(pid)
+        var menu: AXUIElement?
+        let by = nowMs() + 1000
+        while menu == nil && nowMs() < by {
+            menu = openMenu(in: app)
+            if menu == nil { sleepMs(15) }
+        }
+        guard let menu else {
+            // Late to come up: closed rather than left open.
+            sleepMs(100)
+            if let late = openMenu(in: app) { _ = AX.perform(late, "AXCancel") }
+            return nil
+        }
+        let items = AX.children(menu)
+        let pick = tabMenuMove(items.map { AX.string($0, "AXTitle") ?? "" },
+                               enabled: items.map { AX.bool($0, "AXEnabled") != false })
+        var item: AXUIElement?
+        switch pick {
+        case .item(let i): item = items[i]
+        case .submenu(let i):
+            let sub = AX.children(items[i]).first { AX.string($0, "AXRole") == "AXMenu" }.map(AX.children) ?? []
+            if let j = tabMenuNewWindow(sub.map { AX.string($0, "AXTitle") ?? "" }) { item = sub[j] }
+        case nil: break
+        }
+        guard let item else {
+            _ = AX.perform(menu, "AXCancel")
+            return nil
+        }
+        return AX.perform(item, "AXPress")
+    }
+
+    /// A context menu open in the app: a child of the app or of one of its
+    /// windows (where Chromium puts it), not the menu bar's.
+    private static func openMenu(in app: AXUIElement) -> AXUIElement? {
+        var level = [app]
+        for _ in 0..<3 where !level.isEmpty {
+            var next: [AXUIElement] = []
+            for el in level {
+                for c in AX.children(el) {
+                    switch AX.string(c, "AXRole") {
+                    case "AXMenu": return c
+                    case "AXMenuBar", "AXWebArea": continue
+                    default: next.append(c)
+                    }
+                }
+            }
+            level = next
+        }
+        return nil
+    }
+
+    enum TabMenuMove: Equatable { case item(Int), submenu(Int) }
+
+    /// Which item of a tab's context menu moves it to a new window:
+    /// "Move Tab to New Window" when the browser has no other window, else
+    /// the "Move Tab to Another Window" submenu (whose "New Window" does).
+    static func tabMenuMove(_ titles: [String], enabled: [Bool]) -> TabMenuMove? {
+        func find(_ t: String) -> Int? {
+            titles.indices.first { titles[$0].caseInsensitiveCompare(t) == .orderedSame && (enabled.indices.contains($0) ? enabled[$0] : true) }
+        }
+        if let i = find("Move Tab to New Window") { return .item(i) }
+        if let i = find("Move Tab to Another Window") { return .submenu(i) }
+        return nil
+    }
+
+    static func tabMenuNewWindow(_ titles: [String]) -> Int? {
+        titles.firstIndex { $0.caseInsensitiveCompare("New Window") == .orderedSame }
     }
 
     /// The enabled menu bar item with this title, in any top-level menu.

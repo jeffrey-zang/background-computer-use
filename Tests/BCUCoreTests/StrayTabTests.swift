@@ -160,4 +160,33 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.windowShowsTab(windowTitle: nil, tabTitle: "TAB OPENED BY CODEX"))
         XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "Anything", tabTitle: ""))
     }
+
+    /// The tab's own context menu moves it whatever window has key: its
+    /// item when the browser has no other window, else the submenu's.
+    func testTheTabsMenuItemThatMovesItToANewWindow() {
+        let alone = ["New Tab to the Right", "Add Tab to New Group", "Move Tab to New Window", "", "Reload", "Close"]
+        XCTAssertEqual(WindowManager.tabMenuMove(alone, enabled: alone.map { !$0.isEmpty }), .item(2))
+        let others = ["New Tab to the Right", "Add Tab to New Group", "Move Tab to Another Window", "", "Reload"]
+        XCTAssertEqual(WindowManager.tabMenuMove(others, enabled: others.map { !$0.isEmpty }), .submenu(2))
+        XCTAssertEqual(WindowManager.tabMenuNewWindow(["New Window", "", "USER'S PAGE - Google Chrome"]), 0)
+        XCTAssertNil(WindowManager.tabMenuNewWindow(["USER'S PAGE - Google Chrome"]))
+        // Case differs between Chromium builds' menus.
+        XCTAssertEqual(WindowManager.tabMenuMove(["Move tab to new window"], enabled: [true]), .item(0))
+        // Disabled, or not there (another language): none, and the menu bar is tried.
+        XCTAssertNil(WindowManager.tabMenuMove(["Move Tab to New Window"], enabled: [false]))
+        XCTAssertNil(WindowManager.tabMenuMove(["Reload", "Close"], enabled: [true, true]))
+    }
+
+    /// A delayed window.open: Chromium puts the page's new tab right after
+    /// its opener, a link from another app at the end of the strip.
+    func testANewTabBeforeAKnownTabWasOpenedByAPage() {
+        // [agent's page, its other tab] + a tab inserted between them.
+        XCTAssertTrue(WindowManager.openedByPage(known: [true, false, true], at: 1))
+        // At the end: could be another app's link.
+        XCTAssertFalse(WindowManager.openedByPage(known: [true, false], at: 1))
+        XCTAssertFalse(WindowManager.openedByPage(known: [true, true, false], at: 2))
+        // Two new at the end: still nothing known after it.
+        XCTAssertFalse(WindowManager.openedByPage(known: [true, false, false], at: 1))
+        XCTAssertFalse(WindowManager.openedByPage(known: [true], at: 3))
+    }
 }
