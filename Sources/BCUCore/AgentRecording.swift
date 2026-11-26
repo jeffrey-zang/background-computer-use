@@ -52,6 +52,10 @@ public final class AgentRecording {
     /// Per frame written: its time (ms) and where display points land in it.
     private var mappings: [(t: Int64, map: FrameMapping)] = []
     private var lastPts: Int64 = -1
+    /// Captures under way (on `queue`), and a group to wait for them.
+    private var pending = 0
+    private let inFlight = DispatchGroup()
+    private let captureQueue = DispatchQueue(label: "bcu.agent-recording.capture", qos: .userInitiated, attributes: .concurrent)
     private var _capturing = true
     private var capped = false
     private var windowGone = false
@@ -152,6 +156,9 @@ public final class AgentRecording {
     public var isCapturing: Bool { lock.lock(); defer { lock.unlock() }; return _capturing }
     public var elapsedMs: Double { nowMs() - startMs }
 
+    /// Starts a capture, unless `maxInFlight` are under way already: a
+    /// one-shot screenshot takes about 80–120 ms, so taking them one after
+    /// another would top out under the frame rate. Runs on `queue`.
     private func tick() {
         guard isCapturing else { return }
         if elapsedMs > Self.maxMs {
@@ -159,22 +166,38 @@ public final class AgentRecording {
             timer?.cancel()
             return
         }
-        guard display.isRunning else { return }
-        let b = display.bounds
-        let image: CGImage?
-        let source: CGRect  // display points the image shows
-        if let windowID {
-            guard let wb = WindowList.info(windowID)?.bounds else { lock.lock(); windowGone = true; lock.unlock(); return }
-            image = Capture.windowFrame(windowID)
-            guard let image else { return }
-            let covered = Capture.coveredRect(image, bounds: wb, display: b)
-            source = covered.offsetBy(dx: -b.minX, dy: -b.minY)
-        } else {
-            image = Capture.display(display, pixelsPerPoint: size.width / max(b.width, 1))
-            source = CGRect(origin: .zero, size: b.size)
-            if let image { onDisplayFrame(image) }
+        guard pending < Self.maxInFlight, display.isRunning else { return }
+        pending += 1
+        inFlight.enter()
+        captureQueue.async { [self] in
+            let shot = grab()
+            queue.async { [self] in
+                pending -= 1
+                if let shot { write(shot.image, source: shot.source) }
+                inFlight.leave()
+            }
         }
-        guard let image, input.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
+    }
+
+    static let maxInFlight = 3
+
+    /// A frame of what's recorded, and the display points it shows.
+    private func grab() -> (image: CGImage, source: CGRect)? {
+        let b = display.bounds
+        if let windowID {
+            guard let wb = WindowList.info(windowID)?.bounds else { lock.lock(); windowGone = true; lock.unlock(); return nil }
+            guard let image = Capture.windowFrame(windowID) else { return nil }
+            let covered = Capture.coveredRect(image, bounds: wb, display: b)
+            return (image, covered.offsetBy(dx: -b.minX, dy: -b.minY))
+        }
+        guard let image = Capture.display(display, pixelsPerPoint: size.width / max(b.width, 1)) else { return nil }
+        onDisplayFrame(image)
+        return (image, CGRect(origin: .zero, size: b.size))
+    }
+
+    /// Adds a frame at the current time. Runs on `queue`.
+    private func write(_ image: CGImage, source: CGRect) {
+        guard input.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
         let pts = Int64(elapsedMs.rounded())
         guard pts > lastPts else { return }
         var buffer: CVPixelBuffer?
@@ -205,9 +228,11 @@ public final class AgentRecording {
     func finish(audio: URL? = nil) throws -> Output {
         // One more frame, so the video shows the call that stops it.
         queue.sync { self.tick() }
+        inFlight.wait()
         lock.lock(); _capturing = false; lock.unlock()
         timer?.cancel()
         queue.sync {}
+        inFlight.wait()
         let durationMs = elapsedMs
         input.markAsFinished()
         let done = DispatchSemaphore(value: 0)
@@ -246,14 +271,6 @@ public final class AgentRecording {
         let flat = StepLog.flatten(all)
         return Output(dir: dir, video: video, markdown: md, json: js, audio: audioOut, durationMs: durationMs, frames: maps.count,
                       size: size, toolCalls: all.count, failed: flat.filter(\.isError).count, notes: notes)
-    }
-
-    /// Stops without keeping anything (the recording couldn't be finished).
-    func discard() {
-        lock.lock(); _capturing = false; lock.unlock()
-        timer?.cancel()
-        queue.sync {}
-        writer.cancelWriting()
     }
 
     /// Reads `raw` back frame by frame, draws the steps over each and writes `out`.
