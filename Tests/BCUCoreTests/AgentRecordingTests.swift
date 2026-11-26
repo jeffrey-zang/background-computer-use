@@ -391,6 +391,14 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(r.result.contains("private"), r.result)
     }
 
+    func testHiddenTextClippedPartwayThroughIsTakenOut() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "confidential-notes", "element": 3]); log.end(t, result: "ok", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "value=\"\(String(repeating: "a", count: 150))confidenti…\"", isError: false)
+        XCTAssertFalse(r.result.contains("confid"), r.result)
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))

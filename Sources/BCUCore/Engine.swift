@@ -56,6 +56,8 @@ public final class Engine {
     /// A recording that ended without `stop_recording` (its display went
     /// away), for the next `stop_recording` to hand over.
     private var endedRecording: Result<AgentRecording.Output, Error>?
+    /// The folder of a recording being saved as its display goes away.
+    private var _savingDir: String?
     /// A recording being saved by stop_recording; shutdown waits for it.
     private let exporting = DispatchGroup()
     /// The folder of the recording under way, which `Hub` routes a
@@ -63,7 +65,7 @@ public final class Engine {
     var recordingDir: String? {
         stateLock.lock(); defer { stateLock.unlock() }
         // A recording saved when its display went away still waits for that stop.
-        return _recording?.dir.path ?? (try? endedRecording?.get())?.dir.path
+        return _recording?.dir.path ?? _savingDir ?? (try? endedRecording?.get())?.dir.path
     }
     var currentRecording: AgentRecording? { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
     /// Test support: a list of steps kept as a recording would, with no video.
@@ -760,6 +762,12 @@ public final class Engine {
         }
         // Opening or borrowing a window is what needs a display.
         if tool == "open_window" || tool == "borrow_window" || tool == "start_recording" { try ensureDisplay() }
+        // A character key into a password field is hidden even if pressing
+        // it moves focus away (a PIN field that submits itself).
+        if tool == "press_key", RecordedStep.typesACharacter(args.raw), let rec = recordingSteps,
+           let id = windowID, let w = windows.window(id), passwordFieldFocused(w) {
+            rec.setFocusSecure()
+        }
         return try dispatch(tool: tool, args: args)
     }
 
@@ -2416,6 +2424,13 @@ public final class Engine {
             let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
             let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
             rec.setFocus(secure: Self.isSecureField(mine) || passwordFieldFocused(w))
+            // Where it goes, for the video's cover under hide_typing: the
+            // focused field, else (not known) the whole window.
+            let b = display.bounds
+            if let frame = mine.flatMap(AX.frame) ?? WindowList.info(w.id)?.bounds {
+                rec.setTarget(StepTarget(element: 0, role: mine.flatMap { AX.string($0, "AXRole") } ?? "AXWindow", label: "focused field",
+                                         frame: frame.offsetBy(dx: -b.minX, dy: -b.minY), secure: Self.isSecureField(mine)))
+            }
         }
 
         // An open or save panel takes keys in its own process, without the
@@ -3186,13 +3201,15 @@ public final class Engine {
         stateLock.lock()
         let rec = _recording, withAudio = _recordingAudio
         _recording = nil
+        // Still routable while it saves (a subagent's stop waits on this queue).
+        _savingDir = rec?.dir.path
         stateLock.unlock()
         guard let rec else { return }
         // Quitting waits for this save too (see `finishShutdown`).
         exporting.enter()
         let result = Result { try rec.finish(audio: withAudio ? audio.url : nil) }
         exporting.leave()
-        stateLock.lock(); endedRecording = result; stateLock.unlock()
+        stateLock.lock(); endedRecording = result; _savingDir = nil; stateLock.unlock()
         if case .success(let out) = result { Log.info("recording saved as the display went away: \(out.video.path)") }
     }
 

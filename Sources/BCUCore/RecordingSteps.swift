@@ -297,10 +297,21 @@ public enum RecordingText {
         secret.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3
     }
 
-    /// `text` with every occurrence of each secret (of at least 1 character) taken out.
+    /// `text` with every occurrence of each secret (of at least 1 character)
+    /// taken out, and where a read clipped a value partway through a secret
+    /// ("…confidenti…"), that start of it too.
     public static func redact(_ text: String, secrets: [String]) -> String {
         var out = text
         for s in secrets where !s.isEmpty { out = out.replacingOccurrences(of: s, with: "(hidden)") }
+        guard out.contains("…") else { return out }
+        for s in secrets where redactsLater(s) {
+            let chars = Array(s)
+            // Longest start first, down to 3 characters, each just before an ellipsis.
+            for n in stride(from: chars.count - 1, through: 3, by: -1) {
+                let cut = String(chars[0..<n]) + "…"
+                if out.contains(cut) { out = out.replacingOccurrences(of: cut, with: "(hidden)…") }
+            }
+        }
         return out
     }
 
