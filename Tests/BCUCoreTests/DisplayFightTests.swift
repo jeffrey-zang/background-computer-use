@@ -121,6 +121,35 @@ final class DisplayFightTests: XCTestCase {
                                                 user: [user, above], others: [user, above]))
     }
 
+    // MARK: Which spares can go
+
+    /// The staircase: the far one can go; the near one only with it.
+    func testSparesGoFromTheFarEnd() {
+        let rects = [user, at(1680, 1050), at(3280, 2050)]
+        XCTAssertEqual(AgentDisplay.removable([1], rects: rects, roots: [0]), [])
+        XCTAssertEqual(AgentDisplay.removable([2], rects: rects, roots: [0]), [2])
+        XCTAssertEqual(AgentDisplay.removable([1, 2], rects: rects, roots: [0]), [1, 2])
+    }
+
+    /// Out of slot order (display 2 next to the user's, display 1 after
+    /// it): display 2, spare, still holds display 1 up, in use.
+    func testASpareHoldingUpAnotherIsKeptWhateverItsSlot() {
+        let rects = [user, at(1680, 1050) /* slot 2, spare */, at(3280, 2050) /* slot 1, in use */]
+        XCTAssertEqual(AgentDisplay.removable([1], rects: rects, roots: [0]), [])
+    }
+
+    /// Nor one another app's display hangs off: that one would move.
+    func testASpareHoldingUpAnotherAppsDisplayIsKept() {
+        let rects = [user, at(1680, 1050), at(3280, 2050) /* another app's */]
+        XCTAssertEqual(AgentDisplay.removable([1], rects: rects, roots: [0]), [])
+    }
+
+    /// One the others don't need (both touch the user's) can go.
+    func testASpareNothingHangsOffCanGo() {
+        let rects = [user, at(1680, 1050), at(-1600, -1000)]
+        XCTAssertEqual(AgentDisplay.removable([1], rects: rects, roots: [0]), [1])
+    }
+
     // MARK: MoveBudget
 
     func testMovesAreBounded() {

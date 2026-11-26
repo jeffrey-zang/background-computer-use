@@ -432,30 +432,31 @@ public final class AgentDisplay {
         // isn't taken away while the user is typing. There's no hurry unless
         // an agent is waiting for a place; `tend` asks again every second.
         if !all, !someoneWaiting, let activity = FocusGuard.shared?.activity, QuietWait.typing(activity.snapshot, now: nowMs()) { return }
-        let furthestInUse = running.map(\.slot).max() ?? -1
+        // Where every display is (before the lock: `anchorDisplayIDs` takes it).
+        let ids = onlineDisplayIDs().filter { CGDisplayMirrorsDisplay($0) == 0 }
+        let rects = ids.map { CGDisplayBounds($0) }
+        let anchors = Set(anchorDisplayIDs())
+        let roots = Set(ids.indices.filter { anchors.contains(ids[$0]) })
         registryLock.lock()
         let now = nowMs()
         var gone = spares.filter { all || now - $0.sinceMs > spareLifeMs }
         if !all {
-            // The displays stand in a staircase, each at the corner of the one
-            // before, and macOS won't leave a gap: take one out and every
-            // display after it moves, with its windows, which on the way
-            // land on the user's screen (measured on 0.1.18: an agent's
-            // window at 135,212 on the main display for half a second when
-            // three idle displays before its own were removed). So only from
-            // the far end: never one with a display in use after it, or a
-            // spare that's staying.
-            gone.removeAll { $0.slot < furthestInUse }
             // Not with a window on it (an app put one there since): it would
             // land on the user's screen. Clean it up first (closed if an
             // agent's, else put on the user's screen); next time, then.
             let busy = gone.filter { !WindowManager.windows(on: CGDisplayBounds($0.id)).isEmpty }
             gone.removeAll { g in busy.contains { $0.id == g.id } }
-            // (After the busy ones are held back: one of those staying means
-            // the spares before it stay too.)
-            while let blocked = gone.first(where: { g in spares.contains { s in s.slot > g.slot && !gone.contains { $0.id == s.id } } }) {
-                gone.removeAll { $0.id == blocked.id }
-            }
+            // macOS won't leave a gap between displays: take out one another
+            // display hangs off and that one moves, with its windows, which
+            // on the way land on the user's screen (measured on 0.1.18: an
+            // agent's window at 135,212 on the main display for half a
+            // second when three idle displays before its own were removed).
+            // So never one that a display staying (in use, a spare that
+            // stays, another app's) reaches the user's displays through. By
+            // where the displays are, not by slot: they stay wherever macOS
+            // leaves them, in any order (#110).
+            let ok = removable(gone.compactMap { g in ids.firstIndex(of: g.id) }, rects: rects, roots: roots)
+            gone.removeAll { g in !(ids.firstIndex(of: g.id).map(ok.contains) ?? false) }
             for b in busy {
                 let bounds = CGDisplayBounds(b.id)
                 DispatchQueue.global(qos: .utility).async { WindowManager.closeLeftovers(on: bounds) }
@@ -483,6 +484,39 @@ public final class AgentDisplay {
     static func remove(_ id: CGDirectDisplayID, disable: (CGDirectDisplayID) -> Void, release: () -> Void) {
         disable(id)
         release()
+    }
+
+    /// Which of `candidates` (indices into `rects`) can be taken away
+    /// together without leaving any other display cut off from `roots`
+    /// (the user's displays): every display left must still reach one
+    /// through displays that touch (along an edge or at a corner). Taken
+    /// from the far end first, the way the staircase was built.
+    static func removable(_ candidates: [Int], rects: [CGRect], roots: Set<Int>) -> Set<Int> {
+        func touch(_ a: CGRect, _ b: CGRect) -> Bool {
+            a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY
+        }
+        func allConnected(without gone: Set<Int>) -> Bool {
+            let left = rects.indices.filter { !gone.contains($0) }
+            var reached = Set(left.filter { roots.contains($0) })
+            guard !reached.isEmpty else { return left.isEmpty }
+            var frontier = Array(reached)
+            while let i = frontier.popLast() {
+                for j in left where !reached.contains(j) && touch(rects[i], rects[j]) {
+                    reached.insert(j); frontier.append(j)
+                }
+            }
+            return reached.count == left.count
+        }
+        var taken: Set<Int> = []
+        let order = candidates.filter { !roots.contains($0) }.sorted { (rects[$0].maxX + rects[$0].maxY) > (rects[$1].maxX + rects[$1].maxY) }
+        var changed = true
+        while changed {
+            changed = false
+            for c in order where !taken.contains(c) && allConnected(without: taken.union([c])) {
+                taken.insert(c); changed = true
+            }
+        }
+        return taken
     }
 
     /// Spare displays there are (for the status line and tests).
@@ -710,9 +744,9 @@ public final class AgentDisplay {
         let id = displayID
         displayID = 0
         bounds = .zero
-        // Kept for the next agent, and in any case while an agent is at work
-        // on a display after this one (see `reapSpares`): it holds its place.
-        let holdsPlace = Self.running.contains { $0 !== self && $0.slot > slot }
+        // Kept for the next agent, and in any case while another display
+        // reaches the user's only through this one (see `reapSpares`).
+        let holdsPlace = Self.holdsOthersUp(id)
         let keep = !remove && (Self.spareLifeMs > 0 || holdsPlace) && !CGDisplayBounds(id).isEmpty && !Self.userDisplayIDs().isEmpty
         Self.registryLock.lock()
         Self.registry.removeAll { $0.display == nil || $0.display === self }
@@ -729,6 +763,15 @@ public final class AgentDisplay {
         // The ones after it are checked: macOS may have moved them.
         for d in Self.running { d.reconfigured() }
         Self.startWatchingUserWindows(before)
+    }
+
+    /// Another display reaches the user's only through display `id`: taken
+    /// out, it would move (see `removable`).
+    static func holdsOthersUp(_ id: CGDirectDisplayID) -> Bool {
+        let ids = onlineDisplayIDs().filter { CGDisplayMirrorsDisplay($0) == 0 }
+        guard let me = ids.firstIndex(of: id) else { return false }
+        let roots = Set(anchorDisplayIDs())
+        return removable([me], rects: ids.map { CGDisplayBounds($0) }, roots: Set(ids.indices.filter { roots.contains(ids[$0]) })).isEmpty
     }
 
     /// The user's real displays: every active display that isn't an agent's.
