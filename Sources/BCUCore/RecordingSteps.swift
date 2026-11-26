@@ -50,6 +50,8 @@ public final class RecordedStep {
     public internal(set) var steps: [RecordedStep] = []
     /// The focused field was a password field when text was typed without `element`.
     var focusSecure = false
+    /// Where its typing goes was looked at (an element, or the focus).
+    var focusChecked = false
     /// What it typed that's hidden, to take out of its batch's result too. Never written anywhere.
     var secret: String?
 
@@ -71,7 +73,8 @@ public final class RecordedStep {
     /// not know yet where its text goes, so it's hidden too.
     func hidesText(redactAll: Bool) -> Bool {
         guard tool == "type_text" || tool == "set_value" else { return false }
-        return redactAll || target?.secure == true || focusSecure || end == nil
+        // Not knowing where it went (refused before it got that far) counts as secret.
+        return redactAll || target?.secure == true || focusSecure || end == nil || (target == nil && !focusChecked)
     }
 
     /// Its arguments as written out: typed text that's to be hidden and
@@ -127,7 +130,7 @@ public enum RecordingText {
             if a.string("button")?.lowercased() == "right" { verb = "right-click" }
             if (a.int("count") ?? 1) >= 2 { verb = "double-click" }
             if target != nil || a.int("element") != nil { return verb + on }
-            return "\(verb) at (\(Int(a.double("x") ?? 0)), \(Int(a.double("y") ?? 0)))"
+            return "\(verb) at (\(num(a.double("x"))), \(num(a.double("y"))))"
         case "type_text":
             let text = a.string("text") ?? ""
             return "type_text \(typed(text))" + (target.map { " into " + $0.name } ?? "")
@@ -150,7 +153,7 @@ public enum RecordingText {
         case "press_menu_item":
             return "press_menu_item " + (a.strings("path") ?? []).joined(separator: " > ")
         case "drag":
-            return "drag (\(Int(a.double("from_x") ?? 0)), \(Int(a.double("from_y") ?? 0))) → (\(Int(a.double("to_x") ?? 0)), \(Int(a.double("to_y") ?? 0)))"
+            return "drag (\(num(a.double("from_x"))), \(num(a.double("from_y")))) → (\(num(a.double("to_x"))), \(num(a.double("to_y"))))"
         case "open_window", "borrow_window":
             return "\(tool) \(a.string("app") ?? "")".trimmingCharacters(in: .whitespaces)
         case "choose_file":
@@ -158,7 +161,7 @@ public enum RecordingText {
         case "handoff":
             return "handoff: " + clip(a.string("reason") ?? "", 70)
         case "wait":
-            return "wait \(Int(a.double("ms") ?? 500)) ms"
+            return "wait \(num(a.double("ms") ?? 500)) ms"
         case "batch":
             let n = (args["actions"] as? Int) ?? (args["actions"] as? [Any])?.count ?? 0
             return "batch of \(n) action\(n == 1 ? "" : "s")"
@@ -212,6 +215,13 @@ public enum RecordingText {
         var out = text
         for s in secrets where !s.isEmpty { out = out.replacingOccurrences(of: s, with: "(hidden)") }
         return out
+    }
+
+    /// A number from the agent, as a whole number when it is one that fits
+    /// (`Int()` traps past Int's range, and JSON allows any finite number).
+    static func num(_ v: Double?) -> String {
+        guard let v else { return "0" }
+        return v.isFinite && abs(v) < 1e15 ? "\(Int(v))" : "\(v)"
     }
 
     /// m:ss.s
@@ -287,8 +297,16 @@ public final class StepLog {
         if let dragTo { s.dragTo = dragTo }
     }
 
+    /// Where typing without `element` goes was looked at: `secure` if a password field.
+    public func setFocus(secure: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        current?.focusChecked = true
+        if secure { current?.focusSecure = true }
+    }
+
     public func setFocusSecure() {
         lock.lock(); defer { lock.unlock() }
+        current?.focusChecked = true
         current?.focusSecure = true
     }
 
@@ -327,6 +345,14 @@ public final class StepLog {
         s.result = result
         s.waits = RecordingText.waits(in: result)
         open.removeAll { $0 === s }
+    }
+
+    /// A step that already ended turned out otherwise (saving the recording
+    /// it stopped failed): its result and whether it failed change.
+    public func amend(_ s: RecordedStep, result: String, isError: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        s.result = RecordingText.redact(result, secrets: hiddenTexts)
+        s.isError = isError
     }
 
     /// Every step, batch steps after their batch, in the order they started.

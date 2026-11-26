@@ -2379,7 +2379,7 @@ public final class Engine {
         if target == nil, let rec = recordingSteps {
             let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
             let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
-            if Self.isSecureField(mine) || passwordFieldFocused(w) { rec.setFocusSecure() }
+            rec.setFocus(secure: Self.isSecureField(mine) || passwordFieldFocused(w))
         }
 
         // An open or save panel takes keys in its own process, without the
@@ -3112,10 +3112,12 @@ public final class Engine {
         let out: AgentRecording.Output
         if let rec {
             // This call is its last step.
-            if let last = rec.steps.all.last, last.tool == "stop_recording" {
-                rec.steps.end(last, result: "Stopped the recording and saved it.", isError: false)
-            }
-            out = try rec.finish(audio: withAudio ? audio.url : nil)
+            let last = rec.steps.all.last.flatMap { $0.tool == "stop_recording" ? $0 : nil }
+            if let last { rec.steps.end(last, result: "Stopped the recording and saved it.", isError: false) }
+            // If saving fails, the list says so for this call too.
+            out = try rec.finish(audio: withAudio ? audio.url : nil, failing: { message in
+                if let last { rec.steps.amend(last, result: message, isError: true) }
+            })
         } else if let ended {
             out = try ended.get()
         } else {

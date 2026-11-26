@@ -90,6 +90,7 @@ final class AgentRecordingTests: XCTestCase {
         log.setFocusSecure()
         log.end(t, result: "Typed 7 characters with keystrokes.", isError: false)
         let plain = log.begin(tool: "type_text", args: ["text": "hello"])
+        log.setFocus(secure: false)
         log.end(plain, result: "Typed 5 characters.", isError: false)
         let info = ActionList.Info(started: Date(), durationMs: 1000, source: "display", windowID: nil, fps: 12, frames: 12,
                                    size: CGSize(width: 1600, height: 1000), label: "Agent", redactAll: false, video: "recording.mp4")
@@ -225,6 +226,32 @@ final class AgentRecordingTests: XCTestCase {
         for text in [ActionList.markdown(log.all, info: info), String(decoding: ActionList.json(log.all, info: info), as: UTF8.self)] {
             XCTAssertFalse(text.contains("hunter2"), text)
         }
+    }
+
+    /// Typing turned away before anyone looked where it goes (paused, or the
+    /// user has the display) is hidden: it may have been a password.
+    func testRefusedTypingIsHidden() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let t = log.begin(tool: "set_value", args: ["element": 5, "value": "hunter2"])
+        log.end(t, result: "Paused by the user from the menu bar.", isError: true)
+        XCTAssertEqual(t.args["value"] as? String, "(hidden, 7 characters)")
+    }
+
+    /// stop_recording that couldn't save the video is listed as failed.
+    func testAFailedStopIsListedAsFailed() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let s = log.begin(tool: "stop_recording", args: [:])
+        log.end(s, result: "Stopped the recording and saved it.", isError: false)
+        log.amend(s, result: "no frames were recorded, so there's no video.", isError: true)
+        log.end(s, result: "ignored", isError: false)
+        XCTAssertTrue(s.isError)
+        XCTAssertTrue(s.result.hasPrefix("no frames"))
+    }
+
+    func testHugeNumbersInArgumentsDontCrashCaptions() {
+        XCTAssertEqual(RecordingText.caption(tool: "click", args: ["x": 1e300, "y": 5], target: nil, hidden: false), "click at (1e+300, 5)")
+        XCTAssertEqual(RecordingText.caption(tool: "wait", args: ["ms": Double.infinity], target: nil, hidden: false), "wait inf ms")
+        XCTAssertFalse(RecordingText.caption(tool: "drag", args: ["from_x": -1e40, "from_y": 0, "to_x": 1, "to_y": 2], target: nil, hidden: false).isEmpty)
     }
 
     func testPruningSparesRecordingsUnderWay() {

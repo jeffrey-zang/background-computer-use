@@ -245,7 +245,9 @@ public final class AgentRecording {
     /// Stops capturing, draws the steps onto the video and writes the
     /// files. Blocks while it renders (about a second per 10 s of video).
     /// `audio`: a file of the session's sound to keep beside the video.
-    func finish(audio: URL? = nil) throws -> Output {
+    /// `failing` gets the error before the lists are written for the last
+    /// time, when there's no video.
+    func finish(audio: URL? = nil, failing: ((String) -> Void)? = nil) throws -> Output {
         // One more frame, so the video shows the call that stops it, then
         // no more: the timer would keep starting captures while this waits.
         queue.sync { tick() }
@@ -280,14 +282,18 @@ public final class AgentRecording {
         // the agent did is kept.
         try writeLists(notes)
         guard writer.status == .completed, !maps.isEmpty else {
+            let message = "no frames were recorded (\(writer.error.map { "\($0)" } ?? "the display showed nothing")), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it."
+            failing?(message)
             try? writeLists(notes + ["No video: no frames were recorded."])
-            throw ToolError("no frames were recorded (\(writer.error.map { "\($0)" } ?? "the display showed nothing")), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it.")
+            throw ToolError(message)
         }
         do {
             try render(raw: rawURL, to: video, maps: maps, steps: all, endMs: durationMs)
         } catch {
+            let message = "\(error), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it."
+            failing?(message)
             try? writeLists(notes + ["No video: \(error)"])
-            throw ToolError("\(error), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it.")
+            throw ToolError(message)
         }
         try? FileManager.default.removeItem(at: rawURL)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: video.path)
