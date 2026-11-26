@@ -84,6 +84,14 @@ public enum Capture {
         return Shot.display(display.displayID)
     }
 
+    /// The whole agent display at `pixelsPerPoint` (a recording's frames:
+    /// smaller than the display's Retina pixels, so quicker to take).
+    public static func display(_ display: AgentDisplay, pixelsPerPoint: CGFloat) -> CGImage? {
+        guard display.isRunning else { return nil }
+        mark()
+        return Shot.display(display.displayID, pixelsPerPoint: pixelsPerPoint)
+    }
+
     /// The whole agent display without one window: while the user drags a
     /// window in the preview, the preview draws it where it's going instead.
     public static func display(_ display: AgentDisplay, excluding id: CGWindowID) -> CGImage? {

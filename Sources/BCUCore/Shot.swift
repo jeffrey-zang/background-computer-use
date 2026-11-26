@@ -85,16 +85,18 @@ enum Shot {
     /// What a display shows, at its full pixel size: everything on it, or
     /// only `including` (window IDs; the rest is left out), minus `excluding`.
     /// `rect` (global points) limits it to part of the display.
+    /// `pixelsPerPoint` sets the image's size (default: the display's own pixels).
     static func display(_ displayID: CGDirectDisplayID, rect: CGRect? = nil, including: [CGWindowID]? = nil,
-                        excluding: Set<CGWindowID> = []) -> CGImage? {
-        guard let (filter, config) = setup(displayID, rect: rect, including: including, excluding: excluding) else { return nil }
+                        excluding: Set<CGWindowID> = [], pixelsPerPoint: CGFloat? = nil) -> CGImage? {
+        guard let (filter, config) = setup(displayID, rect: rect, including: including, excluding: excluding,
+                                           pixelsPerPoint: pixelsPerPoint) else { return nil }
         return try? Capture.blocking(timeoutMs: 2000) {
             try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         }
     }
 
     private static func setup(_ displayID: CGDirectDisplayID, rect: CGRect?, including: [CGWindowID]?, excluding: Set<CGWindowID>,
-                              content given: SCShareableContent? = nil) -> (SCContentFilter, SCStreamConfiguration)? {
+                              content given: SCShareableContent? = nil, pixelsPerPoint: CGFloat? = nil) -> (SCContentFilter, SCStreamConfiguration)? {
         guard let content = given ?? content(including: including), let display = content.displays.first(where: { $0.displayID == displayID }) ?? scDisplay(displayID) else { return nil }
         let filter: SCContentFilter
         if let including {
@@ -104,7 +106,7 @@ enum Shot {
             filter = SCContentFilter(display: display, excludingWindows: content.windows.filter { excluding.contains($0.windowID) })
         }
         let config = SCStreamConfiguration()
-        let scale = CGFloat(filter.pointPixelScale)
+        let scale = pixelsPerPoint ?? CGFloat(filter.pointPixelScale)
         var points = display.frame.size
         if let rect {
             let local = rect.offsetBy(dx: -display.frame.minX, dy: -display.frame.minY)

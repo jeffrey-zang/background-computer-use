@@ -170,7 +170,7 @@ public final class AgentRecording {
             let covered = Capture.coveredRect(image, bounds: wb, display: b)
             source = covered.offsetBy(dx: -b.minX, dy: -b.minY)
         } else {
-            image = Capture.display(display)
+            image = Capture.display(display, pixelsPerPoint: size.width / max(b.width, 1))
             source = CGRect(origin: .zero, size: b.size)
             if let image { onDisplayFrame(image) }
         }
