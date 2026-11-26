@@ -105,6 +105,46 @@ final class AgentRecordingTests: XCTestCase {
                        "set_value \"Password\" (TextField) = (hidden, 7 characters)", "the count is the secret's, not the placeholder's")
     }
 
+    /// Typing that stops partway quotes what went in: none of it shows.
+    func testAPartialSecretInAnErrorIsHidden() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "hunter2", "element": 5])
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: .zero, secure: true))
+        log.end(t, result: "stopped typing: Typed 4 of 7 characters (\"hunt\"), nothing after that.", isError: true)
+        XCTAssertFalse(t.result.contains("hunt"), t.result)
+        let b = log.begin(tool: "batch", args: [:])
+        let b1 = log.begin(tool: "click", args: ["element": 2], inBatch: true)
+        log.end(b1, result: "Clicked \"Log in\"", isError: false)
+        let b2 = log.begin(tool: "type_text", args: ["text": "s3cret", "element": 5], inBatch: true)
+        log.setFocusSecure()
+        log.end(b2, result: "Typed 2 of 6 characters (\"s3\")", isError: true)
+        log.end(b, result: "1. click: Clicked \"Log in\"\n2. type_text FAILED: Typed 2 of 6 characters (\"s3\")", isError: true)
+        XCTAssertFalse(b.result.contains("\"s3\""), b.result)
+        XCTAssertTrue(b.result.contains("\"Log in\""), "other steps' lines are left as they are")
+        XCTAssertEqual(RecordingText.hideQuoted("a \"x\" b \"y\""), "a \"(hidden)\" b \"(hidden)\"")
+    }
+
+    /// A call answered off the session's queue (status, from another
+    /// connection) while an action runs doesn't take the action's target.
+    func testAnOffQueueCallDoesntTakeTheActionsTarget() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let a = log.begin(tool: "type_text", args: ["text": "pw", "element": 5])
+        let st = log.begin(tool: "status", args: [:], tracked: false)
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: .zero, secure: true))
+        log.setFocusSecure()
+        log.end(st, result: "ok", isError: false)
+        log.end(a, result: "Typed 2 characters", isError: false)
+        XCTAssertNil(st.target)
+        XCTAssertEqual(a.target?.element, 5)
+        XCTAssertEqual(a.args["text"] as? String, "(hidden, 2 characters)")
+    }
+
+    func testPruningSparesRecordingsUnderWay() {
+        let dirs = (1...25).reversed().map { URL(fileURLWithPath: "/r/\(String(format: "%02d", $0))", isDirectory: true) }
+        let gone = AgentRecording.prunable(dirs, keep: 20, protected: ["/r/02"])
+        XCTAssertEqual(gone.map(\.lastPathComponent), ["05", "04", "03", "01"])
+    }
+
     func testHideTypingHidesAllTypedText() {
         let log = StepLog(redactAll: true, clock: { 0 })
         let t = log.begin(tool: "type_text", args: ["text": "dear Ada"])

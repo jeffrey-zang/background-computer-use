@@ -43,6 +43,10 @@ public final class AgentRecording {
     private let started = Date()
     private let size: CGSize
     private let onDisplayFrame: (CGImage) -> Void
+    /// Whether the session still has a window (a recording of one stops
+    /// showing it once it's released: it may be the user's again).
+    private let owns: (CGWindowID) -> Bool
+    private var windowReleased = false
     private let queue = DispatchQueue(label: "bcu.agent-recording", qos: .userInitiated)
     private var timer: DispatchSourceTimer?
     private let writer: AVAssetWriter
@@ -92,12 +96,14 @@ public final class AgentRecording {
     /// `onDisplayFrame` gets each whole-display frame (for the history, which
     /// then needs no captures of its own meanwhile).
     init(display: AgentDisplay, windowID: CGWindowID?, fps: Int, label: String, redactAll: Bool,
+         owns: @escaping (CGWindowID) -> Bool = { _ in true },
          onDisplayFrame: @escaping (CGImage) -> Void) throws {
         self.display = display
         self.windowID = windowID
         self.fps = min(30, max(2, fps))
         self.label = label
         self.onDisplayFrame = onDisplayFrame
+        self.owns = owns
         let fm = FileManager.default
         try fm.createDirectory(at: Self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         var d = Self.directory.appendingPathComponent(Self.folderName(started), isDirectory: true)
@@ -105,6 +111,7 @@ public final class AgentRecording {
         while fm.fileExists(atPath: d.path) { d = Self.directory.appendingPathComponent(Self.folderName(started) + "-\(i)"); i += 1 }
         try fm.createDirectory(at: d, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         dir = d
+        Self.markActive(d, true)
         var points = CGSize(width: display.bounds.width, height: display.bounds.height)
         if let windowID, let wb = WindowList.info(windowID)?.bounds { points = wb.size }
         size = Self.videoSize(points)
@@ -186,6 +193,9 @@ public final class AgentRecording {
     private func grab() -> (image: CGImage, source: CGRect)? {
         let b = display.bounds
         if let windowID {
+            // Released (handed back to the user, or left open for them): not
+            // the session's to film any more, wherever it is.
+            guard owns(windowID) else { lock.lock(); windowReleased = true; lock.unlock(); return nil }
             guard let wb = WindowList.info(windowID)?.bounds else { lock.lock(); windowGone = true; lock.unlock(); return nil }
             guard let image = Capture.windowFrame(windowID) else { return nil }
             let covered = Capture.coveredRect(image, bounds: wb, display: b)
@@ -240,33 +250,47 @@ public final class AgentRecording {
         writer.endSession(atSourceTime: CMTime(value: max(lastPts, 0) + 1, timescale: 1000))
         writer.finishWriting { done.signal() }
         done.wait()
-        lock.lock(); let maps = mappings; let wasCapped = capped; let gone = windowGone; lock.unlock()
+        lock.lock(); let maps = mappings; let wasCapped = capped; let gone = windowGone, released = windowReleased; lock.unlock()
+        defer { Self.markActive(dir, false) }
         var notes: [String] = []
         if wasCapped { notes.append("Capture stopped after \(Int(Self.maxMs / 60_000)) minutes; later steps are listed but not in the video.") }
-        if gone { notes.append("The window closed before the recording stopped; the video ends with its last frame.") }
-        guard writer.status == .completed, !maps.isEmpty else {
-            throw ToolError("no frames were recorded (\(writer.error.map { "\($0)" } ?? "the display showed nothing")). The action list is still saved in \(dir.path).")
-        }
+        if released { notes.append("The window was released before the recording stopped; the video ends with its last frame before that.") }
+        else if gone { notes.append("The window closed before the recording stopped; the video ends with its last frame.") }
         let all = steps.all
         let video = dir.appendingPathComponent("recording.mp4")
-        try render(raw: rawURL, to: video, maps: maps, steps: all, endMs: durationMs)
+        let md = dir.appendingPathComponent("actions.md"), js = dir.appendingPathComponent("actions.json")
+        func writeLists(_ notes: [String]) throws {
+            let info = ActionList.Info(started: started, durationMs: durationMs, source: windowID == nil ? "display" : "window",
+                                       windowID: windowID.map(Int.init), fps: fps, frames: maps.count, size: size, label: label,
+                                       redactAll: steps.redactAll, video: video.lastPathComponent, notes: notes)
+            try ActionList.markdown(all, info: info).write(to: md, atomically: true, encoding: .utf8)
+            try ActionList.json(all, info: info).write(to: js, options: .atomic)
+            for f in [md, js] { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: f.path) }
+        }
+        // The list first: whatever happens to the video, the record of what
+        // the agent did is kept.
+        try writeLists(notes)
+        guard writer.status == .completed, !maps.isEmpty else {
+            try? writeLists(notes + ["No video: no frames were recorded."])
+            throw ToolError("no frames were recorded (\(writer.error.map { "\($0)" } ?? "the display showed nothing")), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it.")
+        }
+        do {
+            try render(raw: rawURL, to: video, maps: maps, steps: all, endMs: durationMs)
+        } catch {
+            try? writeLists(notes + ["No video: \(error)"])
+            throw ToolError("\(error), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it.")
+        }
         try? FileManager.default.removeItem(at: rawURL)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: video.path)
         var audioOut: URL?
         if let audio, FileManager.default.fileExists(atPath: audio.path) {
             let dest = dir.appendingPathComponent("audio" + (audio.pathExtension.isEmpty ? "" : "." + audio.pathExtension))
             if (try? FileManager.default.copyItem(at: audio, to: dest)) != nil {
                 audioOut = dest
+                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dest.path)
                 notes.append("The session's sound is in [\(dest.lastPathComponent)](\(dest.lastPathComponent)), from when it started playing (it isn't in the video).")
+                try writeLists(notes)
             }
-        }
-        let info = ActionList.Info(started: started, durationMs: durationMs, source: windowID == nil ? "display" : "window",
-                                   windowID: windowID.map(Int.init), fps: fps, frames: maps.count, size: size, label: label,
-                                   redactAll: steps.redactAll, video: video.lastPathComponent, notes: notes)
-        let md = dir.appendingPathComponent("actions.md"), js = dir.appendingPathComponent("actions.json")
-        try ActionList.markdown(all, info: info).write(to: md, atomically: true, encoding: .utf8)
-        try ActionList.json(all, info: info).write(to: js, options: .atomic)
-        for f in [video, md, js] + (audioOut.map { [$0] } ?? []) {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: f.path)
         }
         Self.prune(keeping: dir)
         let flat = StepLog.flatten(all)
@@ -324,13 +348,27 @@ public final class AgentRecording {
         guard w.status == .completed else { throw ToolError("couldn't write the video: \(w.error.map { "\($0)" } ?? "unknown error")") }
     }
 
-    /// Deletes all but the newest `keep` recordings (never `keeping`).
+    /// Recordings being made or saved right now, in any session: pruning leaves them alone.
+    private static let activeLock = NSLock()
+    private static var active: Set<String> = []
+    static func markActive(_ dir: URL, _ on: Bool) {
+        activeLock.lock(); defer { activeLock.unlock() }
+        if on { active.insert(dir.standardizedFileURL.path) } else { active.remove(dir.standardizedFileURL.path) }
+    }
+
+    /// Deletes all but the newest `keep` recordings, never one under way or `keeping`.
     static func prune(keeping: URL) {
         let fm = FileManager.default
         let dirs = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
             .filter(\.hasDirectoryPath).sorted { $0.lastPathComponent > $1.lastPathComponent }
-        for d in dirs.dropFirst(keep) where d.standardizedFileURL != keeping.standardizedFileURL {
+        activeLock.lock(); let busy = active; activeLock.unlock()
+        for d in Self.prunable(dirs, keep: keep, protected: busy.union([keeping.standardizedFileURL.path])) {
             try? fm.removeItem(at: d)
         }
+    }
+
+    /// Of `dirs` (newest first), the ones past the newest `keep` that aren't `protected` (paths).
+    static func prunable(_ dirs: [URL], keep: Int, protected: Set<String>) -> [URL] {
+        dirs.dropFirst(keep).filter { !protected.contains($0.standardizedFileURL.path) }
     }
 }

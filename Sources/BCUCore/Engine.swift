@@ -583,14 +583,15 @@ public final class Engine {
     /// Called from socket threads. Blocks until the tool finishes.
     public func call(tool: String, args: JSONObject) -> ToolResult {
         let touch = { [self] in stateLock.lock(); lastCallMs = nowMs(); stateLock.unlock() }
-        if let result = Self.answerOffQueue(tool, touch: touch, run: { recorded(tool, args) { status(Args(args)) } }) { return result }
+        if let result = Self.answerOffQueue(tool, touch: touch, run: { recorded(tool, args, tracked: false) { status(Args(args)) } }) { return result }
         return queue.sync { recorded(tool, args) { callOnQueue(tool: tool, args: args) } }
     }
 
     /// `body`'s call, listed in the recording under way, if any.
-    private func recorded(_ tool: String, _ args: JSONObject, _ body: () -> ToolResult) -> ToolResult {
+    /// `tracked`: false for a call answered off the session's queue.
+    private func recorded(_ tool: String, _ args: JSONObject, tracked: Bool = true, _ body: () -> ToolResult) -> ToolResult {
         guard let steps = recordingSteps else { return body() }
-        let step = steps.begin(tool: tool, args: args)
+        let step = steps.begin(tool: tool, args: args, tracked: tracked)
         let result = body()
         steps.end(step, result: result.text, isError: result.isError)
         return result
@@ -2362,9 +2363,17 @@ public final class Engine {
         var target: AXNode?
         if args.int("element") != nil { target = try node(args, window: w) }
         if let n = target { point(liveFrame(n).center) }
-        // Keys into whatever has focus: a recording hides them if that's a password field.
-        if target == nil, let rec = recordingSteps, Self.isSecureField(AX.element(AX.app(w.pid), "AXFocusedUIElement")) {
-            rec.setFocusSecure()
+        // Keys into whatever has focus: a recording hides them if that's a
+        // password field. The field they go to is the one focused in the
+        // agent's window (the user may be in another window of the app, with
+        // its own focus); either one being a password field hides them.
+        if target == nil, let rec = recordingSteps {
+            let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
+            let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
+            // A window that isn't key may not say what has focus in it: any
+            // password field of its last read that says it's focused counts.
+            let focusedSecure = snapshots[w.id]?.nodes.values.contains { $0.secure && AX.bool($0.element, "AXFocused") == true } ?? false
+            if Self.isSecureField(mine) || Self.isSecureField(appFocus) || focusedSecure { rec.setFocusSecure() }
         }
 
         // An open or save panel takes keys in its own process, without the
@@ -3064,6 +3073,7 @@ public final class Engine {
         if args.int("window_id") != nil { windowID = try agentWindow(args).0.id }
         let rec = try AgentRecording(display: display, windowID: windowID, fps: args.int("fps") ?? AgentRecording.defaultFPS,
                                      label: label, redactAll: args.bool("hide_typing") ?? false,
+                                     owns: { [weak self] in self?.windows.window($0) != nil },
                                      onDisplayFrame: { [weak self] in self?.recordPreview($0) })
         let what = windowID.map { "window \($0)" } ?? "your display"
         let text = "Recording \(what) at up to \(rec.fps) fps. Every tool call from now on is drawn on the video and listed, failures included. Call stop_recording when you're done: it saves recording.mp4 with actions.md and actions.json into \(rec.dir.path)."

@@ -46,6 +46,10 @@ public final class Hub {
     /// The relatives (`relative`) whose calls went to a session's windows,
     /// by the session's id.
     private var usedBy: [String: Set<String>] = [:]
+    /// A session whose `start_recording` named a window of another session
+    /// (its parent's, or its subagent's) and so went to that session: its
+    /// `stop_recording`, which names no window, goes there too.
+    private var recordingAt: [String: String] = [:]
     /// A session whose agent went away keeps its windows this long, in case
     /// the agent's connection comes back (its `bcu mcp` restarting).
     public static let orphanGraceMs: Double = 30_000
@@ -283,12 +287,22 @@ public final class Hub {
             lock.lock(); parentOf[id] = parent; lock.unlock()
         }
         var caller = engine(for: id, client: client, label: label, host: host)
+        if tool == "stop_recording" {
+            lock.lock()
+            let at = recordingAt.removeValue(forKey: id).flatMap { byID[$0] }
+            lock.unlock()
+            if let at { return at.call(tool: tool, args: args) }
+        }
         // An agent can hand a window to its subagent (or back): the call goes
         // to the session that owns the window, on that session's display.
         if let windowID = (args["window_id"] as? NSNumber)?.uint32Value, caller.windows.window(windowID) == nil {
             if let (ownerID, owner) = relative(of: id, owning: windowID) {
                 lock.lock(); usedBy[ownerID, default: []].insert(id); lock.unlock()
-                return owner.call(tool: tool, args: args)
+                let result = owner.call(tool: tool, args: args)
+                if tool == "start_recording" && !result.isError {
+                    lock.lock(); recordingAt[id] = ownerID; lock.unlock()
+                }
+                return result
             }
             caller = takeOver(windowID, for: caller, id: id)
         }

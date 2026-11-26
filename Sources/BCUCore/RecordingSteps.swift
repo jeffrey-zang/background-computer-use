@@ -170,6 +170,23 @@ public enum RecordingText {
         result.split(separator: "\n").map(String.init).filter { $0.hasPrefix("[user first]") || $0.hasPrefix("[other agents]") }
     }
 
+    /// `text` with everything in double quotes replaced: for the result of a
+    /// step whose text is hidden, which can quote part of it ("Typed 4 of 7
+    /// characters ("hunt")").
+    public static func hideQuoted(_ text: String) -> String {
+        var out = "", inQuote = false
+        for ch in text {
+            if ch == "\"" {
+                out.append(ch)
+                if !inQuote { out += "(hidden)" }
+                inQuote.toggle()
+            } else if !inQuote {
+                out.append(ch)
+            }
+        }
+        return out
+    }
+
     /// `text` with every occurrence of each secret (of at least 1 character) taken out.
     public static func redact(_ text: String, secrets: [String]) -> String {
         var out = text
@@ -204,8 +221,12 @@ public final class StepLog {
     public var count: Int { lock.lock(); defer { lock.unlock() }; return steps.count }
 
     /// A tool call starts (or, inside a batch that's being recorded, one of its steps).
+    /// `tracked`: what the session finds out while it runs (its target, where
+    /// it lands) goes to it. A call answered off the session's queue
+    /// (`status`, from another thread) isn't, so it never takes what belongs
+    /// to the action running at the same time.
     @discardableResult
-    public func begin(tool: String, args: JSONObject, inBatch: Bool = false) -> RecordedStep {
+    public func begin(tool: String, args: JSONObject, inBatch: Bool = false, tracked: Bool = true) -> RecordedStep {
         lock.lock(); defer { lock.unlock() }
         var a = args
         a["_session"] = nil
@@ -220,7 +241,7 @@ public final class StepLog {
         if tool == "batch" { a["actions"] = (a["actions"] as? [Any])?.count ?? 0 }
         let s = RecordedStep(n: steps.count + 1, sub: nil, tool: tool, args: a, t: clock())
         steps.append(s)
-        open.append(s)
+        if tracked { open.append(s) }
         return s
     }
 
@@ -258,13 +279,22 @@ public final class StepLog {
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : "value"
             if let secret = s.args[key] as? String {
-                result = RecordingText.redact(result, secrets: [secret])
+                result = RecordingText.hideQuoted(RecordingText.redact(result, secrets: [secret]))
                 s.args[key] = "(hidden, \(secret.count) characters)"
                 s.secret = secret
             }
         }
         if s.tool == "batch" {
             result = RecordingText.redact(result, secrets: s.steps.compactMap(\.secret))
+            // A step's line may quote part of what it typed (typing that
+            // stopped partway says what went in): hide the quotes in the
+            // lines of steps whose text is hidden.
+            let hiddenSteps = Set(s.steps.filter { $0.secret != nil }.compactMap(\.sub))
+            result = result.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+                let l = String(line)
+                guard let dot = l.firstIndex(of: "."), let k = Int(l[..<dot]), hiddenSteps.contains(k) else { return l }
+                return RecordingText.hideQuoted(l)
+            }.joined(separator: "\n")
             for c in s.steps { c.secret = nil }
         }
         if s.sub == nil { s.secret = nil }
