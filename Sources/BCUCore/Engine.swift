@@ -1756,7 +1756,10 @@ public final class Engine {
         }
         audio.keepRecording = true
         if renewing {
-            return ToolResult(text: mute == nil ? "\(w.appName) is still muted on the user's speakers." : "\(w.appName) is still muted on the user's speakers; when the user starts using it, \(muteName) is pressed to silence yours.")
+            // An unmute that couldn't be told the first time (another tab
+            // was selected) can be done now.
+            let unmuted = unmuteForRecording(w, mute: mute)
+            return ToolResult(text: (mute == nil ? "\(w.appName) is still muted on the user's speakers." : "\(w.appName) is still muted on the user's speakers; when the user starts using it, \(muteName) is pressed to silence yours.") + unmuted)
         }
         audio.routeNow(audioApps())
         var opening = ""
@@ -1771,18 +1774,7 @@ public final class Engine {
             if tabMuted(w) == true { return ToolResult(text: Self.mutedTabOnly(w, why: "\(w.appName)'s sound can't be recorded: \(why)")) }
             throw ToolError("\(w.appName)'s sound can't be kept off the user's speakers: \(why). Don't play sound in it; if the task needs sound, tell the user.")
         }
-        // Muted on the speakers now, so the recording can have the tab's
-        // sound: only while the claim still holds when the tab's turn comes
-        // (the user may take the app back while the step waits for them).
-        let unmuted = unmuteTab(w, while: { [audioClaims] in audioClaims.has(w.id) })
-            ? " Your tab, muted when the window opened, is unmuted so its sound is recorded." : ""
-        if !unmuted.isEmpty, let m = mute {
-            // The toggle it named may read otherwise now ("Mute This Tab"):
-            // what it reads while the sound plays is what giving the app back
-            // compares with.
-            audioClaims.add(AudioClaims.Claim(window: w.id, pid: w.pid, appName: w.appName, mute: m.element, muteName: muteName,
-                                              muteLook: AudioClaims.look(m.element)))
-        }
+        let unmuted = unmuteForRecording(w, mute: mute)
         if agentsOnly {
             return ToolResult(text: "Only agents have windows in \(w.appName), so its sound stays off the user's speakers and is recorded to \(audio.url.path)\(opening). Play it now.\(unmuted)")
         }
@@ -1791,6 +1783,29 @@ public final class Engine {
             ? "Once your window has a mute or pause button for it (a tab's mute button shows only once it plays), call this again with it as mute_element: when the user starts using \(w.appName), it plays on their speakers again, and that button is pressed to silence yours first."
             : "When the user starts using \(w.appName), \(muteName) is pressed to silence yours and the app plays on their speakers again; you're told on your next call."
         return ToolResult(text: "\(w.appName)'s sound is muted on the user's speakers and recorded to \(audio.url.path)\(opening). Play yours now. " + then + unmuted)
+    }
+
+    /// Once the app is muted on the speakers and recorded (a claim), unmute
+    /// the tab muted when the window opened, so the recording has its
+    /// sound: only while the claim still holds when the tab's turn comes
+    /// (the user may take the app back while the step waits for them). What
+    /// to tell the agent.
+    private func unmuteForRecording(_ w: AgentWindow, mute: AXNode?) -> String {
+        guard mutedTabs.contains(w.id) else { return "" }
+        switch tabMuted(w) {
+        case true?:
+            guard unmuteTab(w, while: { [audioClaims] in audioClaims.has(w.id) }) else { return "" }
+            // The toggle it named may read otherwise now ("Mute This Tab"):
+            // what it reads while the sound plays is what giving the app back
+            // compares with. Only a claim still there: the user may have
+            // ended it meanwhile.
+            if let m = mute { audioClaims.refreshLook(w.id, AudioClaims.look(m.element)) }
+            return " Your tab, muted when the window opened, is unmuted so its sound is recorded."
+        case nil:
+            return " Your window has more than one tab, and the one you play in may still be muted from when the window opened, which would leave your recording silent: once it plays, call this again and it's unmuted if it is."
+        case false?:
+            return ""
+        }
     }
 
     /// capture_audio couldn't claim the app, but the window's tab is muted.

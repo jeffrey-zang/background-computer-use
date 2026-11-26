@@ -59,6 +59,18 @@ final class AudioClaims {
         lock.lock(); claims[claim.window] = claim; lock.unlock()
     }
 
+    /// What the named element reads now, for a claim that's still there
+    /// (never brings back one the user ended).
+    func refreshLook(_ window: CGWindowID, _ look: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard claims[window] != nil else { return }
+        claims[window]?.muteLook = look
+    }
+
+    func muteLook(_ window: CGWindowID) -> String? {
+        lock.lock(); defer { lock.unlock() }; return claims[window]?.muteLook
+    }
+
     /// Drop a claim that couldn't be honored.
     func remove(_ window: CGWindowID) {
         lock.lock(); claims[window] = nil; lock.unlock()

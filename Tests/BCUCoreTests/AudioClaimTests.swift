@@ -18,6 +18,19 @@ final class AudioClaimTests: XCTestCase {
     }
 
     /// A key in the app ends its claims only.
+    /// The look of a named toggle is refreshed only on a claim that's
+    /// still there: one the user ended isn't brought back.
+    func testRefreshLookNeverRevivesAClaim() {
+        let c = AudioClaims()
+        c.add(claim(1, pid: 10))
+        c.refreshLook(1, "Mute This Tab")
+        XCTAssertEqual(c.muteLook(1), "Mute This Tab")
+        c.remove(1)
+        c.refreshLook(1, "Unmute This Tab")
+        XCTAssertFalse(c.has(1))
+        XCTAssertNil(c.muteLook(1))
+    }
+
     func testKeyInTheAppEndsItsClaims() {
         let c = AudioClaims()
         c.add(claim(1, pid: 100)); c.add(claim(2, pid: 100)); c.add(claim(3, pid: 200))
