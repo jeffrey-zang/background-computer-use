@@ -3001,13 +3001,25 @@ public final class Engine {
     static func safariLoaded(before: String?, now: String?, wanted: String, loading: Bool?) -> Bool {
         guard let now, !now.isEmpty else { return false }
         if loading == true { return false }
-        func bare(_ s: String) -> String {
-            var t = s.lowercased()
-            while t.hasSuffix("/") { t.removeLast() }
-            return t.replacingOccurrences(of: "file:///private/", with: "file:///")
-        }
-        if bare(now) == bare(wanted) { return true }
+        if comparableURL(now) == comparableURL(wanted) { return true }
         return now != before
+    }
+
+    /// A URL as Safari would show it, for comparing: scheme and host in
+    /// lower case (they're case-insensitive), path, query and fragment as
+    /// given (they aren't: /a and /A are different pages), no trailing
+    /// slash, and a file URL under /private/tmp or /private/var as /tmp or
+    /// /var (Safari reports the /private form).
+    static func comparableURL(_ s: String) -> String {
+        guard var c = URLComponents(string: s) else { return s }
+        c.scheme = c.scheme?.lowercased()
+        c.host = c.host?.lowercased()
+        var path = c.path
+        if c.scheme == "file", path.hasPrefix("/private/") { path = String(path.dropFirst("/private".count)) }
+        while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
+        if path == "/" && c.host != nil { path = "" }
+        c.path = path
+        return c.string ?? s
     }
 
     /// The browser's own id for an agent's window, proven instead of

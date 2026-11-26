@@ -31,6 +31,17 @@ final class SafariNavigateTests: XCTestCase {
         XCTAssertTrue(Engine.safariLoaded(before: "about:blank", now: "file:///private/tmp/x.html", wanted: "file:///tmp/x.html", loading: false))
     }
 
+    func testPathAndQueryKeepTheirCase() {
+        // Still the old page: /a is not /A, and Q=x is not q=x.
+        XCTAssertFalse(Engine.safariLoaded(before: "https://example.com/a", now: "https://example.com/a", wanted: "https://example.com/A", loading: false))
+        XCTAssertFalse(Engine.safariLoaded(before: "https://example.com/s?q=x", now: "https://example.com/s?q=x", wanted: "https://example.com/s?Q=x", loading: false))
+        // Scheme and host don't count.
+        XCTAssertTrue(Engine.safariLoaded(before: "https://old.example/", now: "https://example.com/A", wanted: "HTTPS://Example.COM/A", loading: false))
+        XCTAssertEqual(Engine.comparableURL("https://Example.com/"), Engine.comparableURL("https://example.com"))
+        XCTAssertNotEqual(Engine.comparableURL("https://example.com/a"), Engine.comparableURL("https://example.com/A"))
+        XCTAssertEqual(Engine.comparableURL("file:///private/tmp/x.html"), Engine.comparableURL("file:///tmp/x.html"))
+    }
+
     func testARedirectCountsAsLoaded() {
         XCTAssertTrue(Engine.safariLoaded(before: "https://old.example/", now: "https://www.example.com/", wanted: "https://example.com", loading: false))
     }

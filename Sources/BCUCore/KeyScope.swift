@@ -275,17 +275,34 @@ public final class KeyScope {
         var elsewhereSince: (window: CGWindowID, at: Double)?
         while true {
             let state = keyBack(key: AX.focusedWindowID(pid), previous: previous, ours: ours, onAgentDisplay: FocusGuard.onAgentDisplay)
-            switch state {
-            case .back:
-                return .back
-            case .elsewhere(let w):
+            if case .elsewhere(let w) = state {
                 if elsewhereSince?.window != w { elsewhereSince = (w, nowMs()) }
-                if nowMs() - elsewhereSince!.at >= elsewhereSettleMs { return state }
-            case .ours:
+            } else {
                 elsewhereSince = nil
             }
-            if nowMs() >= deadline { return elsewhereSince == nil ? .ours : state }
+            let now = nowMs()
+            if let outcome = keyBackStep(state: state, elsewhereForMs: elsewhereSince.map { now - $0.at }, now: now, deadline: deadline) {
+                return outcome
+            }
             sleepMs(2)
+        }
+    }
+
+    /// One look while waiting for key to come back: the outcome, or nil to
+    /// look again. Key on another of the user's windows counts only once
+    /// it has stayed there `elsewhereSettleMs`, also when the budget runs
+    /// out meanwhile: the wait then goes on until it has (or until key
+    /// moves), so a window key only passes through (the defocus record
+    /// landing before the focus record) is never taken for where it went.
+    static func keyBackStep(state: KeyBack, elsewhereForMs: Double?, now: Double, deadline: Double) -> KeyBack? {
+        switch state {
+        case .back:
+            return .back
+        case .elsewhere:
+            if let held = elsewhereForMs, held >= elsewhereSettleMs { return state }
+            return now >= deadline + elsewhereSettleMs ? .ours : nil
+        case .ours:
+            return now >= deadline ? .ours : nil
         }
     }
 
