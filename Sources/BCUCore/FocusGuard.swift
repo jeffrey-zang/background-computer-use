@@ -734,7 +734,9 @@ public final class FocusGuard {
         return all.filter { $0.pid != me && $0.alpha > 0 && $0.layer < pointer }.map { w in
             let isDock = dock[w.pid] ?? (NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier == "com.apple.dock")
             dock[w.pid] = isDock
-            let covers = displays.contains { d in w.bounds.width >= d.width && w.bounds.height >= d.height }
+            // Over the whole of one display, where it is (not merely as big
+            // as some smaller display elsewhere).
+            let covers = displays.contains { d in w.bounds.contains(d) }
             return ScreenWindow(id: w.id, pid: w.pid, bounds: w.bounds, layer: w.layer, dock: isDock, coversDisplay: covers)
         }
     }
