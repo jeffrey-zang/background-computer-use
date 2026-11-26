@@ -1662,7 +1662,12 @@ public final class WindowManager {
                       Self.strayTab(newSelected: true, lastActionMs: focusGuard.lastActionMs(w.pid),
                                     sinceMs: before.ms, userDriving: userArranging) else { continue }
                 switch handOutSelectedTab(w, tab: stray, sinceMs: before.ms) {
-                case .handedOut: seen[w.id] = (Self.tabs(of: ax) ?? tabs, nowMs())
+                case .handedOut:
+                    // The tabs as they were before the handout, less the one
+                    // moved: a tab that came while it ran is still new next
+                    // time, not taken in as known.
+                    let now = Self.tabs(of: ax) ?? tabs
+                    seen[w.id] = (Self.knownAfterHandout(before: tabs, after: now, moved: stray), readMs)
                 case .later: seen[w.id] = before
                 case .failed: break
                 }
@@ -1676,6 +1681,15 @@ public final class WindowManager {
     }
 
     enum HandOut { case handedOut, later, failed }
+
+    /// The baseline after a handout: tabs seen before it that are still
+    /// there, not the moved one, and nothing that arrived meanwhile.
+    static func knownAfterHandout<T>(before: [T], after: [T], moved: T, same: (T, T) -> Bool) -> [T] {
+        after.filter { t in !same(t, moved) && before.contains { same($0, t) } }
+    }
+    static func knownAfterHandout(before: [AXUIElement], after: [AXUIElement], moved: AXUIElement) -> [AXUIElement] {
+        knownAfterHandout(before: before, after: after, moved: moved) { CFEqual($0, $1) }
+    }
 
     /// Whether a menu press may have moved the tab: it succeeded, or the app
     /// was slow to say so (the action can still run). A hard error (the item
@@ -1734,6 +1748,7 @@ public final class WindowManager {
             Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, a step came first, or the window went to the user; left it")
             return .later
         }
+        let tabTitle = AX.string(tab, "AXTitle") ?? ""
         let pressed = AX.perform(item.element, "AXPress")
         guard Self.menuPressMayHaveRun(pressed) else {
             scope.exit()
@@ -1756,7 +1771,7 @@ public final class WindowManager {
             // It may still come: whichever new standard window the browser
             // shows next is the user's tab, not a window the agent's step
             // opened (see `claimLateHandouts`).
-            Self.sharedLock.lock(); Self.lateHandouts[w.pid] = (before, nowMs() + Self.lateHandoutMs); Self.sharedLock.unlock()
+            Self.sharedLock.lock(); Self.lateHandouts[w.pid] = (before, nowMs() + Self.lateHandoutMs, tabTitle); Self.sharedLock.unlock()
             Log.info("tabs: Move Tab to New Window made no window in \(w.appName) yet; the next new one is the user's")
             return .failed
         }
@@ -1765,23 +1780,7 @@ public final class WindowManager {
         // Key goes to the new window (the user's), so the browser's last
         // window is theirs; or back to theirs if they're in the browser.
         if userIn { scope.exit() } else { scope.handOff(to: made) }
-        // The browser shows the window where its last one was, then puts it
-        // next to the agent's a moment later: moved until it has stayed on
-        // the user's screen for half a second (2.5 s at most).
-        var placed = false
-        var onUserSince: Double?
-        let placeBy = nowMs() + 2500
-        while nowMs() < placeBy {
-            guard let bounds = WindowList.info(made)?.bounds else { sleepMs(30); continue }
-            if AgentDisplay.containing(CGPoint(x: bounds.midX, y: bounds.midY)) == nil && display.touchesUser(bounds) {
-                if onUserSince == nil { onUserSince = nowMs() }
-                if nowMs() - onUserSince! >= 500 { placed = true; break }
-            } else {
-                onUserSince = nil
-                if let ax = AX.window(pid: w.pid, id: made) { _ = Self.putOnUserScreen(ax, bounds: bounds) }
-            }
-            sleepMs(30)
-        }
+        let placed = settleOnUserScreen(pid: w.pid, id: made)
         if userIn { focusGuard.scheduleReclaim(w.pid) }
         focusGuard.record("another app opened a tab in your agent's \(w.appName) window; it's in a window of yours on your screen now")
         Log.info("tabs: moved a tab another app opened in the agent's \(w.appName) window \(w.id) to window \(made)\(placed ? " on the user's screen" : " (couldn't move it to the user's screen)")")
@@ -1791,15 +1790,19 @@ public final class WindowManager {
     /// A Move Tab to New Window whose window hadn't come when the handout
     /// stopped waiting: the app's windows before it, and until when a new
     /// standard window of the app is taken for it.
-    private static var lateHandouts: [pid_t: (before: Set<CGWindowID>, untilMs: Double)] = [:]
+    private static var lateHandouts: [pid_t: (before: Set<CGWindowID>, untilMs: Double, title: String)] = [:]
     static let lateHandoutMs = 10_000.0
 
     /// Whether a window is the late one a handout made: new since the
     /// handout, a standard window, in time, and not a window some session
     /// has (an open's catcher, mid-open, takes the app's next window first).
-    static func isLateHandout(id: CGWindowID, standard: Bool, registered: Bool, opening: Bool,
-                              pending: (before: Set<CGWindowID>, untilMs: Double)?, nowMs: Double) -> Bool {
-        guard let pending, nowMs < pending.untilMs, !pending.before.contains(id) else { return false }
+    /// And it shows the moved tab: its title is the tab's (Chromium titles
+    /// a window "<tab> - <browser>"), so a window the agent's own keys or
+    /// clicks opened meanwhile (cmd+N, a popup) isn't taken for it.
+    static func isLateHandout(id: CGWindowID, standard: Bool, registered: Bool, opening: Bool, windowTitle: String?,
+                              pending: (before: Set<CGWindowID>, untilMs: Double, title: String)?, nowMs: Double) -> Bool {
+        guard let pending, nowMs < pending.untilMs, !pending.before.contains(id), !pending.title.isEmpty,
+              let windowTitle, windowTitle == pending.title || windowTitle.hasPrefix(pending.title + " - ") else { return false }
         return standard && !registered && !opening
     }
 
@@ -1809,8 +1812,8 @@ public final class WindowManager {
         return lateHandouts[pid]?.untilMs
     }
 
-    static func setLateHandoutForTesting(pid: pid_t, before: Set<CGWindowID>, untilMs: Double) {
-        sharedLock.lock(); lateHandouts[pid] = (before, untilMs); sharedLock.unlock()
+    static func setLateHandoutForTesting(pid: pid_t, before: Set<CGWindowID>, untilMs: Double, title: String = "T") {
+        sharedLock.lock(); lateHandouts[pid] = (before, untilMs, title); sharedLock.unlock()
     }
 
     /// Remove the pending handout for `pid` if it's still the one with this
@@ -1833,17 +1836,45 @@ public final class WindowManager {
         guard !late.isEmpty else { return }
         for info in onScreen where info.layer == 0 && late[info.pid] != nil && !Self.isKept(info.id) {
             guard !late[info.pid]!.before.contains(info.id) else { continue }
-            let standard = AX.window(pid: info.pid, id: info.id).flatMap { AX.string($0, "AXSubrole") } == "AXStandardWindow"
+            let ax = AX.window(pid: info.pid, id: info.id)
+            let standard = ax.flatMap { AX.string($0, "AXSubrole") } == "AXStandardWindow"
             guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
-                                     pending: late[info.pid], nowMs: nowMs()) else { continue }
+                                     windowTitle: ax.flatMap { AX.string($0, "AXTitle") }, pending: late[info.pid], nowMs: nowMs()) else { continue }
             // Taken once: the same pending handout (still there, the one
             // this sweep saw) can't also claim another window, in this
             // sweep or another session's.
             guard Self.takeLateHandout(pid: info.pid, untilMs: late[info.pid]!.untilMs) else { continue }
             Self.keep(info.id)
-            focusGuard.record("another app opened a tab in your agent's \(info.owner) window; it's in a window of yours now")
-            Log.info("tabs: window \(info.id) of \(info.owner) came late from Move Tab to New Window; it's the user's")
+            // Placed as an on-time handout's window is: the browser moves it
+            // next to the agent's a moment after showing it.
+            let (pid, id, owner) = (info.pid, info.id, info.owner)
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                let placed = settleOnUserScreen(pid: pid, id: id)
+                focusGuard.record("another app opened a tab in your agent's \(owner) window; it's in a window of yours now")
+                Log.info("tabs: window \(id) of \(owner) came late from Move Tab to New Window; it's the user's\(placed ? ", on their screen" : " (couldn't move it to the user's screen)")")
+            }
         }
+    }
+
+    /// The browser shows a moved tab's window where its last one was, then
+    /// puts it next to the agent's a moment later: moved until it has stayed
+    /// on the user's screen for half a second (2.5 s at most).
+    private func settleOnUserScreen(pid: pid_t, id: CGWindowID) -> Bool {
+        var onUserSince: Double?
+        let placeBy = nowMs() + 2500
+        while nowMs() < placeBy {
+            guard let bounds = WindowList.info(id)?.bounds else { sleepMs(30); continue }
+            if AgentDisplay.containing(CGPoint(x: bounds.midX, y: bounds.midY)) == nil && display.touchesUser(bounds) {
+                if onUserSince == nil { onUserSince = nowMs() }
+                if nowMs() - onUserSince! >= 500 { return true }
+            } else {
+                onUserSince = nil
+                if let ax = AX.window(pid: pid, id: id) { _ = Self.putOnUserScreen(ax, bounds: bounds) }
+            }
+            sleepMs(30)
+        }
+        return false
     }
 
     /// The enabled menu bar item with this title, in any top-level menu.

@@ -71,16 +71,33 @@ final class StrayTabTests: XCTestCase {
     /// next new standard window of the browser is it, not one an agent's
     /// step opened, so it's the user's and never closed with the agent's.
     func testALateWindowFromMoveTabIsTheUsers() {
-        let pending = (before: Set<CGWindowID>([1, 2]), untilMs: seen + 10_000)
-        XCTAssertTrue(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: false, pending: pending, nowMs: seen))
+        let pending = (before: Set<CGWindowID>([1, 2]), untilMs: seen + 10_000, title: "TAB OPENED BY CODEX")
+        let title = "TAB OPENED BY CODEX - Google Chrome"
+        func late(_ id: CGWindowID, standard: Bool = true, registered: Bool = false, opening: Bool = false, title t: String? = title,
+                  pending p: (before: Set<CGWindowID>, untilMs: Double, title: String)? = pending, at now: Double = seen) -> Bool {
+            WindowManager.isLateHandout(id: id, standard: standard, registered: registered, opening: opening, windowTitle: t, pending: p, nowMs: now)
+        }
+        XCTAssertTrue(late(3))
         // One that was there before, a popup, too late, or none pending.
-        XCTAssertFalse(WindowManager.isLateHandout(id: 2, standard: true, registered: false, opening: false, pending: pending, nowMs: seen))
-        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: false, registered: false, opening: false, pending: pending, nowMs: seen))
-        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: false, pending: pending, nowMs: seen + 10_001))
-        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: false, pending: nil, nowMs: seen))
+        XCTAssertFalse(late(2))
+        XCTAssertFalse(late(3, standard: false))
+        XCTAssertFalse(late(3, at: seen + 10_001))
+        XCTAssertFalse(late(3, pending: nil))
         // A session's window, or one opening now: its catcher's.
-        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: true, opening: false, pending: pending, nowMs: seen))
-        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: true, pending: pending, nowMs: seen))
+        XCTAssertFalse(late(3, registered: true))
+        XCTAssertFalse(late(3, opening: true))
+        // A window the agent's own keys or clicks opened (cmd+N, a popup):
+        // it doesn't show the moved tab.
+        XCTAssertFalse(late(3, title: "New Tab - Google Chrome"))
+        XCTAssertFalse(late(3, title: nil))
+        XCTAssertFalse(late(3, pending: (before: [1, 2], untilMs: seen + 10_000, title: "")))
+    }
+
+    /// After a handout the baseline is the tabs from before it, less the
+    /// moved one: a tab another link opened while it ran is still new.
+    func testATabThatCameDuringAHandoutIsStillNew() {
+        let known = WindowManager.knownAfterHandout(before: [1, 2, 3], after: [1, 2, 4], moved: 3) { $0 == $1 }
+        XCTAssertEqual(known, [1, 2])
     }
 
     /// One pending handout claims one window: a second new window in the
