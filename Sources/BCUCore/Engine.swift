@@ -618,7 +618,11 @@ public final class Engine {
                 }
                 let soundNotes = audioClaims.takeNotes()
                 if !soundNotes.isEmpty { result.text += "\n[sound] " + soundNotes.joined(separator: " ") }
-                if input { noteInputStep(start: stepStart, window: (try? Args(args).windowID("window_id")) ?? nil, tool: tool, args: args) }
+                // A batch that failed may have sent nothing (an action that
+                // failed before its input): only what it did send counts.
+                if input && !(tool == "batch" && result.isError) {
+                    noteInputStep(start: stepStart, window: (try? Args(args).windowID("window_id")) ?? nil, tool: tool, args: args)
+                }
                 if let beeps = beepNote(tool: tool, current: stepStart) { result.text += "\n[beep] " + beeps }
                 if monitored, let focusNote = focusReport() {
                     focusGuard.record("\(tool): \(focusNote)")
@@ -1574,7 +1578,9 @@ public final class Engine {
         (s.prefix(1).uppercased() + s.dropFirst()) + "."
     }
 
-    private func guarded<T>(_ w: AgentWindow, cause: String, _ body: () throws -> T) throws -> T {
+    /// `pids`: where the input goes (an open or save panel's service for
+    /// panel input), the window's app when nil.
+    private func guarded<T>(_ w: AgentWindow, cause: String, pids: Set<pid_t>? = nil, _ body: () throws -> T) throws -> T {
         // A batch runs its steps without going back through `call`.
         if paused { throw ToolError("paused by the user") }
         if userInControl { throw ToolError("the user took over your display") }
@@ -1586,8 +1592,7 @@ public final class Engine {
         windows.noteBefore(pid: w.pid, window: w.id)
         watchForLeave(w)
         defer { focusGuard.endAction(pid: w.pid) }
-        // An open or save panel's service gets the input, and beeps for it.
-        let done = sending(to: Set([w.pid] + [remotePanel(w)?.remote.pid].compactMap { $0 }))
+        let done = sending(to: pids ?? [w.pid])
         defer { done() }
         return try body()
     }
@@ -1657,7 +1662,8 @@ public final class Engine {
         defer {
             if userIsIn(w.pid) { focusGuard.reclaimWhenSafe(w.pid); focusGuard.scheduleReclaim(w.pid) }
         }
-        return try guarded(w, cause: cause, body)
+        // The panel's service gets the input (and beeps for it), not the app.
+        return try guarded(w, cause: cause, pids: remotePanel(w).map { [$0.remote.pid] }, body)
     }
 
     /// A pixel click at global `p`: into an open or save panel's process
