@@ -316,4 +316,12 @@ final class StrayTabTests: XCTestCase {
         WindowManager.setLateHandoutForTesting(pid: 99_104, before: [], untilMs: nowMs() - 1, source: nil)
         XCTAssertFalse(WindowManager.handoutPending(from: 990_400))
     }
+
+    /// A reservation past its deadline still blocks a new handout in that
+    /// browser until the sweep retires it.
+    func testAnExpiredButUnretiredReservationBlocksANewOne() {
+        WindowManager.setLateHandoutForTesting(pid: 99_105, before: [], untilMs: nowMs() - 1, source: 990_500)
+        XCTAssertTrue(WindowManager.lateHandoutUnretired(99_105))
+        XCTAssertFalse(WindowManager.lateHandoutUnretired(99_106))
+    }
 }

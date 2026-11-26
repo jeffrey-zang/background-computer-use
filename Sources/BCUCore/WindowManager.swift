@@ -1764,7 +1764,10 @@ public final class WindowManager {
         defer { Self.openLock.unlock() }
         // One moved tab's window on its way at a time per app: a second
         // reservation would replace the first (see `lateHandouts`).
-        if let until = Self.lateHandoutUntil(w.pid), nowMs() < until { return .later }
+        // Until the sweep has retired it, past its deadline too: retiring
+        // marks its source's reads stale, and a new reservation would
+        // replace that source unmarked.
+        if Self.lateHandoutUnretired(w.pid) { return .later }
         let appLock = Engine.inputLock(w.pid)
         appLock.lock()
         defer { appLock.unlock() }
@@ -1830,6 +1833,12 @@ public final class WindowManager {
                 entered.exit()
                 Log.info("tabs: the tab's menu didn't come up, and Move Tab to New Window stayed disabled in \(w.appName) with the agent's window \(w.id) key; the tab stays")
                 return .failed
+            }
+            // The menu bar acts on whichever tab is selected: still this one
+            // (another link may have come and been selected meanwhile)?
+            guard AX.bool(tab, "AXValue") == true else {
+                entered.exit()
+                return .later
             }
             pressed = AX.perform(item.element, "AXPress")
         }
@@ -2051,6 +2060,12 @@ public final class WindowManager {
         sharedLock.unlock()
         keep(id)
         return true
+    }
+
+    /// A reservation (or its source) for `pid` the sweep hasn't retired yet.
+    static func lateHandoutUnretired(_ pid: pid_t) -> Bool {
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        return lateHandouts[pid] != nil || lateHandoutSource[pid] != nil
     }
 
     /// The user's browser window recorded when a pending handout began.
