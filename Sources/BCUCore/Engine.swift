@@ -74,6 +74,7 @@ public final class Engine {
     }
 
     private let queue = DispatchQueue(label: "bcu.engine")
+    private static let queueKey = DispatchSpecificKey<ObjectIdentifier>()
     private let stateLock = NSLock()
     private var snapshots: [CGWindowID: AXSnapshotResult] = [:]
     /// When the agent last acted on each window, so a state read can wait for it to settle.
@@ -190,6 +191,11 @@ public final class Engine {
         // A release finished once a hung app answers runs in turn with this
         // session's calls, so a handoff can't come between its checks and the close.
         windows.serialize = { [weak self] work in self?.queue.async(execute: work) }
+        queue.setSpecific(key: Self.queueKey, value: ObjectIdentifier(queue))
+        let q = queue
+        windows.inTurn = { work in
+            if DispatchQueue.getSpecific(key: Self.queueKey) == ObjectIdentifier(q) { work() } else { q.sync(execute: work) }
+        }
     }
 
     /// Create the session's display if it doesn't exist yet. Any thread.

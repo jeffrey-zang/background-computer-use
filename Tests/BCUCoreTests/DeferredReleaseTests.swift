@@ -109,4 +109,42 @@ final class DeferredReleaseTests: XCTestCase {
         XCTAssertTrue(m.keepOpenOnCleanup(kept))
         XCTAssertFalse(m.keepOpenOnCleanup(plain))
     }
+
+    /// BCU quits or crashes while a keep_open release is still waiting:
+    /// the record says so, and the next launch's recovery leaves the window.
+    func testAKeepOpenThatWaitsSurvivesARestart() throws {
+        let key = "deferred-p-\(UUID().uuidString)"
+        let m = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: key)
+        let id: CGWindowID = 4_000_000_006
+        m.register(AgentWindow(id: id, pid: 1, appName: "Dia", bundleID: nil, kind: .opened))
+        defer { m.unregister(id) }
+        m.deferRelease(id, keepOpen: true)
+        let url = BCUPaths.supportDirectory.appendingPathComponent("windows-\(key).json")
+        let entries = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        let e = try XCTUnwrap(entries.first { $0["id"] as? Int == Int(id) })
+        XCTAssertEqual(e["keepOpen"] as? Bool, true)
+        XCTAssertFalse(WindowManager.recoveryCloses(entry: e))
+        XCTAssertTrue(WindowManager.recoveryCloses(entry: ["kind": "opened"]))
+        XCTAssertFalse(WindowManager.recoveryCloses(entry: ["kind": "opened", "handedToUser": true]))
+    }
+
+    /// A takeover runs in turn with the old session (its engine's queue):
+    /// a deferred finish it has started completes before the windows move.
+    func testTakeOverWaitsForTheOldSessionsTurn() {
+        let a = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-t-\(UUID().uuidString)")
+        let b = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-u-\(UUID().uuidString)")
+        let q = DispatchQueue(label: "old-session")
+        a.inTurn = { q.sync(execute: $0) }
+        let id: CGWindowID = 4_000_000_007
+        a.register(AgentWindow(id: id, pid: 1, appName: "Dia", bundleID: nil, kind: .opened))
+        defer { b.unregister(id) }
+        var order: [String] = []
+        let started = expectation(description: "finish started")
+        q.async { started.fulfill(); Thread.sleep(forTimeInterval: 0.2); order.append("finish") }
+        wait(for: [started], timeout: 5)
+        XCTAssertEqual(b.takeOver(from: a), 1)
+        order.append("takeover")
+        XCTAssertEqual(order, ["finish", "takeover"])
+        XCTAssertNotNil(b.window(id))
+    }
 }

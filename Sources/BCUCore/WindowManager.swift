@@ -64,6 +64,9 @@ public final class WindowManager {
     /// session's tool calls (the engine's queue), so a `handoff` or a new
     /// `release_window` can't land between its checks and the close.
     var serialize: (@escaping () -> Void) -> Void = { $0() }
+    /// The same, waited for: runs `work` in turn with the session's calls
+    /// and its deferred finishes, and returns once it has.
+    var inTurn: (() -> Void) -> Void = { $0() }
 
     init(display: AgentDisplay, focusGuard: FocusGuard, sessionKey: String) {
         self.display = display
@@ -154,15 +157,21 @@ public final class WindowManager {
     /// session. They're on its display still; the sweep brings each onto
     /// this one. Returns how many.
     func takeOver(from other: WindowManager) -> Int {
-        let theirs = other.windows
-        for w in theirs {
-            // A release that waits for its app to answer comes along too.
-            let pending = other.pendingRelease(w.id)
-            other.unregister(w.id)
-            register(w)
-            if let keepOpen = pending { deferRelease(w.id, keepOpen: keepOpen) }
+        var count = 0
+        // In turn with the other session's deferred finishes, so a close it
+        // has started can't outlast the window being this session's.
+        other.inTurn {
+            let theirs = other.windows
+            for w in theirs {
+                // A release that waits for its app to answer comes along too.
+                let pending = other.pendingRelease(w.id)
+                other.unregister(w.id)
+                register(w)
+                if let keepOpen = pending { deferRelease(w.id, keepOpen: keepOpen) }
+            }
+            count = theirs.count
         }
-        return theirs.count
+        return count
     }
 
     /// The `keepOpen` of a release waiting for the window's app to answer.
@@ -173,6 +182,8 @@ public final class WindowManager {
 
     func deferRelease(_ id: CGWindowID, keepOpen: Bool) {
         lock.lock(); releaseWhenAnswering[id] = keepOpen; lock.unlock()
+        // Recorded, so a keep_open survives BCU quitting or crashing first.
+        persist()
     }
 
     /// What deferred releases came to that the agent has to act on, once.
@@ -198,6 +209,7 @@ public final class WindowManager {
             var e: [String: Any] = ["id": Int(w.id), "pid": Int(w.pid), "app": w.appName, "kind": w.kind.rawValue]
             if Self.handedToUser(handedOff: w.handedOff, withUser: w.withUser) { e["handedToUser"] = true }
             if let f = w.originalFrame { e["frame"] = [f.minX, f.minY, f.width, f.height] }
+            if releaseWhenAnswering[w.id] == true { e["keepOpen"] = true }
             return e
         }
         lock.unlock()
@@ -226,6 +238,13 @@ public final class WindowManager {
     /// agent's and nobody else will close it.
     static func recoveryCloses(kind: String?) -> Bool {
         kind == AgentWindow.Kind.opened.rawValue || kind == AgentWindow.Kind.caught.rawValue
+    }
+
+    /// The same for a record: not a window handed to the user, nor one the
+    /// agent released with keep_open while its app wasn't answering (it was
+    /// promised it stays open).
+    static func recoveryCloses(entry e: [String: Any]) -> Bool {
+        recoveryCloses(kind: e["kind"] as? String) && e["handedToUser"] as? Bool != true && e["keepOpen"] as? Bool != true
     }
 
     /// Whether a window the record names is still the one the last run had:
@@ -277,9 +296,7 @@ public final class WindowManager {
                   let ax = AX.window(pid: pid, id: id) else { return nil }
             return (id, pid, ax)
         }
-        func closes(_ e: [String: Any], _ id: CGWindowID) -> Bool {
-            recoveryCloses(kind: e["kind"] as? String) && e["handedToUser"] as? Bool != true
-        }
+        func closes(_ e: [String: Any], _ id: CGWindowID) -> Bool { recoveryCloses(entry: e) }
         // A dialog the last run caught that's still asking whether to leave
         // a page would keep that page's window open: answer it first.
         for e in entries where e["kind"] as? String == AgentWindow.Kind.caught.rawValue {
@@ -1249,6 +1266,7 @@ public final class WindowManager {
             // Not retried: closing again would only ask again. The agent
             // answers the dialog, then releases the window itself.
             lock.lock(); releaseWhenAnswering[id] = nil; releaseNotes.append(Self.deferredNeedsAgentText(app: w.appName, id: id, said: said)); lock.unlock()
+            persist()
             Log.info("\(w.appName) answers again, but its released window \(id) didn't close: \(said)")
         }
     }
