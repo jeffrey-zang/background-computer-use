@@ -71,8 +71,4 @@ final class SwapOverheadTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(KeyScope.elsewhereSettleMs, 40)
         XCTAssertLessThan(KeyScope.elsewhereSettleMs, 250)
     }
-
-    func testTheFocusReadAfterASharedStepIsShort() {
-        XCTAssertLessThanOrEqual(Engine.sharedFocusReadTimeout, 0.05)
-    }
 }

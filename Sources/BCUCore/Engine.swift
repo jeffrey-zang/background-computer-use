@@ -1236,10 +1236,7 @@ public final class Engine {
         let result = try body(check, scope.keyWindow)
         // Let focus moves (Tab, a click) land before noting the focused field.
         sleepMs(30)
-        // With the user in the app this is their window's time without key:
-        // an app busy with the step (Safari opening a tab) answered in up
-        // to 170 ms. Then don't wait for it.
-        rememberFocusedText(in: w, timeout: shared ? Self.sharedFocusReadTimeout : nil)
+        rememberFocusedText(in: w)
         return result
     }
 
@@ -2465,23 +2462,9 @@ public final class Engine {
 
     /// Note the window's focused text element, its selection and value,
     /// while the window is key. Something else focused: forget the field.
-    /// How long the read after a step may take while the user is in the app.
-    static let sharedFocusReadTimeout: Float = 0.05
-
-    /// `timeout`: give up on the read after this long (seconds), forgetting
-    /// what was noted before: focus may have moved meanwhile.
-    private func rememberFocusedText(in w: AgentWindow, timeout: Float? = nil) {
-        let app = AX.app(w.pid)
-        if let timeout { AXUIElementSetMessagingTimeout(app, timeout) }
-        var value: AnyObject?
-        let err = AXUIElementCopyAttributeValue(app, "AXFocusedUIElement" as CFString, &value)
-        if err == .cannotComplete && timeout != nil {
-            focusedText[w.id] = nil
-            return
-        }
-        guard err == .success, let v = value, CFGetTypeID(v) == AXUIElementGetTypeID() else { return }
-        let el = unsafeBitCast(v, to: AXUIElement.self)
-        guard let win = AX.element(el, "AXWindow"), AX.windowID(win) == w.id else { return }
+    private func rememberFocusedText(in w: AgentWindow) {
+        guard let el = AX.element(AX.app(w.pid), "AXFocusedUIElement"),
+              let win = AX.element(el, "AXWindow"), AX.windowID(win) == w.id else { return }
         guard Self.textRoles.contains(AX.string(el, "AXRole") ?? "") else { focusedText[w.id] = nil; return }
         focusedText[w.id] = TextFocus(element: el, range: AX.range(el, "AXSelectedTextRange"), value: AX.string(el, "AXValue") ?? "")
     }
