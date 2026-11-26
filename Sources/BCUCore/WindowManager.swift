@@ -1564,8 +1564,8 @@ public final class WindowManager {
     // last check's, and a new selected tab no agent step explains goes to
     // the user in a window of its own on their screen.
 
-    /// This session's Chromium windows' tabs, as last checked.
-    private var knownTabs: [CGWindowID: [AXUIElement]] = [:]
+    /// This session's Chromium windows' tabs, as last checked, and when.
+    private var knownTabs: [CGWindowID: (tabs: [AXUIElement], ms: Double)] = [:]
     private var tabsCheckedMs = -Double.infinity
     private var checkingTabs = false
     private static let tabQueue = DispatchQueue(label: "bcu.stray-tabs", qos: .utility)
@@ -1576,11 +1576,13 @@ public final class WindowManager {
 
     /// Whether a check found a tab that another app opened in an agent's
     /// window: a new one, selected (a browser selects the tab it opens a link
-    /// from another app in), with no agent step in the browser just now that
-    /// would explain it, and not while the user drives the agent display.
-    static func strayTab(newSelected: Bool, lastActionMs: Double?, nowMs: Double, userDriving: Bool) -> Bool {
+    /// from another app in), and not while the user drives the agent display,
+    /// with no agent step in the browser that would explain it: none since
+    /// the tabs were last seen (`sinceMs`) or just before, however late the
+    /// check runs. Steps only, not the engine's upkeep (`lastActionMs`).
+    static func strayTab(newSelected: Bool, lastActionMs: Double?, sinceMs: Double, userDriving: Bool) -> Bool {
         guard newSelected, !userDriving else { return false }
-        if let lastActionMs, nowMs - lastActionMs < stepTabGraceMs { return false }
+        if let lastActionMs, lastActionMs > sinceMs - stepTabGraceMs { return false }
         return true
     }
 
@@ -1620,17 +1622,19 @@ public final class WindowManager {
         lock.unlock()
         Self.tabQueue.async { [weak self] in
             guard let self else { return }
-            var seen: [CGWindowID: [AXUIElement]] = [:]
+            var seen: [CGWindowID: (tabs: [AXUIElement], ms: Double)] = [:]
             for w in agent.values where !w.handedOff && Self.isChromium(w.pid) {
-                guard let ax = AX.window(pid: w.pid, id: w.id), let tabs = Self.tabs(of: ax) else { continue }
+                guard let ax = AX.window(pid: w.pid, id: w.id) else { continue }
+                let readMs = nowMs()
+                guard let tabs = Self.tabs(of: ax) else { continue }
                 lock.lock(); let before = knownTabs[w.id]; lock.unlock()
-                seen[w.id] = tabs
+                seen[w.id] = (tabs, readMs)
                 guard let before else { continue }
-                let newSelected = tabs.contains { t in AX.bool(t, "AXValue") == true && !before.contains { CFEqual($0, t) } }
-                guard Self.strayTab(newSelected: newSelected, lastActionMs: focusGuard.lastActionMs(w.pid),
-                                    nowMs: nowMs(), userDriving: userArranging) else { continue }
-                switch handOutSelectedTab(w) {
-                case .handedOut: seen[w.id] = Self.tabs(of: ax) ?? tabs
+                guard let stray = tabs.first(where: { t in AX.bool(t, "AXValue") == true && !before.tabs.contains { CFEqual($0, t) } }),
+                      Self.strayTab(newSelected: true, lastActionMs: focusGuard.lastActionMs(w.pid),
+                                    sinceMs: before.ms, userDriving: userArranging) else { continue }
+                switch handOutSelectedTab(w, tab: stray, sinceMs: before.ms) {
+                case .handedOut: seen[w.id] = (Self.tabs(of: ax) ?? tabs, nowMs())
                 case .later: seen[w.id] = before
                 case .failed: break
                 }
@@ -1645,11 +1649,21 @@ public final class WindowManager {
 
     enum HandOut { case handedOut, later, failed }
 
+    /// Whether the tab a check found is still the one to hand out, looked at
+    /// again under the app's input lock just before the move: still in the
+    /// window and selected (a step that waited for the lock may have gone
+    /// back to the agent's tab, and the move takes whichever is selected),
+    /// and still no agent step to explain it.
+    static func strayStillSelected(selected: Bool?, inWindow: Bool, lastActionMs: Double?, sinceMs: Double, userDriving: Bool) -> Bool {
+        inWindow && selected == true
+            && strayTab(newSelected: true, lastActionMs: lastActionMs, sinceMs: sinceMs, userDriving: userDriving)
+    }
+
     /// Give the user the selected tab of the agent's window, in a window of
     /// its own on their screen: the browser's Tab > Move Tab to New Window,
     /// with the agent's window key, then the new window goes to the user's
     /// screen and stays theirs.
-    private func handOutSelectedTab(_ w: AgentWindow) -> HandOut {
+    private func handOutSelectedTab(_ w: AgentWindow, tab: AXUIElement, sinceMs: Double) -> HandOut {
         guard let item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window") else {
             Log.info("tabs: another app opened a tab in the agent's \(w.appName) window \(w.id), and \(w.appName) has no Move Tab to New Window item; it stays")
             return .failed
@@ -1664,13 +1678,21 @@ public final class WindowManager {
         // While it runs, the sweeps leave the app's new windows alone.
         Self.sharedLock.lock(); Self.openingAnywhere.insert(w.pid); Self.sharedLock.unlock()
         defer { Self.sharedLock.lock(); Self.openingAnywhere.remove(w.pid); Self.sharedLock.unlock() }
-        focusGuard.beginAction(pid: w.pid, cause: "handing the user a tab another app opened in the agent's window")
-        defer { focusGuard.endAction(pid: w.pid) }
+        // Upkeep, not a step: a retry still sees the tab as another app's.
+        focusGuard.beginAction(pid: w.pid, cause: "handing the user a tab another app opened in the agent's window", upkeep: true)
+        defer { focusGuard.endAction(pid: w.pid, upkeep: true) }
         focusGuard.beginSwap(w.pid)
         defer { focusGuard.endSwap(w.pid) }
         let userIn = BCUFrontProcessPID() == w.pid
         let before = Set(WindowList.of(pid: w.pid).map(\.id))
         guard let scope = try? KeyScope.enter(pid: w.pid, window: w.id, giveBackTo: userIn ? focusGuard.userWindow(of: w.pid) : nil) else {
+            return .later
+        }
+        let inWindow = AX.window(pid: w.pid, id: w.id).flatMap(Self.tabs(of:))?.contains { CFEqual($0, tab) } ?? false
+        guard Self.strayStillSelected(selected: AX.bool(tab, "AXValue"), inWindow: inWindow,
+                                      lastActionMs: focusGuard.lastActionMs(w.pid), sinceMs: sinceMs, userDriving: userArranging) else {
+            scope.exit()
+            Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, or a step came first; left it")
             return .later
         }
         AX.perform(item.element, "AXPress")

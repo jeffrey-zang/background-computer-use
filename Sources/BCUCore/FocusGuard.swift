@@ -177,6 +177,11 @@ public final class FocusGuard {
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
+    /// When an agent's own step on each app last ended, leaving out the
+    /// engine's upkeep (handing the user a tab): what can explain a change
+    /// in the app's windows. And how many upkeep actions are running.
+    private var lastStepMs: [pid_t: Double] = [:]
+    private var upkeepRunning: [pid_t: Int] = [:]
     private var lastUserSwitchKeyMs = 0.0
     private var lastUserKeyMs = 0.0
     /// The user's last key that could open or switch to an app: Return or
@@ -426,7 +431,9 @@ public final class FocusGuard {
 
     /// Mark `pid` as being acted on. Activations of it until `endAction` +
     /// a grace period are treated as caused by the agent.
-    public func beginAction(pid: pid_t, cause: String, strict: Bool = false) {
+    /// `upkeep`: the engine's own maintenance, not an agent's step, so it
+    /// doesn't count in `lastActionMs` (pass the same to `endAction`).
+    public func beginAction(pid: pid_t, cause: String, strict: Bool = false, upkeep: Bool = false) {
         // Whatever is in front right now (other than the target) is the user's app.
         let front = BCUFrontProcessPID()
         if front != 0 && front != pid && front != getpid() && !isTainted(front) {
@@ -439,14 +446,16 @@ public final class FocusGuard {
         t.cause = cause
         t.strict = strict
         taints[pid] = t
+        if upkeep { upkeepRunning[pid, default: 0] += 1 }
         lock.unlock()
         // Shut before the app is asked for anything, not at the gate's next look.
         if !gate.blocks(pid) { gate.sync() }
     }
 
-    public func endAction(pid: pid_t, graceMs: Double = 700) {
+    public func endAction(pid: pid_t, graceMs: Double = 700, upkeep: Bool = false) {
         lock.lock()
         lastActedMs[pid] = nowMs()
+        if upkeep { upkeepRunning[pid] = max(0, (upkeepRunning[pid] ?? 0) - 1) } else { lastStepMs[pid] = nowMs() }
         if var t = taints[pid] {
             t.count = max(0, t.count - 1)
             // Another session's action in the same app is still running.
@@ -456,12 +465,13 @@ public final class FocusGuard {
         lock.unlock()
     }
 
-    /// When an agent last acted on `pid`, from any session: now while an
-    /// action runs, else when the last one ended. Nil: never.
+    /// When an agent's step last acted on `pid`, from any session: now
+    /// while one runs, else when the last one ended. Nil: never. The
+    /// engine's upkeep (`beginAction(upkeep:)`) isn't a step.
     func lastActionMs(_ pid: pid_t) -> Double? {
         lock.lock(); defer { lock.unlock() }
-        if (taints[pid]?.count ?? 0) > 0 { return nowMs() }
-        return lastActedMs[pid]
+        if (taints[pid]?.count ?? 0) - (upkeepRunning[pid] ?? 0) > 0 { return nowMs() }
+        return lastStepMs[pid]
     }
 
     public func isTainted(_ pid: pid_t) -> Bool {
@@ -732,6 +742,7 @@ public final class FocusGuard {
     private func terminated(_ pid: pid_t) {
         lock.lock()
         taints[pid] = nil
+        upkeepRunning[pid] = nil
         parked[pid] = nil
         arriving[pid] = nil
         stranded.remove(pid)
