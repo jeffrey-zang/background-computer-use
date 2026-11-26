@@ -222,6 +222,14 @@ CGImageRef BCUCaptureDisplayRect(CGDirectDisplayID display, CGRect rect) {
     return f ? f(display, rect) : NULL;
 }
 
+typedef bool (*ScreenWatcherPresentFn)(void);
+
+int BCUScreenWatcherPresent(void) {
+    ScreenWatcherPresentFn f = (ScreenWatcherPresentFn)Sym("SLSIsScreenWatcherPresent");
+    if (!f) f = (ScreenWatcherPresentFn)Sym("CGSIsScreenWatcherPresent");
+    return f ? (f() ? 1 : 0) : -1;
+}
+
 typedef CGError (*ConfigureDisplayEnabledFn)(CGDisplayConfigRef, CGDirectDisplayID, bool);
 
 int BCUDisableDisplay(CGDirectDisplayID display) {

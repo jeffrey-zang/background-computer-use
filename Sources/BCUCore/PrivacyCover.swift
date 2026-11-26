@@ -1,4 +1,5 @@
 import AppKit
+import CPrivate
 
 /// A cover over the whole agent display, so other apps' screenshots of
 /// that display show the cover instead of the agent's windows.
@@ -17,12 +18,15 @@ import AppKit
 /// window filter, `screencapture -l`): that reads the window's own pixels
 /// whatever is in front of it.
 ///
-/// The cover's color is 99.9% opaque, not 100%: WindowServer counts an
-/// opaque window as hiding what's under it, and apps whose windows are
-/// hidden stop drawing (a page's timers and animations pause, a browser
-/// stops painting), so the agent's screenshots would go stale. At 99.9%
-/// nothing under it shows in a capture (measured on macOS 26.1: the same
-/// pixel values over a white window and over the wallpaper).
+/// The cover is never fully opaque: WindowServer counts an opaque window as
+/// hiding what's under it, and apps whose windows are hidden stop drawing
+/// (a page's timers and animations pause, a browser stops painting), so the
+/// agent's screenshots would go stale. One window 99.9% opaque lets 1/1000
+/// of what's under it through, and that's enough: stretching the contrast
+/// of a capture (measured on macOS 26.1) made the agent's text readable.
+/// So the cover is two such windows, one over the other: 1/1,000,000 gets
+/// through, a ten-thousandth of one 8-bit step, and neither window alone is
+/// opaque, so nothing under them counts as hidden.
 public final class PrivacyCover {
     /// Window IDs of every cover, for code that lists or captures windows
     /// to leave them out.
@@ -33,12 +37,15 @@ public final class PrivacyCover {
 
     /// Off with BCU_PRIVACY_COVER=0 (to compare, or if it ever gets in the way).
     static let enabled = ProcessInfo.processInfo.environment["BCU_PRIVACY_COVER"] != "0"
-    /// Just under fully opaque: see the type's comment.
+    /// Each layer is just under fully opaque: see the type's comment.
     static let alpha = 0.999
+    static let layers = 2
+    /// The share of what's under the cover that shows through it.
+    static var transmission: Double { pow(1 - alpha, Double(layers)) }
     /// Above menus, popups and alerts on the display.
     static let level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
 
-    private var panel: NSPanel?
+    private var panels: [NSPanel] = []
     private var displayID: CGDirectDisplayID = 0
 
     public init() {}
@@ -57,36 +64,41 @@ public final class PrivacyCover {
             let b = CGDisplayBounds(id)
             guard !b.isEmpty else { return }
             displayID = id
-            let p = panel ?? make()
-            panel = p
+            if panels.isEmpty { panels = (0..<Self.layers).map { make(label: $0 == Self.layers - 1) } }
             let frame = Self.cocoaFrame(b, primaryHeight: CGDisplayBounds(CGMainDisplayID()).height)
-            if p.frame != frame { p.setFrame(frame, display: true) }
-            p.orderFrontRegardless()
-            let wid = CGWindowID(p.windowNumber)
-            if wid > 0 { Self.idsLock.lock(); Self._ids.insert(wid); Self.idsLock.unlock() }
+            // Back to front, so the labeled one is on top.
+            for p in panels {
+                if p.frame != frame { p.setFrame(frame, display: true) }
+                p.orderFrontRegardless()
+                let wid = CGWindowID(p.windowNumber)
+                if wid > 0 { Self.idsLock.lock(); Self._ids.insert(wid); Self.idsLock.unlock() }
+            }
+            StreamWatch.shared.start()
         }
     }
 
     /// Follow the display after macOS moved it. Main thread.
     func follow() {
-        guard panel != nil, displayID != 0 else { return }
+        guard !panels.isEmpty, displayID != 0 else { return }
         show(on: displayID)
     }
 
     /// Take the cover down. Any thread.
     public func hide() {
         DispatchQueue.main.async { [self] in
-            guard let p = panel else { return }
-            panel = nil
+            let gone = panels
+            panels = []
             displayID = 0
-            let wid = CGWindowID(p.windowNumber)
-            Self.idsLock.lock(); Self._ids.remove(wid); Self.idsLock.unlock()
-            p.orderOut(nil)
-            p.close()
+            for p in gone {
+                let wid = CGWindowID(p.windowNumber)
+                Self.idsLock.lock(); Self._ids.remove(wid); Self.idsLock.unlock()
+                p.orderOut(nil)
+                p.close()
+            }
         }
     }
 
-    private func make() -> NSPanel {
+    private func make(label withLabel: Bool) -> NSPanel {
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         p.isOpaque = false
         p.backgroundColor = NSColor(calibratedRed: 0.11, green: 0.11, blue: 0.12, alpha: Self.alpha)
@@ -97,18 +109,69 @@ public final class PrivacyCover {
         p.level = Self.level
         p.title = "Background Computer Use: private agent display"
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        let view = NSView()
+        p.contentView = view
+        guard withLabel else { return p }
         let label = NSTextField(labelWithString: "Private agent display\nBackground Computer Use keeps this display's windows out of other apps' screenshots.")
         label.alignment = .center
         label.textColor = NSColor(white: 1, alpha: 0.55)
         label.font = .systemFont(ofSize: 15, weight: .medium)
         label.translatesAutoresizingMaskIntoConstraints = false
-        let view = NSView()
         view.addSubview(label)
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
-        p.contentView = view
         return p
+    }
+}
+
+/// Notices when something starts streaming the screen while agent
+/// displays exist, for `guard_report`. macOS says only that a stream is
+/// running (a screen recording, screen sharing, another tool's capture), not
+/// which app or which display, and one-shot screenshots don't show at all.
+/// A stream of a whole agent display sees its cover; one of a single window
+/// doesn't.
+final class StreamWatch {
+    static let shared = StreamWatch()
+    private var timer: DispatchSourceTimer?
+    private var since: Double?
+    private let queue = DispatchQueue(label: "bcu.streamwatch")
+
+    /// What a change from `was` to `now` (streaming or not) amounts to, if anything.
+    static func note(was: Bool, now: Bool, forMs: Double) -> String? {
+        switch (was, now) {
+        case (false, true):
+            return "screen capture started: something on this Mac is streaming the screen (a screen recording, screen sharing, or another tool's capture; macOS doesn't say which app or display). A capture of a whole agent display shows BCU's cover; a capture of one window doesn't."
+        case (true, false):
+            return "screen capture ended after \(Int((forMs / 1000).rounded())) s"
+        default:
+            return nil
+        }
+    }
+
+    /// Any thread. Polls once a second while an agent display is up.
+    func start() {
+        queue.async { [self] in
+            guard timer == nil, BCUScreenWatcherPresent() >= 0 else { return }
+            let t = DispatchSource.makeTimerSource(queue: queue)
+            t.schedule(deadline: .now(), repeating: 1.0, leeway: .milliseconds(200))
+            t.setEventHandler { [weak self] in self?.tick() }
+            t.resume()
+            timer = t
+        }
+    }
+
+    private func tick() {
+        let now = BCUScreenWatcherPresent() == 1
+        let was = since != nil
+        if let text = Self.note(was: was, now: now, forMs: since.map { nowMs() - $0 } ?? 0) {
+            FocusGuard.shared?.record(text)
+        }
+        if now != was { since = now ? nowMs() : nil }
+        if AgentDisplay.running.isEmpty && !now {
+            timer?.cancel()
+            timer = nil
+        }
     }
 }

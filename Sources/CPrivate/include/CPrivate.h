@@ -103,6 +103,12 @@ CGImageRef _Nullable BCUCaptureWindowRect(uint32_t windowID, CGRect rect, uint32
 /// the SDK no longer declares it. NULL if it's gone or fails.
 CGImageRef _Nullable BCUCaptureDisplayRect(CGDirectDisplayID display, CGRect rect) CF_RETURNS_RETAINED;
 
+/// Whether some process is streaming the screen right now (a ScreenCaptureKit
+/// stream: a screen recording, screen sharing, another tool's capture), as
+/// SLSIsScreenWatcherPresent says. Which process and which display isn't
+/// told; one-shot screenshots don't count. 1 yes, 0 no, -1 unknown.
+int BCUScreenWatcherPresent(void);
+
 #pragma mark - Displays
 
 /// Disable a display for this login session (CGSConfigureDisplayEnabled in

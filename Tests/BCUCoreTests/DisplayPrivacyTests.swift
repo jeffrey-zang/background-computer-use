@@ -99,10 +99,22 @@ final class DisplayPrivacyTests: XCTestCase {
     }
 
     /// Fully opaque would make WindowServer treat the windows under it as
-    /// hidden, and apps stop drawing hidden windows.
-    func testTheCoverIsNotFullyOpaqueButHidesEverything() {
+    /// hidden, and apps stop drawing hidden windows. One 99.9% layer let
+    /// enough through to read the agent's text after a contrast stretch.
+    func testTheCoverIsNeverOpaqueButLetsLessThanAnEightBitStepThrough() {
         XCTAssertLessThan(PrivacyCover.alpha, 1)
-        XCTAssertGreaterThanOrEqual(PrivacyCover.alpha, 0.999)
+        XCTAssertGreaterThan(PrivacyCover.layers, 1)
+        // What shows through, at full contrast underneath, in 8-bit steps.
+        XCTAssertLessThan(PrivacyCover.transmission * 255, 0.001)
         XCTAssertGreaterThan(PrivacyCover.level.rawValue, NSWindow.Level.popUpMenu.rawValue)
+    }
+
+    /// A screen stream (recording, sharing, another tool's capture) is
+    /// noted when it starts and ends; nothing in between.
+    func testScreenStreamsAreNotedWhenTheyStartAndEnd() {
+        XCTAssertTrue(StreamWatch.note(was: false, now: true, forMs: 0)?.hasPrefix("screen capture started") == true)
+        XCTAssertEqual(StreamWatch.note(was: true, now: false, forMs: 5_400), "screen capture ended after 5 s")
+        XCTAssertNil(StreamWatch.note(was: true, now: true, forMs: 1000))
+        XCTAssertNil(StreamWatch.note(was: false, now: false, forMs: 0))
     }
 }
