@@ -201,7 +201,7 @@ Call before you play sound (a video, music, a call) in any app. In an app the us
 
 ### start_recording
 
-Start a video of your work to give the user: your display (or one window) recorded continuously at about 12 fps, with every tool call you make from now on drawn onto it (a caption per step naming what you acted on, a box on the element, a ripple where you clicked, keycaps for keys, failures in red, a step counter) and listed in actions.md and actions.json, one entry per call, failures and reads included. What you type into password fields is never shown. Call stop_recording when you're done. One recording at a time; it stops capturing by itself after 30 minutes.
+Start a video of your work to give the user: your display (or one window) recorded continuously at up to 12 fps (fewer while the Mac is busy), with every tool call you make from now on drawn onto it (a caption per step naming what you acted on, a box on the element, a ripple where you clicked, keycaps for keys, failures in red, a step counter) and listed in actions.md and actions.json, one entry per call, failures and reads included. What you type into password fields is never shown. Call stop_recording when you're done. One recording at a time; it stops capturing by itself after 30 minutes.
 
 - `audio` (boolean): Keep the session's sound file (see capture_audio) beside the video (default false).
 - `fps` (integer): Frames per second, 2 to 30 (default 12).
