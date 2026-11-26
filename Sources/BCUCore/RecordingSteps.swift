@@ -228,13 +228,21 @@ public enum RecordingText {
     /// goes on with its frame or flags) replaced: under hide_typing, once
     /// something was typed, a field can hold an edited or partial copy of it.
     static func hideValues(_ text: String) -> String {
-        // Up to the frame that ends every element line (`" @(x,y wxh)`), the
-        // last on the line: a value can hold quotes and brackets itself.
-        text.replacingOccurrences(of: #"value="[^\n]*"(?= @\(-?\d+,-?\d+ \d+x\d+\))|value="[^\n]*"$"#, with: "value=(hidden)",
+        let frame = #"@\(-?\d+,-?\d+ \d+x\d+\)"#
+        // A text field's name first (it can be its contents), up to what
+        // follows it on the line: its value, placeholder or frame.
+        return text.replacingOccurrences(of: #"((?:TextField|TextArea|SearchField|ComboBox)(?:\([^)\n]*\))?) "[^\n]*?"(?= value="| placeholder="| "# + frame + ")",
+                                         with: "$1 \"(hidden)\"", options: [.regularExpression])
+            // Then every value, up to the frame that ends the line (it can
+            // hold quotes and brackets itself).
+            .replacingOccurrences(of: #"value="[^\n]*"(?= "# + frame + #")|value="[^\n]*"$"#, with: "value=(hidden)",
                                   options: [.regularExpression])
-            // A field whose value is its name is listed by name alone.
-            .replacingOccurrences(of: #"((?:TextField|TextArea|SearchField|ComboBox)(?:\([^)\n]*\))?) "[^\n]*"(?= @\(-?\d+,-?\d+ \d+x\d+\))"#,
-                                  with: "$1 \"(hidden)\"", options: [.regularExpression])
+    }
+
+    /// Every word (between spaces, quotes or line breaks) holding a
+    /// character outside ASCII, replaced.
+    static func hideNonASCIIWords(_ text: String) -> String {
+        text.replacingOccurrences(of: #"[^\s"]*[^\x00-\x7F][^\s"]*"#, with: "(hidden)", options: .regularExpression)
     }
 
     /// The exact form a hidden value is replaced with.
@@ -403,6 +411,10 @@ public final class StepLog {
     /// show any start of it, so the starts are taken out of results too
     /// (worked out when needed, not stored as forms).
     private var pastRuns: [String] = []
+    /// A hidden key was pressed with option: what it made (alone, or
+    /// composed with the next key as an accent) can't be known, so later
+    /// results lose every word with a character outside ASCII.
+    private var optionKeys = false
     /// `text` with any start of a key run (3+ characters) taken out: found
     /// by where the run's first characters occur and how far each match
     /// goes, so a long run costs no more than the text it's looked for in.
@@ -415,6 +427,7 @@ public final class StepLog {
     /// both, so neither can break up a longer match of the other ("con"
     /// typed key by key inside "confidential" typed as text).
     private func redactRunStarts(_ text: String) -> String {
+        let text = optionKeys ? RecordingText.hideNonASCIIWords(text) : text
         let runs = (Array(keyRuns.values) + pastRuns).map(Array.init).filter { $0.count >= 3 }
         let whole = hiddenTexts.map(Array.init).filter { !$0.isEmpty }
         guard !runs.isEmpty || !whole.isEmpty else { return text }
@@ -623,6 +636,7 @@ public final class StepLog {
             // a stand-in that matches whatever it was.
             if s.originalModifiers.contains(where: { KeyMap.modifierNames["\($0)".trimmingCharacters(in: .whitespaces).lowercased()] == .maskAlternate }) {
                 ch = String(Self.anyCharacter)
+                optionKeys = true
             }
             keyRuns[w, default: ""] += ch
             if let run = keyRuns[w], RecordingText.redactsLater(run) {

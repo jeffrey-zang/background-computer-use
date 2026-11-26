@@ -491,7 +491,7 @@ final class AgentRecordingTests: XCTestCase {
         let d = log.begin(tool: "press_key", args: ["key": "delete"]); log.end(d, result: "Pressed delete.", isError: false)
         let r = log.begin(tool: "get_window_state", args: [:])
         log.end(r, result: "[3] TextField \"Note\" value=\"confidentia\" @(0,0 10x10) [settable]", isError: false)
-        XCTAssertEqual(r.result, "[3] TextField \"Note\" value=(hidden) @(0,0 10x10) [settable]")
+        XCTAssertEqual(r.result, "[3] TextField \"(hidden)\" value=(hidden) @(0,0 10x10) [settable]")
     }
 
     func testKeyRunsSkipRefusalsAndStayPerWindow() {
@@ -604,6 +604,21 @@ final class AgentRecordingTests: XCTestCase {
         let st = log.begin(tool: "status", args: [:]); log.end(st, result: "1: \"åß∂\"", isError: false)
         XCTAssertFalse(st.result.contains("åß∂"), st.result)
         XCTAssertTrue(st.result.hasPrefix("1: "), "ordinary text isn't taken for it")
+    }
+
+    func testAFieldNameFollowedByItsValueIsHidden() {
+        XCTAssertEqual(RecordingText.hideValues("[3] TextField \"Contents: confidentia\" value=\"confidentia\" @(0,0 10x10)"),
+                       "[3] TextField \"(hidden)\" value=(hidden) @(0,0 10x10)")
+    }
+
+    func testAccentsComposedWithOptionAreHidden() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        for (k, m) in [("e", ["option"]), ("a", []), ("e", ["option"]), ("e", []), ("e", ["option"]), ("i", [])] {
+            let s = log.begin(tool: "press_key", args: ["key": k, "modifiers": m, "window_id": 1]); log.setFocus(secure: false); log.end(s, result: "Pressed.", isError: false)
+        }
+        let st = log.begin(tool: "status", args: [:]); log.end(st, result: "1: TextEdit \"áéí\"", isError: false)
+        XCTAssertFalse(st.result.contains("áéí"), st.result)
+        XCTAssertTrue(st.result.contains("TextEdit"))
     }
 
     func testOptionCharactersAreTyping() {

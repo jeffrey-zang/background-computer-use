@@ -220,6 +220,9 @@ public final class AgentRecording {
             guard owns(windowID) else { lock.lock(); windowReleased = true; lock.unlock(); return nil }
             guard let wb = WindowList.info(windowID)?.bounds else { lock.lock(); windowGone = true; lock.unlock(); return nil }
             guard let image = Capture.recordingWindowFrame(windowID) else { return nil }
+            // Released while the screenshot was being taken: it may already
+            // show the window on the user's screen.
+            guard owns(windowID) else { lock.lock(); windowReleased = true; lock.unlock(); return nil }
             if nowMs() - lastWindowFrameMs >= 500 {
                 lastWindowFrameMs = nowMs()
                 onWindowFrame(windowID, image)
