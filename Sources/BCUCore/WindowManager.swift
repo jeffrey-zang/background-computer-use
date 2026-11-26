@@ -1320,7 +1320,12 @@ public final class WindowManager {
         // (macOS put it here, or it's being taken over), and its session
         // moves it to its own. It counts as left, so the display stays
         // until it's gone.
-        let found = windows(on: bounds).filter { !isRegistered($0.id) }
+        // A window that's on a user display (the agent display was mirrored
+        // with it or lay over it) is where the user sees it already, and
+        // stays there when the display goes: not a leftover.
+        let users = AgentDisplay.userDisplayIDs().map { CGDisplayBounds($0) }
+        let onDisplay = { windows(on: bounds).filter { strandedOnStray($0.bounds, userDisplays: users) } }
+        let found = onDisplay().filter { !isRegistered($0.id) }
             .compactMap { info in AX.window(pid: info.pid, id: info.id).map { (info, $0) } }
         let present = Set(found.map(\.0.id))
         let toClose = found.filter { leftoverFate($0.0.id, agentMade: wasAgentMade($0.0.id), kept: kept) == .close }
@@ -1343,11 +1348,11 @@ public final class WindowManager {
         // A page that only now asks whether to leave, about a window closed
         // here: nobody is left to say no.
         if !toClose.isEmpty {
-            for info in windows(on: bounds) where !isRegistered(info.id) && !present.contains(info.id) {
+            for info in onDisplay() where !isRegistered(info.id) && !present.contains(info.id) {
                 if let ax = AX.window(pid: info.pid, id: info.id), answerLeave(ax) { sleepMs(400) }
             }
         }
-        let left = windows(on: bounds)
+        let left = onDisplay()
         if !left.isEmpty {
             Log.info("leftover windows on an agent display are still there: \(left.map { "\($0.owner) \($0.id) \"\($0.title.prefix(30))\"" }.joined(separator: ", "))")
         }
@@ -1559,6 +1564,11 @@ public final class WindowManager {
         lock.unlock()
         defer { lock.lock(); sweeping = false; lock.unlock() }
         guard display.isRunning else { return }
+        // Mirrored with the user's display, main, or lying over it (until
+        // `AgentDisplay` puts that right): what's "on the agent display"
+        // is on the user's screen then, the user's own windows included.
+        // Nothing to catch or move back.
+        guard display.separation == nil else { return }
 
         let onScreen = WindowList.all(onScreenOnly: true)
 

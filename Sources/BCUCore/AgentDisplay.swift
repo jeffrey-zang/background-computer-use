@@ -412,6 +412,7 @@ public final class AgentDisplay {
         let display: BCUVirtualDisplay
         let id: CGDirectDisplayID
         let slot: Int
+        let serial: UInt32
         let width: Int
         let height: Int
         let sinceMs: Double
@@ -576,18 +577,20 @@ public final class AgentDisplay {
     /// in the staircase and its serial, which macOS keys remembered modes on.
     /// The display comes online asynchronously: follow with `waitUntilOnline`
     /// and then `finishStart`.
-    public func start(slot: Int = AgentDisplay.freeSlot()) throws {
+    /// `fresh`: a new display, not a spare (see `recreate`).
+    public func start(slot: Int = AgentDisplay.freeSlot(), fresh: Bool = false) throws {
         guard display == nil else { return }
         // One a session before this left behind: nothing is added, so
         // nothing on the user's screens moves.
         Self.registryLock.lock()
-        let spare = Self.spares.filter { $0.width == width && $0.height == height }.min { $0.slot < $1.slot }
+        let spare = fresh ? nil : Self.spares.filter { $0.width == width && $0.height == height }.min { $0.slot < $1.slot }
         if let spare { Self.spares.removeAll { $0.id == spare.id } }
         Self.registryLock.unlock()
         if let spare, !CGDisplayBounds(spare.id).isEmpty {
             display = spare.display
             displayID = spare.id
             self.slot = spare.slot
+            serial = spare.serial
             reused = true
             register()
             return
@@ -601,12 +604,13 @@ public final class AgentDisplay {
         // which a stray display from a crashed copy can hold until logout.
         // Spare serials sit past every slot's own.
         let base: UInt32 = 0x4243_5532
-        let serials = [base + UInt32(slot)] + (1...8).map { base + UInt32(slot) + UInt32($0) * 16 }
+        let serials = ([base + UInt32(slot)] + (1...8).map { base + UInt32(slot) + UInt32($0) * 16 }).filter { !avoidSerials.contains($0) }
         var made: BCUVirtualDisplay?
         for serial in serials {
             made = Self.makeVirtualDisplay(name, width, height, serial)
             if made != nil {
-                if serial != serials[0] { Log.info("agent display serial \(String(serials[0], radix: 16)) taken; used \(String(serial, radix: 16))") }
+                self.serial = serial
+                if serial != base + UInt32(slot) { Log.info("agent display serial \(String(base + UInt32(slot), radix: 16)) \(avoidSerials.isEmpty ? "taken" : "set aside"); used \(String(serial, radix: 16))") }
                 break
             }
         }
@@ -639,6 +643,7 @@ public final class AgentDisplay {
         // A new display rearranges them all; note the user's windows to see
         // which macOS moves (a stale tile's gets its tile replaced).
         let userWindows = Self.noteUserWindows()
+        Self.noteUserMain()
         do {
             try Self.making { try start() }
         } catch {
@@ -654,19 +659,19 @@ public final class AgentDisplay {
         // macOS can bring the display online and still not give it a place
         // of its own (mirroring the user's display, or making it the main
         // one): then everything "on the agent display" is on the user's
-        // screen. Looked at once the displays have settled, since macOS can
-        // change that just after the display comes online.
-        Self.awaitSettled(quietMs: 300, capMs: 3000)
-        if let problem = separationProblem {
-            Log.info("agent display \(slot + 1) (\(displayID)) isn't a screen of its own: \(problem); removed")
+        // screen. Put that right, and refuse only when nothing does.
+        do {
+            try makeSeparate(onMain: onMain, canRecreate: true)
+        } catch {
+            Log.info("agent display \(slot + 1) (\(displayID)) removed: it isn't a screen of its own")
             try? onMain { self.stop(remove: true) }
-            throw ToolError(Self.notSeparateRefusal(problem))
+            throw error
         }
     }
 
     // MARK: A screen of its own
 
-    /// What macOS says about where an agent display is (see `separationProblem`).
+    /// What macOS says about where an agent display is (see `separation`).
     struct Placement {
         /// It mirrors a display, or one mirrors it.
         var mirrored: Bool
@@ -676,34 +681,218 @@ public final class AgentDisplay {
         var user: [CGRect]
     }
 
-    /// Why a display placed like this isn't a separate screen the user
-    /// can't see, or nil when it is.
-    static func separationProblem(_ p: Placement) -> String? {
-        if p.mirrored { return "macOS is mirroring it with the user's display" }
-        if p.isMain { return "macOS made it the main display" }
-        if p.bounds.isEmpty { return "it isn't online" }
+    /// Why an agent display isn't a separate screen the user can't see.
+    public enum Separation: Equatable {
+        /// It mirrors a user display or one mirrors it: it has the user's
+        /// screen's place, and a user display mirroring it takes its mode.
+        case mirrored
+        /// It's the main display: the menu bar, the Dock and new windows
+        /// go there, and the user's display is pushed aside.
+        case main
+        /// It shares area with this user display.
+        case overlaps(CGRect)
+        case offline
+
+        public var text: String {
+            switch self {
+            case .mirrored: return "macOS is mirroring it with the user's display"
+            case .main: return "macOS made it the main display"
+            case .overlaps(let u): return "it lies over the user's display at \(u.short)"
+            case .offline: return "it isn't online"
+            }
+        }
+    }
+
+    /// Why a display placed like this isn't a separate screen, or nil when it is.
+    static func separation(_ p: Placement) -> Separation? {
+        if p.mirrored { return .mirrored }
+        if p.isMain { return .main }
+        if p.bounds.isEmpty { return .offline }
         if let u = p.user.first(where: { let i = $0.intersection(p.bounds); return !i.isNull && i.width * i.height > 0 }) {
-            return "it lies over the user's display at \(u.short)"
+            return .overlaps(u)
         }
         return nil
     }
 
+    static func separationProblem(_ p: Placement) -> String? { separation(p)?.text }
+
     /// Why this display isn't a separate screen right now, or nil when it is
     /// (or isn't running).
-    public var separationProblem: String? {
+    public var separation: Separation? {
         let id = displayID
         guard isRunning else { return nil }
-        return Self.separationProblem(Placement(
+        return Self.separation(Placement(
             mirrored: CGDisplayIsInMirrorSet(id) != 0 || CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay,
             isMain: CGDisplayIsMain(id) != 0,
             bounds: CGDisplayBounds(id),
             user: Self.userDisplayIDs().map { CGDisplayBounds($0) }))
     }
 
+    public var separationProblem: String? { separation?.text }
+
+    /// What `makeSeparate` does about a display that isn't a screen of its own.
+    enum Remedy: Equatable {
+        /// Take it out of the mirror set (see `unmirror`).
+        case unmirror
+        /// Make one of the user's displays the main one again (see `makeUserMain`).
+        case makeUserMain
+        /// Put it back at its corner.
+        case replace
+        /// Remove it and make a new one with a serial macOS hasn't seen,
+        /// so nothing macOS remembered for the old one (a mirror set, a
+        /// main display) applies.
+        case recreate
+
+        var text: String {
+            switch self {
+            case .unmirror: return "stopping the mirroring"
+            case .makeUserMain: return "making the user's display the main one again"
+            case .replace: return "putting it back at its corner"
+            case .recreate: return "replacing it with a new display"
+            }
+        }
+    }
+
+    /// What to try next about `problem`: first what fixes that problem,
+    /// then (once, and only when `canRecreate`: no window is on it) a new
+    /// display, then on the new one its own fix again. nil once all of that
+    /// has been tried: refuse. `tried` is what was tried since the display
+    /// was last made.
+    static func remedy(for problem: Separation, tried: [Remedy], recreated: Bool, canRecreate: Bool) -> Remedy? {
+        let own: Remedy
+        switch problem {
+        case .mirrored: own = .unmirror
+        case .main: own = .makeUserMain
+        case .overlaps: own = .replace
+        case .offline: own = .recreate
+        }
+        if own != .recreate && !tried.contains(own) { return own }
+        if canRecreate && !recreated { return .recreate }
+        return nil
+    }
+
+    /// Not on the main thread. Put right whatever keeps this display from
+    /// being a screen of its own (see `remedy`), and throw the refusal when
+    /// nothing does. `canRecreate`: no window is on it, so it may be
+    /// replaced with a new display. `onMain` as for `open`.
+    public func makeSeparate(onMain: (@escaping () -> Void) throws -> Void, canRecreate: Bool) throws {
+        var tried: [Remedy] = []
+        var recreated = false
+        var fixed: [String] = []
+        var all: [Remedy] = []
+        while true {
+            Self.awaitSettled(quietMs: 300, capMs: 3000)
+            guard let problem = separation else {
+                if !fixed.isEmpty { Log.info("agent display \(slot + 1) (\(displayID)) is a screen of its own now, at \(CGDisplayBounds(displayID).short) (\(fixed.joined(separator: ", then ")))") }
+                return
+            }
+            // With the user's screens asleep macOS won't rearrange anything.
+            let remedy = Self.userDisplaysAwake ? Self.remedy(for: problem, tried: tried, recreated: recreated, canRecreate: canRecreate) : nil
+            guard let remedy else {
+                Log.info("agent display \(slot + 1) (\(displayID)) isn't a screen of its own: \(problem.text)\(fixed.isEmpty ? "" : " (tried \(fixed.joined(separator: ", then ")))")")
+                throw ToolError(Self.notSeparateRefusal(problem.text, tried: all))
+            }
+            Log.info("agent display \(slot + 1) (\(displayID)) isn't a screen of its own: \(problem.text); \(remedy.text)")
+            fixed.append("\(problem.text): \(remedy.text)")
+            all.append(remedy)
+            switch remedy {
+            case .unmirror, .replace:
+                Self.making { place() }
+                tried.append(remedy)
+            case .makeUserMain:
+                Self.making { makeUserMain(); place() }
+                tried.append(remedy)
+            case .recreate:
+                try recreate(onMain: onMain)
+                tried = []
+                recreated = true
+            }
+        }
+    }
+
+    /// Some user display is awake (macOS only rearranges displays then).
+    static var userDisplaysAwake: Bool {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 32)
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(32, &ids, &count)
+        let agents = Set(running.map(\.displayID))
+        return ids.prefix(Int(count)).contains { !agents.contains($0) && !isBCUDisplay($0) }
+    }
+
+    /// The user display that was main before an agent display took that
+    /// role (main thread or `making`).
+    private static var lastUserMainValue: CGDirectDisplayID = 0
+    private static let mainLock = NSLock()
+    private static var lastUserMain: CGDirectDisplayID {
+        mainLock.lock(); defer { mainLock.unlock() }
+        return lastUserMainValue
+    }
+    static func noteUserMain() {
+        let main = CGMainDisplayID()
+        guard userDisplayIDs().contains(main) else { return }
+        mainLock.lock(); lastUserMainValue = main; mainLock.unlock()
+    }
+
+    /// Which user display should be main: the one that was, else the
+    /// built-in one, else the lowest ID.
+    static func userMain(users: [CGDirectDisplayID], last: CGDirectDisplayID, builtin: Set<CGDirectDisplayID>) -> CGDirectDisplayID? {
+        if users.contains(last) { return last }
+        return users.filter { builtin.contains($0) }.min() ?? users.min()
+    }
+
+    /// Where each user display goes so `main` is at 0,0 (which makes it the
+    /// main display) and the others keep their places around it.
+    static func userMainOrigins(users: [CGDirectDisplayID: CGRect], main: CGDirectDisplayID) -> [CGDirectDisplayID: CGPoint] {
+        guard let m = users[main] else { return [:] }
+        return users.mapValues { CGPoint(x: $0.minX - m.minX, y: $0.minY - m.minY) }
+    }
+
+    /// The agent display is the main display (macOS made it so, or kept that
+    /// from an earlier arrangement): give that back to the user's display.
+    /// The user's displays keep their places relative to each other; `place`
+    /// then puts this one at their corner.
+    private func makeUserMain() {
+        let users = Self.userDisplayIDs()
+        let builtin = Set(users.filter { CGDisplayIsBuiltin($0) != 0 })
+        guard let main = Self.userMain(users: users, last: Self.lastUserMain, builtin: builtin) else { return }
+        var rects: [CGDirectDisplayID: CGRect] = [:]
+        for id in users { rects[id] = CGDisplayBounds(id) }
+        let origins = Self.userMainOrigins(users: rects, main: main)
+        var config: CGDisplayConfigRef?
+        CGBeginDisplayConfiguration(&config)
+        for (id, o) in origins { CGConfigureDisplayOrigin(config, id, Int32(o.x), Int32(o.y)) }
+        let moved = users.compactMap { id in rects[id].map { CGRect(origin: origins[id] ?? $0.origin, size: $0.size) } }
+        if slot == 0, let corner = Self.corner(of: moved) {
+            CGConfigureDisplayOrigin(config, displayID, Int32(corner.x), Int32(corner.y))
+        }
+        let err = CGCompleteDisplayConfiguration(config, .forSession)
+        Self.noteChange()
+        Log.info("agent display \(slot + 1) (\(displayID)) was the main display; \(err == .success ? "made display \(main) main again" : "making display \(main) main again failed: \(err.rawValue)")")
+    }
+
+    /// Remove this display and make a new one in its slot, with a serial
+    /// it hasn't had: macOS keys what it remembers about a display (a mirror
+    /// set, being main) on its serial. Keeps the display's reservation.
+    private func recreate(onMain: (@escaping () -> Void) throws -> Void) throws {
+        let keepSlot = slot
+        avoidSerials.insert(serial)
+        try onMain { self.stop(remove: true, keepPlace: true) }
+        try Self.making { try start(slot: keepSlot, fresh: true) }
+        guard waitUntilOnline() else { throw ToolError("virtual display never came online") }
+        Self.making { finishStart() }
+    }
+
+    /// Serials this display shouldn't be made with again (see `recreate`).
+    private var avoidSerials: Set<UInt32> = []
+    /// The serial the display was made with (0: not known).
+    public private(set) var serial: UInt32 = 0
+
     /// What the agent is told when its display isn't a screen of its own.
-    static func notSeparateRefusal(_ problem: String) -> String {
+    /// `tried`: what was done about it, in order.
+    static func notSeparateRefusal(_ problem: String, tried: [Remedy] = []) -> String {
         let v = ProcessInfo.processInfo.operatingSystemVersion
-        return "the agent display isn't a separate screen on this Mac (\(problem); macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)), so a window put there would be on the user's own screen. Nothing was opened or moved. Tell the user Background Computer Use can't work in the background on this Mac right now."
+        let what = tried.isEmpty ? "" : ", and \(tried.map(\.text).joined(separator: ", then ")) didn't change that"
+        return "the agent display isn't a separate screen on this Mac (\(problem); macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion))\(what), so a window put there would be on the user's own screen. Nothing was opened or moved. Tell the user Background Computer Use can't work in the background on this Mac right now."
     }
 
     /// Displays are made and placed one at a time, for every session (the
@@ -755,8 +944,9 @@ public final class AgentDisplay {
     /// Main thread. The session is done with its display. It's set aside
     /// for the next session (see `spares`) unless `remove`, or there's no
     /// user display for it to sit beside.
-    public func stop(remove: Bool = false) {
-        defer { unreserve() }
+    /// `keepPlace`: keep the display's reservation (`recreate` makes another).
+    public func stop(remove: Bool = false, keepPlace: Bool = false) {
+        defer { if !keepPlace { unreserve() } }
         guard let vd = display else { return }
         display = nil
         let id = displayID
@@ -768,7 +958,7 @@ public final class AgentDisplay {
         let keep = !remove && (Self.spareLifeMs > 0 || holdsPlace) && !CGDisplayBounds(id).isEmpty && !Self.userDisplayIDs().isEmpty
         Self.registryLock.lock()
         Self.registry.removeAll { $0.display == nil || $0.display === self }
-        if keep { Self.spares.append(Spare(display: vd, id: id, slot: slot, width: width, height: height, sinceMs: nowMs())) }
+        if keep { Self.spares.append(Spare(display: vd, id: id, slot: slot, serial: serial, width: width, height: height, sinceMs: nowMs())) }
         Self.strayCache.atMs = -1; Self.fencedCache.atMs = -1
         Self.registryLock.unlock()
         if keep {
@@ -998,6 +1188,15 @@ public final class AgentDisplay {
     private var adjusted: (wanted: CGPoint, got: CGPoint)?
     private var lastPlaceError: CGError = .success
 
+    /// When `reconfigured` last gave this display a place of its own again.
+    private var recoveries: [Double] = []
+    private var gaveUpRecovering = false
+
+    /// Whether another try at that is due: at most 5 in any 10 s.
+    static func recoveryDue(_ times: [Double], now: Double, max: Int = 5, windowMs: Double = 10_000) -> Bool {
+        times.filter { now - $0 < windowMs }.count < max
+    }
+
     fileprivate func reconfigured() {
         // A display still coming online is placed when it arrives.
         guard isRunning, !bounds.isEmpty else { return }
@@ -1011,10 +1210,40 @@ public final class AgentDisplay {
             bounds = b
             return
         }
-        let accepted = adjusted.map { $0.wanted == wanted && $0.got == b.origin } ?? false
-        // Mirrored since it was placed (see `unmirror`).
-        let mirrored = CGDisplayIsInMirrorSet(displayID) != 0
-        if unplaced || mirrored || user != userBounds || (b.origin != wanted && !accepted) {
+        Self.noteUserMain()
+        // Mirrored, made the main display, or left over the user's since it
+        // was placed (see `separation`): give it a place of its own again
+        // (`place` stops the mirroring). A few times in a while at most: a
+        // fight with macOS would never end, and then `open_window` refuses
+        // instead.
+        let problem = separation
+        var overlapping = false
+        if case .overlaps = problem { overlapping = true }
+        if problem == .mirrored || problem == .main || overlapping, Self.userDisplaysAwake {
+            let now = nowMs()
+            recoveries.removeAll { now - $0 >= 10_000 }
+            if Self.recoveryDue(recoveries, now: now) {
+                recoveries.append(now)
+                let remedy: Remedy = problem == .main ? .makeUserMain : problem == .mirrored ? .unmirror : .replace
+                Log.info("agent display \(slot + 1) (\(displayID)) isn't a screen of its own: \(problem!.text); \(remedy.text)")
+                if problem == .main { makeUserMain() }
+                adjusted = nil
+                place()
+                return
+            }
+            if !gaveUpRecovering {
+                gaveUpRecovering = true
+                Log.info("agent display \(slot + 1) (\(displayID)) still isn't a screen of its own (\(problem!.text)) after \(recoveries.count) tries in 10 s; leaving it until the next open_window")
+            }
+            bounds = b
+            return
+        } else if problem == nil {
+            gaveUpRecovering = false
+        }
+        // A place macOS picked that lies over the user's display isn't one
+        // to keep; nor one while mirrored (it's the mirror set's).
+        let accepted = !overlapping && problem != .mirrored && (adjusted.map { $0.wanted == wanted && $0.got == b.origin } ?? false)
+        if unplaced || user != userBounds || (b.origin != wanted && !accepted) {
             let was = unplaced
             unplaced = false
             place()

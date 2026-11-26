@@ -674,9 +674,15 @@ public final class Engine {
         // Opening or borrowing a window is what needs a display.
         if tool == "open_window" || tool == "borrow_window" {
             try ensureDisplay()
-            // It was a screen of its own when it was made (`open` checks),
-            // but macOS can mirror it or move it since.
-            if let problem = display.separationProblem { throw ToolError(AgentDisplay.notSeparateRefusal(problem)) }
+            // It was a screen of its own when it was made (`open` sees to
+            // that), but macOS can mirror it or move it since: put that
+            // right, replacing the display if nothing is on it yet, and
+            // refuse only when nothing works.
+            if display.separation != nil {
+                let quitting = ToolError("Background Computer Use is quitting. Try again once it's running.")
+                try display.makeSeparate(onMain: { work in guard onMainUnlessQuitting(work) else { throw quitting } },
+                                         canRecreate: windows.windows.isEmpty)
+            }
         }
         return try dispatch(tool: tool, args: args)
     }
