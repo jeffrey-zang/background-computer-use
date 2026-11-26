@@ -1795,6 +1795,14 @@ public final class WindowManager {
         Self.keep(made)
         // Key goes to the new window (the user's), so the browser's last
         // window is theirs; or back to theirs if they're in the browser.
+        // On the user's screen before their held keys go anywhere: the guard
+        // tells their windows by where they are, and one still on the agent
+        // display would lose key to its rules as the keys are replayed.
+        if let ax = AX.window(pid: w.pid, id: made), let bounds = WindowList.info(made)?.bounds, !display.touchesUser(bounds) || AgentDisplay.containing(CGPoint(x: bounds.midX, y: bounds.midY)) != nil {
+            _ = Self.putOnUserScreen(ax, bounds: bounds)
+            let movedBy = nowMs() + 300
+            while nowMs() < movedBy, let b = WindowList.info(made)?.bounds, AgentDisplay.containing(CGPoint(x: b.midX, y: b.midY)) != nil { sleepMs(15) }
+        }
         if userIn { scope.exit() } else { scope.handOff(to: made) }
         focusGuard.endSwap(w.pid); swapping = false
         let placed = settleOnUserScreen(pid: w.pid, id: made)

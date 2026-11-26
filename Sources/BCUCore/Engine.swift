@@ -1169,6 +1169,9 @@ public final class Engine {
             appLock.unlock()
         }
         defer { appLock.unlock() }
+        // Keys, pixel clicks and typing too: cmd+W meant for the page just
+        // read would close whichever tab is selected now.
+        try checkReadAfterHandout(w)
         touched.insert(w.pid)
         focusGuard.beginAction(pid: w.pid, cause: cause)
         windows.noteBefore(pid: w.pid, window: w.id)
@@ -1511,6 +1514,16 @@ public final class Engine {
         return movedMs >= (readMs ?? -.infinity)
     }
 
+    /// Under the app's input lock (the one a tab handout holds too): a tab
+    /// another app opened in this window went to the user since the agent
+    /// last read it. Its element numbers, and the selected page, may be
+    /// that tab's now.
+    private func checkReadAfterHandout(_ w: AgentWindow) throws {
+        if Self.staleAfterTabMovedOut(movedMs: WindowManager.tabMovedOutMs(w.id), readMs: snapshotMs[w.id]) {
+            throw ToolError("a tab another app opened in window \(w.id) was moved to a window of the user's since you last read it, so its element numbers and selected page are out of date: call get_window_state window_id=\(w.id), then act")
+        }
+    }
+
     private func guarded<T>(_ w: AgentWindow, cause: String, _ body: () throws -> T) throws -> T {
         // A batch runs its steps without going back through `call`.
         if paused { throw ToolError("paused by the user") }
@@ -1521,9 +1534,7 @@ public final class Engine {
         // Under the lock the handout takes too: a tab another app opened in
         // this window went to the user since the agent last read it. Its
         // element numbers (and the selected page) may be that tab's now.
-        if Self.staleAfterTabMovedOut(movedMs: WindowManager.tabMovedOutMs(w.id), readMs: snapshotMs[w.id]) {
-            throw ToolError("a tab another app opened in window \(w.id) was moved to a window of the user's since you last read it, so its element numbers are out of date: call get_window_state window_id=\(w.id), then act")
-        }
+        try checkReadAfterHandout(w)
         touched.insert(w.pid)
         focusGuard.beginAction(pid: w.pid, cause: cause)
         windows.noteBefore(pid: w.pid, window: w.id)
