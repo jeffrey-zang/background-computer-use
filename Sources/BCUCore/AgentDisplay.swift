@@ -47,7 +47,7 @@ public final class AgentDisplay {
     /// The lowest slot no running display uses.
     public static func freeSlot() -> Int {
         registryLock.lock()
-        var used = Set(spares.map(\.slot))
+        var used = Set(spares.map(\.slot)).union(replacingSlots)
         registryLock.unlock()
         used.formUnion(running.map(\.slot))
         return (0...).first { !used.contains($0) }!
@@ -787,7 +787,8 @@ public final class AgentDisplay {
                 return
             }
             // With the user's screens asleep macOS won't rearrange anything.
-            let remedy = Self.userDisplaysAwake ? Self.remedy(for: problem, tried: tried, recreated: recreated, canRecreate: canRecreate) : nil
+            let replaceable = Self.mayRecreate(sessionEmpty: canRecreate, slot: slot, runningSlots: Self.running.filter { $0 !== self }.map(\.slot))
+            let remedy = Self.userDisplaysAwake ? Self.remedy(for: problem, tried: tried, recreated: recreated, canRecreate: replaceable) : nil
             guard let remedy else {
                 Log.info("agent display \(slot + 1) (\(displayID)) isn't a screen of its own: \(problem.text)\(fixed.isEmpty ? "" : " (tried \(fixed.joined(separator: ", then ")))")")
                 throw ToolError(Self.notSeparateRefusal(problem.text, tried: all))
@@ -872,13 +873,35 @@ public final class AgentDisplay {
     /// Remove this display and make a new one in its slot, with a serial
     /// it hasn't had: macOS keys what it remembers about a display (a mirror
     /// set, being main) on its serial. Keeps the display's reservation.
+    /// The slot is held from before the old display goes until the new one
+    /// is registered, so another session's display can't take it in between
+    /// (both would then stand at the same corner). On a failure the display
+    /// is stopped, which gives its reservation back.
     private func recreate(onMain: (@escaping () -> Void) throws -> Void) throws {
         let keepSlot = slot
         avoidSerials.insert(serial)
-        try onMain { self.stop(remove: true, keepPlace: true) }
-        try Self.making { try start(slot: keepSlot, fresh: true) }
-        guard waitUntilOnline() else { throw ToolError("virtual display never came online") }
+        Self.registryLock.lock(); Self.replacingSlots.insert(keepSlot); Self.registryLock.unlock()
+        defer { Self.registryLock.lock(); Self.replacingSlots.remove(keepSlot); Self.registryLock.unlock() }
+        do {
+            try onMain { self.stop(remove: true, keepPlace: true) }
+            try Self.making { try start(slot: keepSlot, fresh: true) }
+            guard waitUntilOnline() else { throw ToolError("virtual display never came online") }
+        } catch {
+            try? onMain { self.stop(remove: true) }
+            throw error
+        }
         Self.making { finishStart() }
+    }
+
+    /// Slots whose display is being replaced (see `recreate`).
+    private static var replacingSlots: Set<Int> = []
+
+    /// Whether this display may be replaced: nothing of this session's is
+    /// on it (`sessionEmpty`), and no display after it in the staircase is
+    /// in use. Removing it moves every display after it, and their windows
+    /// cross the user's screen on the way (see `reapSpares`).
+    static func mayRecreate(sessionEmpty: Bool, slot: Int, runningSlots: [Int]) -> Bool {
+        sessionEmpty && !runningSlots.contains { $0 > slot }
     }
 
     /// Serials this display shouldn't be made with again (see `recreate`).

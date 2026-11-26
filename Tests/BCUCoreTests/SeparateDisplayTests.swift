@@ -137,4 +137,13 @@ final class SeparateDisplayTests: XCTestCase {
         let gone = WindowManager.vanished([1: 0, 2: 0, 3: 900], now: 1000, graceMs: 500, exists: { $0 == 2 })
         XCTAssertEqual(gone, [1])
     }
+
+    /// A display isn't replaced while one after it in the staircase is in
+    /// use: removing it would move that one, and its windows would cross the
+    /// user's screen (review).
+    func testNotReplacedUnderAnotherAgentsDisplay() {
+        XCTAssertTrue(AgentDisplay.mayRecreate(sessionEmpty: true, slot: 1, runningSlots: [0]))
+        XCTAssertFalse(AgentDisplay.mayRecreate(sessionEmpty: true, slot: 0, runningSlots: [1]))
+        XCTAssertFalse(AgentDisplay.mayRecreate(sessionEmpty: false, slot: 0, runningSlots: []))
+    }
 }
