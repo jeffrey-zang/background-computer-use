@@ -149,6 +149,9 @@ public final class FocusGuard {
     /// The Space each of the user's displays shows (see `spaceChanged`).
     private var shownSpaces: [CGDirectDisplayID: UInt64] = [:]
     private var userFrontWindow: CGWindowID?
+    /// The user's window before `userFrontWindow`, in the same app: what a
+    /// late move restores when the moved tab's window was taken for theirs.
+    private var userWindowBefore: (pid: pid_t, id: CGWindowID)?
     private var lastUserMouseDownMs = 0.0
     /// The user's last click: where it landed, what it was on, and the
     /// windows on their screens from just before it (id to title).
@@ -517,9 +520,17 @@ public final class FocusGuard {
 
     /// The user's window in `pid` as last seen (`watchUserWindow`), if
     /// they're in it.
-    func lastUserWindow(_ pid: pid_t) -> CGWindowID? {
+    /// Not `excluding` (a window that just came, which the watcher may
+    /// have taken for theirs): the one before it then.
+    func lastUserWindow(_ pid: pid_t, excluding: CGWindowID? = nil) -> CGWindowID? {
         lock.lock(); defer { lock.unlock() }
-        return userFrontPid == pid ? userFrontWindow : nil
+        guard userFrontPid == pid else { return nil }
+        return Self.userWindow(current: userFrontWindow, before: userWindowBefore?.pid == pid ? userWindowBefore?.id : nil, excluding: excluding)
+    }
+
+    static func userWindow(current: CGWindowID?, before: CGWindowID?, excluding: CGWindowID?) -> CGWindowID? {
+        guard let excluding, current == excluding else { return current }
+        return before == excluding ? nil : before
     }
 
     public func isSwapping(_ pid: pid_t) -> Bool {
@@ -739,8 +750,14 @@ public final class FocusGuard {
         if let w = window, Self.onAgentDisplay(w) { window = nil }
         lock.lock()
         guard userFrontPid == pid else { lock.unlock(); return }
-        if window != nil { userFrontWindow = window }
+        if let window { noteUserWindow(window, pid: pid) }
         lock.unlock()
+    }
+
+    /// (Under `lock`.) The user's window in `pid` is `id` now.
+    private func noteUserWindow(_ id: CGWindowID, pid: pid_t) {
+        if let was = userFrontWindow, was != id { userWindowBefore = (pid, was) }
+        userFrontWindow = id
     }
 
     /// An app quit. If it was the user's, a restore would put a pid that's
@@ -870,7 +887,7 @@ public final class FocusGuard {
             AXUIElementSetMessagingTimeout(app, 0.25)
             guard let w = AX.element(app, "AXFocusedWindow"), let id = AX.windowID(w), !Self.onAgentDisplay(id) else { continue }
             lock.lock()
-            if userFrontPid == front && swapping[front] == nil { userFrontWindow = id }
+            if userFrontPid == front && swapping[front] == nil { noteUserWindow(id, pid: front) }
             lock.unlock()
         }
     }

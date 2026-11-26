@@ -143,6 +143,10 @@ final class AudioClaims {
     /// `outputRunning` says whether the app's audio output is running at
     /// all: it stays running through a silent stretch of a video or call,
     /// and stops when the media is paused (or, in Chromium, its tab muted).
+    /// How long a mute press waits for the app's input lock: past the
+    /// longest a tab handout holds it.
+    static let muteLockWaitMs = WindowManager.handoutHoldMaxMs + 500
+
     func silence(_ hit: [Claim], why: String, settleMs: Double = 600,
                  outputRunning: (pid_t) -> Bool = { pid in NSRunningApplication(processIdentifier: pid).map(SessionAudio.isPlaying) ?? false },
                  playing: (pid_t) -> Bool = { pid in NSRunningApplication(processIdentifier: pid).map(SessionAudio.isPlaying) ?? false }) -> [String] {
@@ -164,7 +168,10 @@ final class AudioClaims {
             c.mute.map { m -> AXError in
                 if flip { return .success }
                 let appLock = Engine.inputLock(c.pid)
-                guard appLock.lock(before: Date(timeIntervalSinceNow: 0.5)) else { return .cannotComplete }
+                // Waited out a handout in progress: the app stays muted on
+                // the speakers meanwhile, and giving it back unsilenced
+                // would play the agent's sound to the user.
+                guard appLock.lock(before: Date(timeIntervalSinceNow: Self.muteLockWaitMs / 1000)) else { return .cannotComplete }
                 defer { appLock.unlock() }
                 if WindowManager.handoutPending(from: c.window) || Self.movedAway(windowOf: m, from: c.window) { return .invalidUIElement }
                 return AX.perform(m, "AXPress")

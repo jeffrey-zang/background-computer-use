@@ -2148,6 +2148,10 @@ public final class WindowManager {
         return true
     }
 
+    /// The longest a tab handout holds the app's input lock: its menu (1 s),
+    /// the new window (2 s) and its placement (2.5 s).
+    static let handoutHoldMaxMs = 1000.0 + 2000 + 2500
+
     /// How long a late move's key restore waits for the app's input lock,
     /// once the first, held wait has run out.
     static let lateRestoreWaitMs = 10_000.0
@@ -2262,7 +2266,7 @@ public final class WindowManager {
                 // Their window now, not when the handout began: they may
                 // have gone from one browser window to another meanwhile.
                 func target() -> CGWindowID? {
-                    Self.lateRestoreTarget(tracked: self.focusGuard.lastUserWindow(pid), snapshot: userKey, made: id) { WindowList.info($0) != nil }
+                    Self.lateRestoreTarget(tracked: self.focusGuard.lastUserWindow(pid, excluding: id), snapshot: userKey, made: id) { WindowList.info($0) != nil }
                 }
                 if let back = Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: target(), keyNow: AX.focusedWindowID(pid), made: id),
                    WindowList.info(back) != nil {

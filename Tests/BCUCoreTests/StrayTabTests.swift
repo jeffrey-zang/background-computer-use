@@ -311,6 +311,21 @@ final class StrayTabTests: XCTestCase {
         XCTAssertEqual(later, 1)
     }
 
+    /// The user's window the watcher saw before the moved tab's window
+    /// (which it may take for theirs) is what a late move restores.
+    func testTheUsersWindowBeforeTheMovedTabsIsRestored() {
+        XCTAssertEqual(FocusGuard.userWindow(current: 9, before: 2, excluding: 9), 2)
+        XCTAssertEqual(FocusGuard.userWindow(current: 2, before: 1, excluding: 9), 2)
+        XCTAssertNil(FocusGuard.userWindow(current: 9, before: nil, excluding: 9))
+        XCTAssertEqual(FocusGuard.userWindow(current: 3, before: nil, excluding: nil), 3)
+    }
+
+    /// A mute press waits out a tab handout's hold on the app's lock rather
+    /// than give the sound back unsilenced.
+    func testAMutePressWaitsOutAHandout() {
+        XCTAssertGreaterThan(AudioClaims.muteLockWaitMs, WindowManager.handoutHoldMaxMs)
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {
