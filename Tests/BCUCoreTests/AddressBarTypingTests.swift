@@ -24,6 +24,23 @@ final class AddressBarTypingTests: XCTestCase {
         XCTAssertEqual(Engine.typingRoute(role: nil, selectedTextSettable: false, text: url), .keystrokes)
     }
 
+    /// A Tab moves focus to the next field, but an accessibility write goes
+    /// to the element it was given: text after a Tab goes as keys, which
+    /// follow the focus, so "first\tsecond" doesn't put "second" back into
+    /// the first field.
+    func testTextAfterATabFollowsTheFocusAsKeys() {
+        XCTAssertEqual(Engine.sharedParts("first\tsecond"), [.text("first"), .key("\t"), .keys("second")])
+        XCTAssertEqual(Engine.sharedParts("a\tb\nc"), [.text("a"), .key("\t"), .keys("b"), .key("\n"), .keys("c")])
+    }
+
+    /// Without a Tab, every run of text still goes in through accessibility.
+    func testTextWithoutATabStaysInTheField() {
+        XCTAssertEqual(Engine.sharedParts(url), [.text(String(url.dropLast())), .key("\n")])
+        XCTAssertEqual(Engine.sharedParts("one\ntwo"), [.text("one"), .key("\n"), .text("two")])
+        XCTAssertEqual(Engine.sharedParts("query\t"), [.text("query"), .key("\t")])
+        XCTAssertEqual(Engine.sharedParts("\n"), [.key("\n")])
+    }
+
     /// navigate's fallback for a browser it can't drive says to pass the field.
     func testNavigatesFallbackNamesTheAddressFieldAsElement() {
         XCTAssertTrue(Engine.typeURLHint.contains("with element set to the address field"))

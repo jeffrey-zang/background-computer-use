@@ -2418,26 +2418,52 @@ public final class Engine {
     /// accessibility, which doesn't need key focus. Keys, and so a moment of
     /// key focus, only for Return and Tab and for fields that ignore
     /// accessibility writes.
-    private func typeShared(_ w: AgentWindow, text: String, target: AXNode?) throws -> ToolResult {
-        let element = target?.element ?? focusedTextElement(in: w)
-        // Runs of text, with each Return or Tab on its own.
-        var parts: [String] = []
+    /// How `typeShared` puts each part of `text` in: runs of text through
+    /// accessibility into the field, each Return or Tab as a key. A Tab
+    /// moves focus to the next field, and accessibility would still write
+    /// into the first one, so text after a Tab is typed as keys: they go
+    /// where the Tab took focus.
+    enum SharedPart: Equatable {
+        case text(String)
+        case key(Character)
+        case keys(String)
+    }
+
+    static func sharedParts(_ text: String) -> [SharedPart] {
+        var parts: [SharedPart] = []
         var run = ""
+        var afterTab = false
+        func flush() {
+            guard !run.isEmpty else { return }
+            parts.append(afterTab ? .keys(run) : .text(run))
+            run = ""
+        }
         for ch in text {
             if Input.isReturn(ch) || ch == "\t" {
-                if !run.isEmpty { parts.append(run); run = "" }
-                parts.append(String(ch))
+                flush()
+                parts.append(.key(ch))
+                if ch == "\t" { afterTab = true }
             } else {
                 run.append(ch)
             }
         }
-        if !run.isEmpty { parts.append(run) }
-        var viaAX = 0, viaKeys = 0
+        flush()
+        return parts
+    }
+
+    private func typeShared(_ w: AgentWindow, text: String, target: AXNode?) throws -> ToolResult {
+        let element = target?.element ?? focusedTextElement(in: w)
+        var viaAX = 0, viaKeys = 0, textKeys = 0
         var focused = target == nil
         var changedTo: String?
-        for part in parts {
-            let isKey = part.count == 1 && (Input.isReturn(part.first!) || part == "\t")
-            if !isKey, let el = element {
+        for p in Self.sharedParts(text) {
+            let part: String
+            switch p {
+            case .text(let s): part = s
+            case .key(let ch): part = String(ch)
+            case .keys(let s): part = s; textKeys += s.count
+            }
+            if case .text = p, let el = element {
                 switch try guarded(w, cause: "typing", { axInsert(el, part, in: w) }) {
                 case .exact:
                     viaAX += part.count
@@ -2468,7 +2494,8 @@ public final class Engine {
         if viaAX == 0 {
             return ToolResult(text: "Typed \(viaKeys) characters\(into) with keystrokes.")
         }
-        return ToolResult(text: "Typed \(viaAX) characters\(into) through accessibility and \(viaKeys) (Return/Tab) with keystrokes.\(changed)")
+        let keysAre = textKeys > 0 ? "(Return/Tab, and the text after a Tab, which goes to the field the Tab moved to)" : "(Return/Tab)"
+        return ToolResult(text: "Typed \(viaAX) characters\(into) through accessibility and \(viaKeys) \(keysAre) with keystrokes.\(changed)")
     }
 
     private static let textRoles: Set<String> = ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"]
