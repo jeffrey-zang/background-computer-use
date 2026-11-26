@@ -143,6 +143,25 @@ final class AudioClaims {
     /// `outputRunning` says whether the app's audio output is running at
     /// all: it stays running through a silent stretch of a video or call,
     /// and stops when the media is paused (or, in Chromium, its tab muted).
+    /// Run `press` under the app's input lock once no handout from the
+    /// claim's window is pending, looking again (the lock let go between
+    /// looks, so the handout can finish) until `deadlineMs`.
+    /// `.cannotComplete` if the lock wasn't had, `.invalidUIElement` if a
+    /// handout was still pending at the deadline.
+    static func pressWhenSettled(lock: (Date) -> Bool, unlock: () -> Void, pending: () -> Bool, deadlineMs: Double,
+                                 pauseMs: Double = 100, press: () -> AXError) -> AXError {
+        while true {
+            guard lock(Date(timeIntervalSinceNow: max(0, deadlineMs - nowMs()) / 1000)) else { return .cannotComplete }
+            if !pending() {
+                defer { unlock() }
+                return press()
+            }
+            unlock()
+            if nowMs() >= deadlineMs { return .invalidUIElement }
+            sleepMs(pauseMs)
+        }
+    }
+
     /// Whether the agent's sound has stopped since the toggle was named:
     /// the app's output is quiet, or the toggle reads otherwise now.
     /// Pressing it then would play the sound again.
@@ -178,20 +197,24 @@ final class AudioClaims {
             return c.mute.map { m -> AXError in
                 if flipped[i] { return .success }
                 let appLock = Engine.inputLock(c.pid)
-                // Waited out a handout in progress: the app stays muted on
-                // the speakers meanwhile, and giving it back unsilenced
-                // would play the agent's sound to the user.
-                guard appLock.lock(before: Date(timeIntervalSinceNow: Self.muteLockWaitMs / 1000)) else { return .cannotComplete }
-                defer { appLock.unlock() }
-                if WindowManager.handoutPending(from: c.window) || Self.movedAway(windowOf: m, from: c.window) { return .invalidUIElement }
-                // Looked at again after the wait: the sound may have stopped
-                // (the video ended) or the toggle turned, and pressing it
-                // now would play it.
-                if Self.stoppedSince(quiet: !outputRunning(c.pid), named: c.muteLook, now: Self.look(m)) {
-                    flipped[i] = true
-                    return .success
+                // Waited out a handout in progress, and one of a tab from
+                // that window still on its way: the app stays muted on the
+                // speakers meanwhile, and giving it back unsilenced would
+                // play the agent's sound to the user.
+                return Self.pressWhenSettled(
+                    lock: { appLock.lock(before: $0) }, unlock: { appLock.unlock() },
+                    pending: { WindowManager.handoutPending(from: c.window) },
+                    deadlineMs: nowMs() + Self.muteLockWaitMs + WindowManager.lateHandoutMs) {
+                    if Self.movedAway(windowOf: m, from: c.window) { return .invalidUIElement }
+                    // Looked at again after the wait: the sound may have
+                    // stopped (the video ended) or the toggle turned, and
+                    // pressing it now would play it.
+                    if Self.stoppedSince(quiet: !outputRunning(c.pid), named: c.muteLook, now: Self.look(m)) {
+                        flipped[i] = true
+                        return .success
+                    }
+                    return AX.perform(m, "AXPress")
                 }
-                return AX.perform(m, "AXPress")
             }
         }
         let pids = Set(hit.map(\.pid))

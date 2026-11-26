@@ -1418,6 +1418,11 @@ public final class WindowManager {
     /// (`bringToUser`), so nothing appears on their screen unasked.
     public func handoff(_ id: CGWindowID, reason: String) throws {
         guard let w = window(id), AX.window(pid: w.pid, id: id) != nil else { throw ToolError("window \(id) isn't one of yours") }
+        // Under the app's input lock, which a tab handout holds from its
+        // check that the window is still the agent's through its press:
+        // never handed to the user between the two.
+        let appLock = Engine.inputLock(w.pid)
+        appLock.lock(); defer { appLock.unlock() }
         focusGuard.unpark(w.pid, window: id, reason: "window handed to the user")
         w.handedOff = true
         w.handoffReason = reason

@@ -335,6 +335,27 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(AudioClaims.stoppedSince(quiet: false, named: nil, now: "Play"))
     }
 
+    /// A mute press waits out a handout pending from the claim's window
+    /// (letting the lock go between looks), then presses; one still
+    /// pending at the deadline isn't pressed.
+    func testAMutePressWaitsOutAPendingHandout() {
+        var looks = 0, unlocks = 0, presses = 0
+        let r = AudioClaims.pressWhenSettled(lock: { _ in true }, unlock: { unlocks += 1 },
+                                             pending: { looks += 1; return looks < 3 }, deadlineMs: nowMs() + 5000, pauseMs: 1) {
+            presses += 1; return .success
+        }
+        XCTAssertEqual(r, .success)
+        XCTAssertEqual(presses, 1)
+        XCTAssertEqual(unlocks, 3)
+        presses = 0
+        let late = AudioClaims.pressWhenSettled(lock: { _ in true }, unlock: {}, pending: { true }, deadlineMs: nowMs() + 20, pauseMs: 1) {
+            presses += 1; return .success
+        }
+        XCTAssertEqual(late, .invalidUIElement)
+        XCTAssertEqual(presses, 0)
+        XCTAssertEqual(AudioClaims.pressWhenSettled(lock: { _ in false }, unlock: {}, pending: { false }, deadlineMs: nowMs() + 20) { .success }, .cannotComplete)
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {
