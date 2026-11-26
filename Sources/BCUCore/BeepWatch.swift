@@ -160,34 +160,59 @@ public final class BeepWatch {
 
     /// One of the agent's input steps: when it ran, and the key it
     /// pressed (for the note), if it pressed one.
+    /// Input a session sent: when, to which processes (an open or save
+    /// panel's service as well as the app), the key if it was one, and the
+    /// call it was part of. For a step that waited its turn in the app (the
+    /// user typing, another agent's step), only the moment it sent counts.
     public struct Step {
         public let start: Date
-        public var end: Date
+        public let end: Date
         public let key: String?
-        public init(start: Date, end: Date, key: String?) { self.start = start; self.end = end; self.key = key }
+        public let pids: Set<pid_t>
+        public let owner: String
+        /// When the call it was part of began.
+        public let call: Date
+        public init(start: Date, end: Date, key: String?, pids: Set<pid_t>, owner: String, call: Date) {
+            self.start = start; self.end = end; self.key = key; self.pids = pids; self.owner = owner; self.call = call
+        }
     }
 
-    /// Which of `beeps` the agent's steps set off, each with the step: from
-    /// an app it acted on, at a moment one of its input steps ran, or
-    /// shortly after one (the app beeps once it has handled the key: 0.2 s
-    /// after it in TextEdit). A beep at any other time is the user's own.
-    public static func agents(_ beeps: [Beep], pids: Set<pid_t>, steps: [Step], tail: TimeInterval = 1.0) -> [(beep: Beep, step: Step)] {
+    private var steps: [Step] = []
+
+    /// Every session's input goes here, so a beep is put down to one step.
+    public func record(_ step: Step) {
+        lock.lock(); defer { lock.unlock() }
+        steps.append(step)
+        let cutoff = Date().addingTimeInterval(-60)
+        if steps.count > 200 || steps.first.map({ $0.end < cutoff }) == true {
+            steps = steps.filter { $0.end >= cutoff }.suffix(200)
+        }
+    }
+
+    public var recentSteps: [Step] { lock.lock(); defer { lock.unlock() }; return steps }
+
+    /// Which of `beeps` `owner`'s input set off, each with its step. A beep
+    /// goes to the latest input to its process (any session's) that it
+    /// came during or up to `tail` after (the app beeps once it has handled
+    /// the key: 0.2 s after it in TextEdit), and counts only if that input
+    /// was `owner`'s. A beep with no such input is the user's own.
+    public static func agents(_ beeps: [Beep], steps: [Step], owner: String, tail: TimeInterval = 1.0) -> [(beep: Beep, step: Step)] {
         beeps.compactMap { b in
-            guard pids.contains(b.pid) else { return nil }
-            // The latest step it can be from.
-            let step = steps.last { b.at >= $0.start.addingTimeInterval(-0.05) && b.at <= $0.end.addingTimeInterval(tail) }
-            return step.map { (b, $0) }
+            let step = steps.filter { $0.pids.contains(b.pid) && b.at >= $0.start.addingTimeInterval(-0.05) && b.at <= $0.end.addingTimeInterval(tail) }
+                .max { $0.start < $1.start }
+            guard let step, step.owner == owner else { return nil }
+            return (b, step)
         }
     }
 
     /// The step result's note for the beeps it set off (and any from the
     /// step before, logged after it returned).
-    /// `current`: the step this note goes with; beeps from an earlier step
-    /// (logged after it returned) are put down to that step's key.
+    /// `current`: when the call this note goes with began; beeps from an
+    /// earlier call (logged after it returned) are put down to its key.
     public static func note(_ found: [(beep: Beep, step: Step)], current: Date) -> String? {
         guard !found.isEmpty else { return nil }
-        let now = found.filter { $0.step.start == current }
-        let earlier = found.filter { $0.step.start != current }
+        let now = found.filter { $0.step.call == current }
+        let earlier = found.filter { $0.step.call != current }
         var parts: [String] = []
         if !now.isEmpty { parts.append(note(now.map(\.beep), key: now[0].step.key)!) }
         if !earlier.isEmpty {

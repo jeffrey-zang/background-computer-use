@@ -25,40 +25,63 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertNil(BeepWatch.parse(line: Data(#"{"eventMessage":"Start of stream"}"#.utf8), seq: 1))
     }
 
-    func testOnlyTheAgentsAppsDuringItsStepsCount() {
-        let t0 = Date()
-        let step = BeepWatch.Step(start: t0, end: t0.addingTimeInterval(0.35), key: "escape")
-        func beep(_ dt: TimeInterval, pid: pid_t = 62902) -> BeepWatch.Beep {
-            BeepWatch.Beep(at: t0.addingTimeInterval(dt), pid: pid, app: "TextEdit", action: 4096, seq: 1)
-        }
-        // During the step, and just after it (the app handles the key late).
-        XCTAssertEqual(BeepWatch.agents([beep(0.17), beep(0.9)], pids: [62902], steps: [step]).count, 2)
-        // Another app, the user's.
-        XCTAssertTrue(BeepWatch.agents([beep(0.17, pid: 1)], pids: [62902], steps: [step]).isEmpty)
-        // Long after the step, or before it: the user's own.
-        XCTAssertTrue(BeepWatch.agents([beep(3), beep(-1)], pids: [62902], steps: [step]).isEmpty)
-        XCTAssertTrue(BeepWatch.agents([beep(0.17)], pids: [62902], steps: []).isEmpty)
+    func step(_ t0: Date, _ from: TimeInterval, _ to: TimeInterval, key: String? = "escape", pids: Set<pid_t> = [62902], owner: String = "a", call: Date? = nil) -> BeepWatch.Step {
+        BeepWatch.Step(start: t0.addingTimeInterval(from), end: t0.addingTimeInterval(to), key: key, pids: pids, owner: owner, call: call ?? t0.addingTimeInterval(from))
+    }
+    func beep(_ t0: Date, _ dt: TimeInterval, pid: pid_t = 62902, seq: Int = 1) -> BeepWatch.Beep {
+        BeepWatch.Beep(at: t0.addingTimeInterval(dt), pid: pid, app: "TextEdit", action: 4096, seq: seq)
     }
 
-    /// A beep logged after its step returned goes to that step's key, not
+    func testOnlyTheAgentsAppsDuringItsStepsCount() {
+        let t0 = Date()
+        let s = [step(t0, 0, 0.35)]
+        // During the step, and just after it (the app handles the key late).
+        XCTAssertEqual(BeepWatch.agents([beep(t0, 0.17), beep(t0, 0.9)], steps: s, owner: "a").count, 2)
+        // Another app, the user's.
+        XCTAssertTrue(BeepWatch.agents([beep(t0, 0.17, pid: 1)], steps: s, owner: "a").isEmpty)
+        // Long after the step, or before it: the user's own.
+        XCTAssertTrue(BeepWatch.agents([beep(t0, 3), beep(t0, -1)], steps: s, owner: "a").isEmpty)
+        XCTAssertTrue(BeepWatch.agents([beep(t0, 0.17)], steps: [], owner: "a").isEmpty)
+    }
+
+    /// A beep logged after its call returned goes to that call's key, not
     /// to the call that finds it.
     func testALateBeepIsPutDownToItsOwnStep() {
         let t0 = Date()
-        let escape = BeepWatch.Step(start: t0, end: t0.addingTimeInterval(0.3), key: "escape")
-        let save = BeepWatch.Step(start: t0.addingTimeInterval(2), end: t0.addingTimeInterval(2.3), key: "cmd+s")
-        let b = BeepWatch.Beep(at: t0.addingTimeInterval(0.2), pid: 7, app: "TextEdit", action: 4096, seq: 1)
-        let found = BeepWatch.agents([b], pids: [7], steps: [escape, save])
+        let escape = step(t0, 0, 0.3), save = step(t0, 2, 2.3, key: "cmd+s")
+        let found = BeepWatch.agents([beep(t0, 0.2)], steps: [escape, save], owner: "a")
         XCTAssertEqual(found.first?.step.key, "escape")
-        let note = BeepWatch.note(found, current: save.start)!
+        let note = BeepWatch.note(found, current: save.call)!
         XCTAssertTrue(note.hasPrefix("After your previous step: TextEdit beeped"), note)
         XCTAssertTrue(note.contains("escape most likely did nothing"), note)
         XCTAssertFalse(note.contains("cmd+s"), note)
-        // Found by its own step: no "previous".
-        let own = BeepWatch.note(found, current: escape.start)!
-        XCTAssertTrue(own.hasPrefix("TextEdit beeped"), own)
-        // Overlapping windows: the latest step it fits.
-        let b2 = BeepWatch.Beep(at: t0.addingTimeInterval(2.1), pid: 7, app: "TextEdit", action: 4096, seq: 2)
-        XCTAssertEqual(BeepWatch.agents([b2], pids: [7], steps: [BeepWatch.Step(start: t0, end: t0.addingTimeInterval(1.5), key: "escape"), save]).first?.step.key, "cmd+s")
+        // Found by its own call: no "previous".
+        XCTAssertTrue(BeepWatch.note(found, current: escape.call)!.hasPrefix("TextEdit beeped"))
+        // Overlapping windows: the latest input it fits.
+        XCTAssertEqual(BeepWatch.agents([beep(t0, 2.1)], steps: [step(t0, 0, 1.5), save], owner: "a").first?.step.key, "cmd+s")
+    }
+
+    /// Two sessions in one app: a beep goes to the one whose input it
+    /// followed, not also to one that was waiting its turn meanwhile.
+    func testTwoSessionsInOneAppReportItOnce() {
+        let t0 = Date()
+        // b's call began at 0 but waited for a's step; it sent at 2.
+        let a = step(t0, 1.0, 1.2, owner: "a")
+        let b = step(t0, 2.0, 2.2, key: "return", owner: "b", call: t0)
+        let found = beep(t0, 1.15)
+        XCTAssertEqual(BeepWatch.agents([found], steps: [a, b], owner: "a").count, 1)
+        XCTAssertTrue(BeepWatch.agents([found], steps: [a, b], owner: "b").isEmpty)
+        // b's own beep, during its sending, is b's even within a's tail.
+        let late = beep(t0, 2.1)
+        XCTAssertEqual(BeepWatch.agents([late], steps: [a, b], owner: "b").first?.step.key, "return")
+        XCTAssertTrue(BeepWatch.agents([late], steps: [a, b], owner: "a").isEmpty)
+    }
+
+    /// Keys sent to an open or save panel's service: its beeps count.
+    func testAPanelServiceBeepCounts() {
+        let t0 = Date()
+        let s = [step(t0, 0, 0.3, pids: [62902, 777])]
+        XCTAssertEqual(BeepWatch.agents([beep(t0, 0.2, pid: 777)], steps: s, owner: "a").count, 1)
     }
 
     func testNoteNamesTheAppAndTheKey() {
