@@ -2079,15 +2079,32 @@ public final class WindowManager {
     /// another session's sweep).
     func registerCaught(_ w: AgentWindow) -> Bool {
         Self.claimLock.lock(); defer { Self.claimLock.unlock() }
-        guard !Self.isKept(w.id) else { return false }
-        // Nor while a handout in that app is pending and the window is new
-        // since it began: it may be the moved tab's (the sweep's look at the
-        // reservations can predate it). Left for a later sweep to tell.
-        Self.sharedLock.lock()
-        let pending = Self.lateHandouts[w.pid]
-        Self.sharedLock.unlock()
-        guard !Self.mayBeLateHandout(id: w.id, pendingBefore: pending?.before) else { return false }
+        guard !Self.catchRefused(id: w.id, pid: w.pid) else { return false }
         register(w)
+        return true
+    }
+
+    /// Whether a window can't be caught: it's been kept as the user's, or a
+    /// handout in that app is pending and the window is new since it began
+    /// (it may be the moved tab's; the sweep's look at the reservations can
+    /// predate it, so it's left for a later sweep to tell).
+    static func catchRefused(id: CGWindowID, pid: pid_t) -> Bool {
+        if isKept(id) { return true }
+        sharedLock.lock()
+        let pending = lateHandouts[pid]
+        sharedLock.unlock()
+        return mayBeLateHandout(id: id, pendingBefore: pending?.before)
+    }
+
+    /// Catch a window off the user's screen: take it (`register`, which
+    /// decides under `claimLock` whether it may be caught) first, and only
+    /// then move it (`place`). A refused catch leaves the window where it
+    /// is: the user's, or placed by another session's late-handout worker.
+    /// Once registered, a late handout can't claim it (`claimLateHandout`).
+    @discardableResult
+    static func catchThenPlace(register: () -> Bool, place: () -> Void) -> Bool {
+        guard register() else { return false }
+        place()
         return true
     }
 
@@ -2495,13 +2512,19 @@ public final class WindowManager {
             // will find it listed with that window's elements), another
             // window to the next free place.
             let dialog = info.layer > 0 || AX.string(ax, "AXSubrole") != "AXStandardWindow"
-            if dialog, let about = agent.values.filter({ $0.pid == info.pid && !$0.handedOff }).compactMap({ WindowList.info($0.id)?.bounds }).first {
-                AX.setPosition(ax, CGPoint(x: about.midX - info.bounds.width / 2, y: about.minY + 80))
-            } else {
-                moveToAgent(ax, size: info.bounds.size)
-            }
             let app = NSRunningApplication(processIdentifier: info.pid)
-            guard registerCaught(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught)) else { continue }
+            // Taken before it's moved: a catch refused (kept as the user's,
+            // or maybe a pending handout's) mustn't pull it off their screen.
+            let caught = Self.catchThenPlace(
+                register: { registerCaught(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught)) },
+                place: {
+                    if dialog, let about = agent.values.filter({ $0.pid == info.pid && !$0.handedOff }).compactMap({ WindowList.info($0.id)?.bounds }).first {
+                        AX.setPosition(ax, CGPoint(x: about.midX - info.bounds.width / 2, y: about.minY + 80))
+                    } else {
+                        moveToAgent(ax, size: info.bounds.size)
+                    }
+                })
+            guard caught else { continue }
             focusGuard.record("caught a new \(app?.localizedName ?? info.owner) \(dialog ? "dialog" : "window") on your display and moved it to the agent display")
         }
 

@@ -243,6 +243,28 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.isKept(990_102))
     }
 
+    /// A catch off the user's screen is decided before the window moves: a
+    /// window kept as the user's (a late handout's, claimed by another
+    /// session) or one new since a pending handout began is refused, and
+    /// a refused catch never positions it.
+    func testARefusedCatchLeavesTheWindowWhereItIs() {
+        let pid: pid_t = 99_105
+        WindowManager.keep(990_501)
+        XCTAssertTrue(WindowManager.catchRefused(id: 990_501, pid: pid))
+        WindowManager.setLateHandoutForTesting(pid: pid, before: [990_502], untilMs: nowMs() + 5000)
+        XCTAssertFalse(WindowManager.catchRefused(id: 990_502, pid: pid))
+        XCTAssertTrue(WindowManager.catchRefused(id: 990_503, pid: pid))
+        _ = WindowManager.takeLateHandout(pid: pid, untilMs: WindowManager.lateHandoutUntil(pid) ?? 0)
+        XCTAssertFalse(WindowManager.catchRefused(id: 990_503, pid: pid))
+
+        var placed = 0
+        XCTAssertFalse(WindowManager.catchThenPlace(register: { false }, place: { placed += 1 }))
+        XCTAssertEqual(placed, 0)
+        var order: [String] = []
+        XCTAssertTrue(WindowManager.catchThenPlace(register: { order.append("register"); return true }, place: { order.append("place") }))
+        XCTAssertEqual(order, ["register", "place"])
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {
