@@ -708,7 +708,9 @@ public final class FocusGuard {
         let me = getpid()
         var dock: [pid_t: Bool] = [:]
         let displays = displayBounds()
-        return all.filter { $0.pid != me && $0.alpha > 0 }.map { w in
+        // Not the pointer itself: it's a window of its own, right where the click is.
+        let pointer = Int(CGWindowLevelForKey(.cursorWindow))
+        return all.filter { $0.pid != me && $0.alpha > 0 && $0.layer < pointer }.map { w in
             let isDock = dock[w.pid] ?? (NSRunningApplication(processIdentifier: w.pid)?.bundleIdentifier == "com.apple.dock")
             dock[w.pid] = isDock
             let covers = displays.contains { d in w.bounds.width >= d.width && w.bounds.height >= d.height }
