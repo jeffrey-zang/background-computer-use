@@ -49,6 +49,14 @@ public final class WindowManager {
     private var knownBefore: [pid_t: (ids: Set<CGWindowID>, ms: Double, window: CGWindowID?)] = [:]
     private var nextSlot = 0
     private var watchdog: Timer?
+    /// Windows released while their app wasn't answering accessibility (busy
+    /// or hung): still open and still this session's, so nothing forgets
+    /// them. The sweep finishes each release (closes it, or gives a borrowed
+    /// one back) once the app answers. The value is the `keepOpen` asked for.
+    private var releaseWhenAnswering: [CGWindowID: Bool] = [:]
+    private var lastReleaseRetryMs = 0.0
+    private var retryingReleases = false
+    private static let releaseRetryQueue = DispatchQueue(label: "bcu.release-retry", qos: .utility)
 
     init(display: AgentDisplay, focusGuard: FocusGuard, sessionKey: String) {
         self.display = display
@@ -148,7 +156,7 @@ public final class WindowManager {
     }
 
     func unregister(_ id: CGWindowID) {
-        lock.lock(); registry[id] = nil; registeredAt[id] = nil; lock.unlock()
+        lock.lock(); registry[id] = nil; registeredAt[id] = nil; releaseWhenAnswering[id] = nil; lock.unlock()
         Self.sharedLock.lock()
         if Self.registeredAnywhere[id]?.session == sessionKey { Self.registeredAnywhere[id] = nil }
         Self.sharedLock.unlock()
@@ -1030,8 +1038,14 @@ public final class WindowManager {
                 unregister(id)
                 return "window \(id) is already gone"
             }
-            throw ToolError("\(w.appName) isn't answering right now, so window \(id) is still open. It may be showing a dialog that has to be answered first (list_windows shows a dialog of yours). Try again in a moment.")
+            // Throwing here left the window open with nobody coming back for
+            // it: the agent gave up on it and opened another, and the one it
+            // gave up on stayed (issue #99). It stays the session's, and the
+            // sweep finishes the release once the app answers.
+            lock.lock(); releaseWhenAnswering[id] = keepOpen; lock.unlock()
+            return Self.deferredReleaseText(app: w.appName, id: id, borrowed: w.kind == .borrowed, keepOpen: keepOpen)
         }
+        lock.lock(); releaseWhenAnswering[id] = nil; lock.unlock()
         focusGuard.unpark(w.pid, window: id, reason: "window released")
         noteBefore(pid: w.pid, window: id)
         focusGuard.beginAction(pid: w.pid, cause: "releasing a window")
@@ -1122,6 +1136,52 @@ public final class WindowManager {
                 return "window \(id) didn't close: \(w.appName) is asking \"\(said.joined(separator: " "))\" (\(buttons.map(\.title).joined(separator: " / "))). The dialog is over window \(id) on your display now: get_window_state window_id=\(id) lists its buttons. Press one, then release again."
             }
             return "window \(id) didn't close. A dialog may be asking something (unsaved changes?): check get_window_state, answer it, then release again."
+        }
+    }
+
+    /// What `release` says of a window whose app isn't answering.
+    static func deferredReleaseText(app: String, id: CGWindowID, borrowed: Bool, keepOpen: Bool) -> String {
+        let then = borrowed ? "puts it back where it was" : keepOpen ? "leaves it open on the user's screen" : "closes it"
+        return "\(app) isn't answering right now (busy or hung), so window \(id) is still open. BCU \(then) as soon as \(app) answers again; you don't need to release it again. If you still need \(app), wait for it before opening another window: a new one may hang the same way."
+    }
+
+    /// What the sweep does with a window released while its app wasn't
+    /// answering: `listed` in the window server, `reachable` over accessibility.
+    enum DeferredRelease: Equatable { case wait, forget, finish }
+    static func deferredReleaseStep(listed: Bool, reachable: Bool, userInControl: Bool) -> DeferredRelease {
+        if !listed { return .forget }
+        // (While the user drives the display, release_window is refused too.)
+        return reachable && !userInControl ? .finish : .wait
+    }
+
+    /// Finish the releases `release` couldn't (see `releaseWhenAnswering`):
+    /// asked once a second, off the sweep's thread, since asking an app that
+    /// isn't answering waits out accessibility's timeout.
+    private func retryDeferredReleases() {
+        lock.lock()
+        let now = nowMs()
+        guard !releaseWhenAnswering.isEmpty, !retryingReleases, now - lastReleaseRetryMs >= 1000 else { lock.unlock(); return }
+        retryingReleases = true
+        lastReleaseRetryMs = now
+        let pending = releaseWhenAnswering
+        lock.unlock()
+        Self.releaseRetryQueue.async { [weak self] in
+            guard let self else { return }
+            defer { self.lock.lock(); self.retryingReleases = false; self.lock.unlock() }
+            for (id, keepOpen) in pending {
+                guard let w = self.window(id), !w.handedOff else { continue }
+                let listed = WindowList.info(id) != nil
+                let reachable = listed && AX.window(pid: w.pid, id: id) != nil
+                switch Self.deferredReleaseStep(listed: listed, reachable: reachable, userInControl: self.userArranging) {
+                case .wait: continue
+                case .forget:
+                    self.unregister(id)
+                    Log.info("\(w.appName) window \(id), released while \(w.appName) wasn't answering, is gone")
+                case .finish:
+                    let said = (try? self.release(id, keepOpen: keepOpen)) ?? "window \(id): failed"
+                    Log.info("\(w.appName) answers again, so its released window was dealt with: \(said)")
+                }
+            }
         }
     }
 
@@ -1559,6 +1619,7 @@ public final class WindowManager {
         lock.unlock()
         defer { lock.lock(); sweeping = false; lock.unlock() }
         guard display.isRunning else { return }
+        retryDeferredReleases()
 
         let onScreen = WindowList.all(onScreenOnly: true)
 
