@@ -1789,7 +1789,9 @@ public final class WindowManager {
         let userIn = BCUFrontProcessPID() == w.pid
         // The user's window in the browser, when they're in it: key goes
         // back there before their held keys are replayed.
-        let userKey = userIn ? focusGuard.userWindow(of: w.pid) : nil
+        // Asked whether or not they're in it now: they may come to it while
+        // the move runs (a cmd+Tab), and their keys then belong there.
+        let userKey = focusGuard.userWindow(of: w.pid)
         let before = Set(WindowList.of(pid: w.pid).map(\.id))
         let inWindow = AX.window(pid: w.pid, id: w.id).flatMap(Self.tabs(of:))?.contains { CFEqual($0, tab) } ?? false
         lock.lock(); let current = registry[w.id]; lock.unlock()
@@ -1877,9 +1879,12 @@ public final class WindowManager {
             let movedBy = nowMs() + 300
             while nowMs() < movedBy, let b = WindowList.info(made)?.bounds, AgentDisplay.containing(CGPoint(x: b.midX, y: b.midY)) != nil { sleepMs(15) }
         }
+        // In the browser now, or since the move began.
+        let userInNow = userIn || BCUFrontProcessPID() == w.pid
         if let scope {
-            if userIn { scope.exit() } else { scope.handOff(to: made) }
-        } else if let back = Self.keyAfterTabMenuMove(userIn: userIn, userKey: userKey, made: made), AX.focusedWindowID(w.pid) != back {
+            if userInNow { scope.exit() } else { scope.handOff(to: made) }
+        } else if let back = Self.keyAfterTabMenuMove(userIn: userInNow, userKey: userKey, made: made),
+                  AX.focusedWindowID(w.pid) != back {
             // Not in the browser: the new window (the user's) gets key, as
             // the browser counts the window that last had key as its current
             // one and opens the next link from another app there. In it: the
@@ -1889,7 +1894,7 @@ public final class WindowManager {
         }
         focusGuard.endSwap(w.pid); swapping = false
         let placed = settleOnUserScreen(pid: w.pid, id: made)
-        if userIn { focusGuard.scheduleReclaim(w.pid) }
+        if userInNow { focusGuard.scheduleReclaim(w.pid) }
         focusGuard.record("another app opened a tab in your agent's \(w.appName) window; it's in a window of yours on your screen now")
         Log.info("tabs: moved a tab another app opened in the agent's \(w.appName) window \(w.id) to window \(made) (with \(route))\(placed ? " on the user's screen" : " (couldn't move it to the user's screen)")")
         return .handedOut
