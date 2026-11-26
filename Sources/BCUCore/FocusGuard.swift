@@ -164,6 +164,8 @@ public final class FocusGuard {
         /// The app whose ordinary window was on top at the point in the
         /// look at the user's screens from before the click (`screenOrder`).
         var wasIn: pid_t?
+        /// That window.
+        var wasInWindow: CGWindowID = 0
     }
     private var lastClick = Click(ms: -.infinity, point: .zero, target: .app(nil))
     /// Agents' apps put back though the user had just clicked elsewhere,
@@ -193,8 +195,6 @@ public final class FocusGuard {
     /// The app the gate took the last click to be in (`lookedOwner`), nil
     /// if it let everyone through.
     private var gateClickOn: pid_t?
-    /// And the window of its the gate took the click to be in.
-    private var gateClickWindow: CGWindowID = 0
     /// When the gate last kept each app back for a click in another app's window.
     private var keptOnClick: [pid_t: Double] = [:]
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
@@ -751,16 +751,10 @@ public final class FocusGuard {
     /// topmost ordinary window there in the last look at the user's screens
     /// (`ClickTarget.gateOwner`). nil without a look from the last 400 ms.
     private func lookedOwner(at p: CGPoint) -> pid_t? {
-        lookedWindow(at: p)?.pid
-    }
-
-    /// The window `lookedOwner` goes by.
-    private func lookedWindow(at p: CGPoint) -> ScreenWindow? {
         lock.lock()
         let order = nowMs() - screenOrderMs < Self.lookFreshMs ? screenOrder : nil
         lock.unlock()
-        guard let order, let pid = Self.owner(in: order, at: p) else { return nil }
-        return order.first { $0.pid == pid && $0.layer == 0 && $0.bounds.contains(p) }
+        return order.flatMap { Self.owner(in: $0, at: p) }
     }
 
     /// How old a look at the screen may be to say where a click went.
@@ -1037,8 +1031,12 @@ public final class FocusGuard {
                     || (self.userFrontPid != user && self.userFrontPid != pid)
                 self.lock.unlock()
                 guard current else { return }
+                // The window the look from before had there counts only while
+                // it's still over the spot: one the click closed or minimized
+                // leaves the app's window under it really clicked.
+                let coverStays = now.wasInWindow != 0 && (WindowList.info(now.wasInWindow).map { $0.onScreen && $0.bounds.contains(now.point) } ?? false)
                 let left = Attribution.Left(credit: credit, front: BCUFrontProcessPID() == pid, movedOn: movedOn, acting: Attribution.acting(f),
-                                            clickTarget: now.target, clickWasIn: now.wasIn, switcherOpen: switcher, switchToo: switchToo)
+                                            clickTarget: now.target, clickWasIn: coverStays ? now.wasIn : nil, switcherOpen: switcher, switchToo: switchToo)
                 guard Attribution.revert(left, pid: pid) else {
                     if left.front && !movedOn && left.acting { look(i + 1) } else {
                         self.lock.lock(); if self.rechecking[pid] == atMs { self.rechecking[pid] = nil }; self.lock.unlock()
@@ -1673,13 +1671,12 @@ public final class FocusGuard {
             // have windows): asking the window server here could hold up
             // every event on the Mac. Also before a step begins: a step that
             // begins within the lift is kept back from the click on.
-            let looked = lookedWindow(at: event.location)
-            let on = looked?.pid
+            let on = lookedOwner(at: event.location)
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
             // Only a plain left click on a Dock icon brings its app forward
             // (a right or control click opens its menu).
             let activates = type == .leftMouseDown && !event.flags.contains(.maskControl)
-            lock.lock(); gateClickOn = activates ? on : nil; gateClickWindow = looked?.id ?? 0; lock.unlock()
+            lock.lock(); gateClickOn = activates ? on : nil; lock.unlock()
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             gate.pointer(down: false, ms: Self.clickLiftMs)
         case .keyDown:
@@ -2005,8 +2002,10 @@ public final class FocusGuard {
         lock.lock()
         let look = screenLook
         // Only from a fresh look: an old one may show other windows there.
-        let wasIn = (ms - screenOrderMs < Self.lookFreshMs ? screenOrder : nil).flatMap { Self.owner(in: $0, at: p) }
-        lastClick = Click(ms: ms, point: p, windows: look, wasIn: wasIn)
+        let fresh = ms - screenOrderMs < Self.lookFreshMs ? screenOrder : nil
+        let wasIn = fresh.flatMap { Self.owner(in: $0, at: p) }
+        let wasInWindow = wasIn.flatMap { pid in fresh?.first { $0.pid == pid && $0.layer == 0 && $0.bounds.contains(p) }?.id } ?? 0
+        lastClick = Click(ms: ms, point: p, windows: look, wasIn: wasIn, wasInWindow: wasInWindow)
         lock.unlock()
         // The window list first, on its own queue, and accessibility for
         // each click on its own (at most 300 ms): a busy app's slow answer
@@ -2034,7 +2033,7 @@ public final class FocusGuard {
                 guard current else { return }
                 let (target, element) = Self.whatWasClicked(at: p, listed: fallback)
                 self.lock.lock()
-                let gateOn = self.gateClickOn, gateWindow = self.gateClickWindow
+                let gateOn = self.gateClickOn
                 if self.lastClick.ms == ms {
                     // (settleClick may have given up waiting and gone by the
                     // window list; what comes after goes by this.)
@@ -2042,7 +2041,7 @@ public final class FocusGuard {
                     self.lastClick.element = element
                 }
                 self.lock.unlock()
-                self.finishKeptSwitch(target, gateOn: gateOn, gateWindow: gateWindow, at: p, clickMs: ms)
+                self.finishKeptSwitch(target, gateOn: gateOn, clickMs: ms)
             }
         }
     }
@@ -2050,19 +2049,16 @@ public final class FocusGuard {
     /// The gate kept the apps an agent is acting on back for a click it took
     /// to be in another app's window, from a look at the screen up to 400 ms
     /// old, but accessibility says it was on one of their Dock icons (the
-    /// Dock came up over that spot since the look) or one of their windows
-    /// (the one covering it there went away since): the user asked for that
-    /// app. Bring it forward, as the click would have.
-    private func finishKeptSwitch(_ target: ClickTarget, gateOn: pid_t?, gateWindow: CGWindowID, at point: CGPoint, clickMs: Double) {
+    /// Dock came up over that spot since the look): the user asked for that
+    /// app. Bring it forward, as the Dock would have. (Not for an answer
+    /// naming one of the app's windows: a click that closed or minimized the
+    /// window over it, or the app raising its own over the spot, reads the
+    /// same. A click on a window exposed since the look that the gate kept
+    /// back works the next time, from a fresh look.)
+    private func finishKeptSwitch(_ target: ClickTarget, gateOn: pid_t?, clickMs: Double) {
         let app: pid_t
         switch target {
         case .dock(let p?) where p > 0: app = p
-        case .app(let p?) where p > 0:
-            // Only if the window the gate went by is no longer there over
-            // the spot: the app raising one of its own over it since is the
-            // race the re-check undoes (`Attribution.revert`), not a switch.
-            if gateWindow != 0, let w = WindowList.info(gateWindow), w.onScreen, w.bounds.contains(point) { return }
-            app = p
         default: return
         }
         guard let gateOn, gateOn != app, gate.acting.contains(app) else { return }
@@ -2079,7 +2075,7 @@ public final class FocusGuard {
             self.noteUserSwitch()
             _ = BCUSetFrontProcess(app, 0, 0x200)
             let name = NSRunningApplication(processIdentifier: app)?.localizedName ?? "pid \(app)"
-            self.record("your click was on \(name) (\(target == .dock(app) ? "its Dock icon" : "its window")), which the gate had kept back; brought \(name) forward")
+            self.record("your click was on \(name)'s Dock icon, which the gate had kept back; brought \(name) forward")
         }
     }
 
