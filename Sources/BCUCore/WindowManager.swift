@@ -1064,11 +1064,15 @@ public final class WindowManager {
                 // Kept open for the user to see: on their screen, since
                 // nothing brings it off this display later (and a spare
                 // display with a window on it is never removed).
+                // Under the lock a sweep's catch places with: not moved back
+                // to this display by one that registered it a moment ago.
+                Self.claimLock.lock()
                 Self.keep(id)
                 lock.lock(); seenOnUser[id] = -1; spawnedAfter[id] = nil; lock.unlock()
                 unregister(id)
+                let moved = w.withUser ? false : (WindowList.info(id).map { Self.putOnUserScreen(ax, bounds: $0.bounds) } ?? false)
+                Self.claimLock.unlock()
                 if w.withUser { return "left window \(id) open on the user's screen" }
-                let moved = WindowList.info(id).map { Self.putOnUserScreen(ax, bounds: $0.bounds) } ?? false
                 return moved ? "left window \(id) open and moved it to the user's screen" : "left window \(id) open"
             }
             let before = Set(AX.windows(w.pid).compactMap { AX.windowID($0) })
@@ -2079,11 +2083,18 @@ public final class WindowManager {
     /// Register a window a sweep caught, unless it's been kept as the
     /// user's since the sweep looked (a late handout's window, claimed by
     /// another session's sweep).
-    func registerCaught(_ w: AgentWindow) -> Bool {
+    func registerCaught(_ w: AgentWindow) -> Bool { catchAndPlace(w) {} }
+
+    /// Register a caught window and move it (`place`) in one step under
+    /// `claimLock`, which `release(keepOpen:)` takes too: a release can't
+    /// keep it for the user between the two, and have it moved back here.
+    func catchAndPlace(_ w: AgentWindow, place: () -> Void) -> Bool {
         Self.claimLock.lock(); defer { Self.claimLock.unlock() }
-        guard !Self.catchRefused(id: w.id, pid: w.pid) else { return false }
-        register(w)
-        return true
+        return Self.catchThenPlace(register: {
+            guard !Self.catchRefused(id: w.id, pid: w.pid) else { return false }
+            register(w)
+            return true
+        }, place: place)
     }
 
     /// Whether a window can't be caught: it's been kept as the user's, or a
@@ -2135,6 +2146,17 @@ public final class WindowManager {
         defer { unlock() }
         body()
         return true
+    }
+
+    /// How long a late move's key restore waits for the app's input lock,
+    /// once the first, held wait has run out.
+    static let lateRestoreWaitMs = 10_000.0
+
+    /// A late move's key restore: tried now (`now`, with the user's input
+    /// held); if it couldn't run (the app's lock wasn't had in time), put
+    /// off (`later`) rather than dropped.
+    static func lateRestore(now: () -> Bool, later: () -> Void) {
+        if !now() { later() }
     }
 
     /// The user's window to give key back to after a late move: the one the
@@ -2247,15 +2269,10 @@ public final class WindowManager {
                     // Their keys are held from now, not from when the lock
                     // comes: a step in the app (an accessibility-only one
                     // starts no swap) can hold it a while, and meanwhile
-                    // their typing would go to the detached tab. Waited for
-                    // `maxHoldMs` at most; not had by then, key is left alone
-                    // (the holder is mid-step in the app and hands key back
-                    // itself), never changed under another step's feet.
+                    // their typing would go to the detached tab. Held for
+                    // `maxHoldMs` at most; never changed without the lock.
                     let appLock = Engine.inputLock(pid)
-                    let ran = Self.holdThenLock(hold: { self.focusGuard.beginSwap(pid) },
-                                                lock: { appLock.lock(before: Date().addingTimeInterval(FocusGuard.maxHoldMs / 1000)) },
-                                                unlock: { appLock.unlock() },
-                                                release: { self.focusGuard.endSwap(pid) }) {
+                    func restore() {
                         // Looked at again with the lock: the user may have
                         // moved on (another window, another app) meanwhile.
                         if let now = Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: target() ?? back, keyNow: AX.focusedWindowID(pid), made: id),
@@ -2263,7 +2280,30 @@ public final class WindowManager {
                             Log.info("tabs: couldn't confirm key on window \(now) after a late move")
                         }
                     }
-                    if !ran { Log.info("tabs: a step in pid \(pid) kept its input lock; key left alone after a late move") }
+                    Self.lateRestore(
+                        now: {
+                            Self.holdThenLock(hold: { self.focusGuard.beginSwap(pid) },
+                                              lock: { appLock.lock(before: Date().addingTimeInterval(FocusGuard.maxHoldMs / 1000)) },
+                                              unlock: { appLock.unlock() },
+                                              release: { self.focusGuard.endSwap(pid) }, body: restore)
+                        },
+                        later: {
+                            // Not had in time: the user's keys go free, and
+                            // the restore waits for the lock on its own (an
+                            // accessibility-only step won't hand key back
+                            // when it's done), then is decided afresh.
+                            Log.info("tabs: a step in pid \(pid) kept its input lock; key goes back after a late move once it's done")
+                            DispatchQueue.global(qos: .utility).async {
+                                let ran = Self.holdThenLock(hold: {},
+                                                            lock: { appLock.lock(before: Date().addingTimeInterval(Self.lateRestoreWaitMs / 1000)) },
+                                                            unlock: { appLock.unlock() }, release: {}) {
+                                    self.focusGuard.beginSwap(pid)
+                                    defer { self.focusGuard.endSwap(pid) }
+                                    restore()
+                                }
+                                if !ran { Log.info("tabs: pid \(pid)'s input lock stayed taken; key left alone after a late move") }
+                            }
+                        })
                 }
                 let placed = settleOnUserScreen(pid: pid, id: id)
                 focusGuard.record("another app opened a tab in your agent's \(owner) window; it's in a window of yours now")
@@ -2559,8 +2599,7 @@ public final class WindowManager {
             let app = NSRunningApplication(processIdentifier: info.pid)
             // Taken before it's moved: a catch refused (kept as the user's,
             // or maybe a pending handout's) mustn't pull it off their screen.
-            let caught = Self.catchThenPlace(
-                register: { registerCaught(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught)) },
+            let caught = catchAndPlace(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught),
                 place: {
                     if dialog, let about = agent.values.filter({ $0.pid == info.pid && !$0.handedOff }).compactMap({ WindowList.info($0.id)?.bounds }).first {
                         AX.setPosition(ax, CGPoint(x: about.midX - info.bounds.width / 2, y: about.minY + 80))

@@ -301,6 +301,16 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.menuBarMoveMayPress(selected: nil, keyNow: 7, source: 7))
     }
 
+    /// A late move's key restore that couldn't have the app's lock in time
+    /// is put off, not dropped; one that ran isn't repeated.
+    func testALateRestoreThatTimedOutIsPutOff() {
+        var later = 0
+        WindowManager.lateRestore(now: { false }, later: { later += 1 })
+        XCTAssertEqual(later, 1)
+        WindowManager.lateRestore(now: { true }, later: { later += 1 })
+        XCTAssertEqual(later, 1)
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {
