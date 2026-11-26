@@ -811,12 +811,11 @@ public final class AgentDisplay {
     }
 
     /// Some user display is awake (macOS only rearranges displays then).
+    /// Not "active": a user display mirroring the agent display isn't, and
+    /// that's just when this is asked.
     static var userDisplaysAwake: Bool {
-        var ids = [CGDirectDisplayID](repeating: 0, count: 32)
-        var count: UInt32 = 0
-        CGGetActiveDisplayList(32, &ids, &count)
         let agents = Set(running.map(\.displayID))
-        return ids.prefix(Int(count)).contains { !agents.contains($0) && !isBCUDisplay($0) }
+        return onlineDisplayIDs().contains { !agents.contains($0) && !isBCUDisplay($0) && CGDisplayIsAsleep($0) == 0 }
     }
 
     /// The user display that was main before an agent display took that
