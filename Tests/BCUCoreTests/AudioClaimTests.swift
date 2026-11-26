@@ -31,6 +31,20 @@ final class AudioClaimTests: XCTestCase {
         XCTAssertNil(c.muteLook(1))
     }
 
+    /// An element is armed only on a claim that's still there.
+    func testArmNeverRevivesAClaim() {
+        let c = AudioClaims()
+        let el = AXUIElementCreateApplication(getpid())
+        c.add(claim(2, pid: 10))
+        XCTAssertFalse(c.isArmed(2))
+        c.arm(2, mute: el, muteName: "element 5", look: "Mute This Tab")
+        XCTAssertTrue(c.isArmed(2))
+        XCTAssertEqual(c.muteLook(2), "Mute This Tab")
+        c.remove(2)
+        c.arm(2, mute: el, muteName: "element 5", look: "x")
+        XCTAssertFalse(c.has(2))
+    }
+
     func testKeyInTheAppEndsItsClaims() {
         let c = AudioClaims()
         c.add(claim(1, pid: 100)); c.add(claim(2, pid: 100)); c.add(claim(3, pid: 200))

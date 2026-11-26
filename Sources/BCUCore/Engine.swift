@@ -1749,8 +1749,13 @@ public final class Engine {
         }
         let label = mute.flatMap { n in [AX.string(n.element, "AXTitle"), AX.string(n.element, "AXDescription")].compactMap { $0 }.first { !$0.isEmpty } }
         let muteName = mute.map { "element \($0.index)" + (label.map { " \"\($0)\"" } ?? "") } ?? ""
-        audioClaims.add(AudioClaims.Claim(window: w.id, pid: w.pid, appName: w.appName, mute: mute?.element, muteName: muteName,
-                                          muteLook: mute.map { AudioClaims.look($0.element) }))
+        // A tab still muted from the window's opening: the element it named
+        // (its tab toggle, say) would unmute it if pressed now. It's armed
+        // once the tab is unmuted for the recording (`unmuteForRecording`).
+        let armLater = mute != nil && mutedTabs.contains(w.id)
+        audioClaims.add(AudioClaims.Claim(window: w.id, pid: w.pid, appName: w.appName, mute: armLater ? nil : mute?.element,
+                                          muteName: armLater ? "" : muteName,
+                                          muteLook: armLater ? nil : mute.map { AudioClaims.look($0.element) }))
         focusGuard.onUserInput(for: "audio-\(sessionID)") { [weak self] input in
             self?.audioClaims.userInput(input) { hit, why in self?.giveSoundBack(hit, why: why) }
         }
@@ -1758,7 +1763,7 @@ public final class Engine {
         if renewing {
             // An unmute that couldn't be told the first time (another tab
             // was selected) can be done now.
-            let unmuted = unmuteForRecording(w, mute: mute)
+            let unmuted = unmuteForRecording(w, mute: mute, muteName: muteName)
             return ToolResult(text: (mute == nil ? "\(w.appName) is still muted on the user's speakers." : "\(w.appName) is still muted on the user's speakers; when the user starts using it, \(muteName) is pressed to silence yours.") + unmuted)
         }
         audio.routeNow(audioApps())
@@ -1774,7 +1779,7 @@ public final class Engine {
             if tabMuted(w) == true { return ToolResult(text: Self.mutedTabOnly(w, why: "\(w.appName)'s sound can't be recorded: \(why)")) }
             throw ToolError("\(w.appName)'s sound can't be kept off the user's speakers: \(why). Don't play sound in it; if the task needs sound, tell the user.")
         }
-        let unmuted = unmuteForRecording(w, mute: mute)
+        let unmuted = unmuteForRecording(w, mute: mute, muteName: muteName)
         if agentsOnly {
             return ToolResult(text: "Only agents have windows in \(w.appName), so its sound stays off the user's speakers and is recorded to \(audio.url.path)\(opening). Play it now.\(unmuted)")
         }
@@ -1790,8 +1795,13 @@ public final class Engine {
     /// sound: only while the claim still holds when the tab's turn comes
     /// (the user may take the app back while the step waits for them). What
     /// to tell the agent.
-    private func unmuteForRecording(_ w: AgentWindow, mute: AXNode?) -> String {
+    private func unmuteForRecording(_ w: AgentWindow, mute: AXNode?, muteName: String) -> String {
         guard mutedTabs.contains(w.id) else { return "" }
+        // The tab plays out loud from here (once unmuted): only then may the
+        // named element silence it when the user takes the app back.
+        func arm() {
+            if let m = mute { audioClaims.arm(w.id, mute: m.element, muteName: muteName, look: AudioClaims.look(m.element)) }
+        }
         // Only once the tap mutes it and the recorder reads it: before
         // Safari opens its audio (or if tapping it failed), the tab is all
         // that keeps it off the speakers.
@@ -1807,11 +1817,14 @@ public final class Engine {
             // what it reads while the sound plays is what giving the app back
             // compares with. Only a claim still there: the user may have
             // ended it meanwhile.
-            if let m = mute { audioClaims.refreshLook(w.id, AudioClaims.look(m.element)) }
+            arm()
             return " Your tab, muted when the window opened, is unmuted so its sound is recorded."
         case nil:
             return " Your window has more than one tab, and the one you play in may still be muted from when the window opened, which would leave your recording silent: once it plays, call this again and it's unmuted if it is."
         case false?:
+            // Not muted after all (Safari says so while it plays).
+            mutedTabs.remove(w.id)
+            arm()
             return ""
         }
     }
@@ -1895,6 +1908,17 @@ public final class Engine {
         return Self.tabMuted(button: button, tabs: tabs, recorded: mutedTabs.contains(w.id))
     }
 
+    /// Every tab of the window muted: a single tab, read as muted.
+    private func windowMuted(_ w: AgentWindow) -> Bool {
+        guard let ax = AX.window(pid: w.pid, id: w.id) else { return false }
+        let (button, tabs) = Self.tabControls(ax)
+        return Self.windowMuted(button: button, tabs: tabs, recorded: mutedTabs.contains(w.id))
+    }
+
+    static func windowMuted(button: String?, tabs: Int, recorded: Bool) -> Bool {
+        tabs <= 1 && tabMuted(button: button, tabs: tabs, recorded: recorded) == true
+    }
+
     static func tabMuted(button: String?, tabs: Int, recorded: Bool) -> Bool? {
         if let b = button { return unmuteTabTitles.contains(b) }
         guard recorded else { return false }
@@ -1943,7 +1967,10 @@ public final class Engine {
             let mine = windows.windows.filter { $0.pid == pid }
             guard let name = mine.first?.appName else { return nil }
             let shared = onAgent[pid] != true || mine.contains(where: \.withUser)
-            let states = mine.map { ($0, tabMuted($0)) }
+            // Quiet only for a window whose every tab is muted: the state
+            // read is the selected tab's, so a window with several tabs
+            // stays eligible for the warning.
+            let states = mine.map { ($0, windowMuted($0)) }
             // Routed is not enough: the tap mutes only while the recorder
             // reads it, and the recorder can fail after the tap is made.
             let muting = routed.contains(pid) && NSRunningApplication(processIdentifier: pid).map { audio.state(of: $0) == .muted } == true

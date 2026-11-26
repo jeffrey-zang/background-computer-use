@@ -70,6 +70,15 @@ final class AgentAudioDefaultTests: XCTestCase {
         XCTAssertEqual(Engine.tabMuted(button: nil, tabs: 2, recorded: false), false)
     }
 
+    /// Warnings stay quiet only when every tab is muted: the button read
+    /// is the selected tab's.
+    func testOnlyASingleMutedTabSilencesTheWarning() {
+        XCTAssertTrue(Engine.windowMuted(button: "Unmute This Tab", tabs: 1, recorded: true))
+        XCTAssertTrue(Engine.windowMuted(button: nil, tabs: 0, recorded: true))
+        XCTAssertFalse(Engine.windowMuted(button: "Unmute This Tab", tabs: 2, recorded: true))
+        XCTAssertFalse(Engine.windowMuted(button: nil, tabs: 1, recorded: false))
+    }
+
     func testTabMenuTitles() {
         XCTAssertEqual(Engine.muteTabTitles, ["Mute This Tab"])
         XCTAssertEqual(Engine.unmuteTabTitles, ["Unmute This Tab"])

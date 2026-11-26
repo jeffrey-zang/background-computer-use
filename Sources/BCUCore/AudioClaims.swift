@@ -67,6 +67,18 @@ final class AudioClaims {
         claims[window]?.muteLook = look
     }
 
+    /// Give a claim that's still there the element that silences the
+    /// agent's sound (never brings back one the user ended).
+    func arm(_ window: CGWindowID, mute: AXUIElement, muteName: String, look: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard let c = claims[window] else { return }
+        claims[window] = Claim(window: c.window, pid: c.pid, appName: c.appName, mute: mute, muteName: muteName, muteLook: look)
+    }
+
+    func isArmed(_ window: CGWindowID) -> Bool {
+        lock.lock(); defer { lock.unlock() }; return claims[window]?.mute != nil
+    }
+
     func muteLook(_ window: CGWindowID) -> String? {
         lock.lock(); defer { lock.unlock() }; return claims[window]?.muteLook
     }
