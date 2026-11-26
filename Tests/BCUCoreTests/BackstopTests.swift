@@ -9,7 +9,7 @@ import CoreGraphics
 final class BackstopTests: XCTestCase {
     func testADisplayIsDisabledBeforeItIsLetGoOf() {
         var steps: [String] = []
-        AgentDisplay.remove(77, disable: { steps.append("disable \($0)") }, release: { steps.append("release") })
+        AgentDisplay.remove(77, generation: 0, disable: { steps.append("disable \($0)") }, release: { steps.append("release") })
         XCTAssertEqual(steps, ["disable 77", "release"])
     }
 }

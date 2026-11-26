@@ -31,6 +31,8 @@ public final class AgentDisplay {
     public private(set) var slot = 0
 
     private var display: BCUVirtualDisplay?
+    /// The `DisplayOwners` claim on `displayID`, let go of with it.
+    private var ownerGeneration: UInt64 = 0
 
     // MARK: All agent displays
 
@@ -415,6 +417,7 @@ public final class AgentDisplay {
         let width: Int
         let height: Int
         let sinceMs: Double
+        let ownerGeneration: UInt64
     }
     private static var spares: [Spare] = []
     /// How long a display nobody uses is kept before it's removed.
@@ -466,7 +469,7 @@ public final class AgentDisplay {
         guard !gone.isEmpty else { return }
         let before = noteUserWindows()
         for s in gone {
-            Self.remove(s.id, disable: { _ = BCUDisableDisplay($0) }, release: s.display.invalidate)
+            Self.remove(s.id, generation: s.ownerGeneration, disable: { _ = BCUDisableDisplay($0) }, release: s.display.invalidate)
             Log.info("agent display \(s.slot + 1) (\(s.id)) removed: no agent has needed it for a while")
         }
         for d in running { d.reconfigured() }
@@ -479,10 +482,10 @@ public final class AgentDisplay {
     /// few days; each one slows every window list that includes desktop
     /// elements). Disabled first, it leaves none of its own: the next
     /// display takes over the one there is.
-    static func remove(_ id: CGDirectDisplayID, disable: (CGDirectDisplayID) -> Void, release: () -> Void) {
+    static func remove(_ id: CGDirectDisplayID, generation: UInt64, disable: (CGDirectDisplayID) -> Void, release: () -> Void) {
         disable(id)
         release()
-        DisplayOwners.release(id)
+        DisplayOwners.release(id, generation: generation)
     }
 
     /// Spare displays there are (for the status line and tests).
@@ -588,12 +591,13 @@ public final class AgentDisplay {
         if let spare, !CGDisplayBounds(spare.id).isEmpty {
             display = spare.display
             displayID = spare.id
+            ownerGeneration = spare.ownerGeneration
             self.slot = spare.slot
             reused = true
             register()
             return
         }
-        if let spare { Self.remove(spare.id, disable: { _ = BCUDisableDisplay($0) }, release: spare.display.invalidate) }
+        if let spare { Self.remove(spare.id, generation: spare.ownerGeneration, disable: { _ = BCUDisableDisplay($0) }, release: spare.display.invalidate) }
         reused = false
         Self.noteChange()
         self.slot = slot
@@ -616,7 +620,7 @@ public final class AgentDisplay {
         }
         display = vd
         displayID = vd.displayID
-        DisplayOwners.claim(displayID)
+        ownerGeneration = DisplayOwners.claim(displayID)
         register()
     }
 
@@ -708,7 +712,7 @@ public final class AgentDisplay {
         defer { unreserve() }
         guard let vd = display else { return }
         display = nil
-        let id = displayID
+        let id = displayID, generation = ownerGeneration
         displayID = 0
         bounds = .zero
         // Kept for the next agent, and in any case while an agent is at work
@@ -717,7 +721,7 @@ public final class AgentDisplay {
         let keep = !remove && (Self.spareLifeMs > 0 || holdsPlace) && !CGDisplayBounds(id).isEmpty && !Self.userDisplayIDs().isEmpty
         Self.registryLock.lock()
         Self.registry.removeAll { $0.display == nil || $0.display === self }
-        if keep { Self.spares.append(Spare(display: vd, id: id, slot: slot, width: width, height: height, sinceMs: nowMs())) }
+        if keep { Self.spares.append(Spare(display: vd, id: id, slot: slot, width: width, height: height, sinceMs: nowMs(), ownerGeneration: generation)) }
         Self.strayCache.atMs = -1; Self.fencedCache.atMs = -1
         Self.registryLock.unlock()
         if keep {
@@ -725,7 +729,7 @@ public final class AgentDisplay {
             return
         }
         let before = Self.noteUserWindows()
-        Self.remove(id, disable: { _ = BCUDisableDisplay($0) }, release: vd.invalidate)
+        Self.remove(id, generation: generation, disable: { _ = BCUDisableDisplay($0) }, release: vd.invalidate)
         Log.info("agent display \(slot + 1) (\(id)) removed")
         // The ones after it move up the staircase.
         for d in Self.running { d.reconfigured() }

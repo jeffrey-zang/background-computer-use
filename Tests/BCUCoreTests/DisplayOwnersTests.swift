@@ -57,11 +57,25 @@ final class DisplayOwnersTests: XCTestCase {
     func testOnlyTheOwnerRemovesTheRecord() throws {
         let (p, owner) = try otherEngine()
         defer { p.terminate() }
-        DisplayOwners.claim(905, as: owner)
-        DisplayOwners.release(905)
+        let generation = DisplayOwners.claim(905, as: owner)
+        DisplayOwners.release(905, generation: generation)
         XCTAssertEqual(DisplayOwners.owner(of: 905), owner, "this process didn't make it")
-        DisplayOwners.release(905, as: owner)
+        DisplayOwners.release(905, generation: generation, as: owner)
         XCTAssertNil(DisplayOwners.owner(of: 905))
+    }
+
+    /// One session lets go of display 907 while another session of the
+    /// same engine has been given 907 again and claimed it: the old
+    /// release mustn't take the new claim's record.
+    func testALateReleaseLeavesThisEnginesNewClaimOfTheSameID() {
+        let old = DisplayOwners.claim(907)
+        let new = DisplayOwners.claim(907)
+        XCTAssertNotEqual(old, new)
+        DisplayOwners.release(907, generation: old)
+        XCTAssertEqual(DisplayOwners.record(of: 907)?.generation, new, "the replacement's record stays")
+        XCTAssertEqual(DisplayOwners.owner(of: 907), DisplayOwners.me)
+        DisplayOwners.release(907, generation: new)
+        XCTAssertNil(DisplayOwners.owner(of: 907))
     }
 
     func testTheRecordsAreInTheUsersTempDirectoryNotBCUHome() {

@@ -57,31 +57,43 @@ enum DisplayOwners {
         return body()
     }
 
-    /// This process made display `id`.
-    static func claim(_ id: CGDirectDisplayID, as owner: Owner? = me) {
-        guard id != 0, let owner else { return }
+    private static let generationLock = NSLock()
+    private static var lastGeneration: UInt64 = 0
+
+    /// This process made display `id`. Returns the claim's generation, for
+    /// `release`: this engine can be given the same ID again (one session
+    /// lets go of its display while another makes one), and only the claim
+    /// that's being let go of may take the record with it.
+    @discardableResult
+    static func claim(_ id: CGDirectDisplayID, as owner: Owner? = me) -> UInt64 {
+        generationLock.lock(); lastGeneration += 1; let generation = lastGeneration; generationLock.unlock()
+        guard id != 0, let owner else { return generation }
         withLock {
-            try? Data("\(owner.pid) \(owner.start)\n".utf8).write(to: file(id), options: .atomic)
+            try? Data("\(owner.pid) \(owner.start) \(generation)\n".utf8).write(to: file(id), options: .atomic)
         }
+        return generation
     }
 
-    /// Display `id` is gone. Only our own record goes: another engine may
-    /// have been given the same ID since. Checked and deleted under the
-    /// lock, so a claim can't land between the two.
-    static func release(_ id: CGDirectDisplayID, as owner: Owner? = me) {
+    /// Display `id`, claimed as `generation`, is gone. Only that claim's
+    /// record goes: another engine, or another session of this one, may have
+    /// been given the same ID since. Checked and deleted under the lock, so
+    /// a claim can't land between the two.
+    static func release(_ id: CGDirectDisplayID, generation: UInt64, as owner: Owner? = me) {
         guard id != 0, let owner else { return }
         withLock {
-            guard self.owner(of: id) == owner else { return }
+            guard let r = record(of: id), r.owner == owner, r.generation == generation else { return }
             try? FileManager.default.removeItem(at: file(id))
         }
     }
 
     /// Who recorded display `id`, alive or not.
-    static func owner(of id: CGDirectDisplayID) -> Owner? {
+    static func owner(of id: CGDirectDisplayID) -> Owner? { record(of: id)?.owner }
+
+    static func record(of id: CGDirectDisplayID) -> (owner: Owner, generation: UInt64)? {
         guard let text = try? String(contentsOf: file(id), encoding: .utf8) else { return nil }
         let parts = text.split(whereSeparator: \.isWhitespace)
-        guard parts.count == 2, let pid = pid_t(parts[0]), let start = UInt64(parts[1]) else { return nil }
-        return Owner(pid: pid, start: start)
+        guard parts.count == 3, let pid = pid_t(parts[0]), let start = UInt64(parts[1]), let generation = UInt64(parts[2]) else { return nil }
+        return (Owner(pid: pid, start: start), generation)
     }
 
     /// The live engine that owns display `id`, if one does. Nil: nobody
