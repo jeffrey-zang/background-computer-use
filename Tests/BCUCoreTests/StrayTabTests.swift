@@ -220,4 +220,26 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.lateHandoutNeedsTitle(stepSince: true, title: "X - Google Chrome"))
         XCTAssertFalse(WindowManager.lateHandoutNeedsTitle(stepSince: false, title: nil))
     }
+
+    /// The automatic handout waits for a held key or button, a menu, typing
+    /// and a password field, like a step that takes key does.
+    func testTheHandoutWaitsForTheUsersInput() {
+        XCTAssertNil(WindowManager.handoutBlocker(focusSensitive: nil, secureInput: false, typing: false))
+        XCTAssertEqual(WindowManager.handoutBlocker(focusSensitive: nil, secureInput: true, typing: false), QuietWait.secureReason)
+        XCTAssertEqual(WindowManager.handoutBlocker(focusSensitive: "the user to let go of the mouse button", secureInput: false, typing: false),
+                       "the user to let go of the mouse button")
+        XCTAssertEqual(WindowManager.handoutBlocker(focusSensitive: nil, secureInput: false, typing: true), QuietWait.typingReason)
+    }
+
+    /// Taking the reservation and keeping the window happen together: a
+    /// second claim finds the reservation gone and the window kept.
+    func testALateHandoutIsClaimedAndKeptInOneStep() {
+        let pid: pid_t = 99_101
+        let until = nowMs() + 5000
+        WindowManager.setLateHandoutForTesting(pid: pid, before: [], untilMs: until)
+        XCTAssertTrue(WindowManager.claimLateHandout(pid: pid, untilMs: until, id: 990_101))
+        XCTAssertTrue(WindowManager.isKept(990_101))
+        XCTAssertFalse(WindowManager.claimLateHandout(pid: pid, untilMs: until, id: 990_102))
+        XCTAssertFalse(WindowManager.isKept(990_102))
+    }
 }

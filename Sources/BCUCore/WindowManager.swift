@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import BCUShared
 import CPrivate
 
@@ -1769,6 +1770,16 @@ public final class WindowManager {
         focusGuard.beginSwap(w.pid)
         var swapping = true
         defer { if swapping { focusGuard.endSwap(w.pid) } }
+        // Not while the user holds a key or a button (a drag), has a menu
+        // open, types, or has a password field (macOS hides those keys, and
+        // a swap would reorder them): moving key or opening a menu would
+        // break it. The next check tries again.
+        let quiet = focusGuard.activity.snapshot
+        if Self.handoutBlocker(focusSensitive: QuietWait.focusSensitive(quiet, menuOpen: QuietWait.menus(pid: w.pid).any),
+                               secureInput: IsSecureEventInputEnabled(),
+                               typing: QuietWait.typing(quiet, now: nowMs())) != nil {
+            return .later
+        }
         let userIn = BCUFrontProcessPID() == w.pid
         // The user's window in the browser, when they're in it: key goes
         // back there before their held keys are replayed.
@@ -1925,6 +1936,39 @@ public final class WindowManager {
         sharedLock.lock(); lateHandouts[pid] = (before, untilMs, title); sharedLock.unlock()
     }
 
+    /// Taking a late handout's window for the user and catching a window as
+    /// a session's happen under this lock, so neither runs between the
+    /// other's check and its change: once the reservation is taken the
+    /// window is already kept, and a window caught first isn't taken.
+    private static let claimLock = NSLock()
+
+    /// Take the pending handout for `pid` (see `takeLateHandout`) and keep
+    /// window `id` as the user's, in one step; false if it's registered or
+    /// the reservation is gone.
+    static func claimLateHandout(pid: pid_t, untilMs: Double, id: CGWindowID) -> Bool {
+        claimLock.lock(); defer { claimLock.unlock() }
+        guard !isRegistered(id), takeLateHandout(pid: pid, untilMs: untilMs) else { return false }
+        keep(id)
+        return true
+    }
+
+    /// Register a window a sweep caught, unless it's been kept as the
+    /// user's since the sweep looked (a late handout's window, claimed by
+    /// another session's sweep).
+    func registerCaught(_ w: AgentWindow) -> Bool {
+        Self.claimLock.lock(); defer { Self.claimLock.unlock() }
+        guard !Self.isKept(w.id) else { return false }
+        register(w)
+        return true
+    }
+
+    /// What keeps the automatic handout from starting now, if anything.
+    static func handoutBlocker(focusSensitive: String?, secureInput: Bool, typing: Bool) -> String? {
+        if secureInput { return QuietWait.secureReason }
+        if let focusSensitive { return focusSensitive }
+        return typing ? QuietWait.typingReason : nil
+    }
+
     /// Remove the pending handout for `pid` if it's still the one with this
     /// deadline: true for the one caller that gets it.
     static func takeLateHandout(pid: pid_t, untilMs: Double) -> Bool {
@@ -1967,8 +2011,7 @@ public final class WindowManager {
             // Taken once: the same pending handout (still there, the one
             // this sweep saw) can't also claim another window, in this
             // sweep or another session's.
-            guard Self.takeLateHandout(pid: info.pid, untilMs: late[info.pid]!.untilMs) else { continue }
-            Self.keep(info.id)
+            guard Self.claimLateHandout(pid: info.pid, untilMs: late[info.pid]!.untilMs, id: info.id) else { continue }
             // Placed as an on-time handout's window is: the browser moves it
             // next to the agent's a moment after showing it.
             let (pid, id, owner) = (info.pid, info.id, info.owner)
@@ -2045,7 +2088,11 @@ public final class WindowManager {
             _ = AX.perform(menu, "AXCancel")
             return nil
         }
-        return AX.perform(item, "AXPress")
+        let pressed = AX.perform(item, "AXPress")
+        // Pressed nothing: the menu would stay up on the agent display,
+        // taking the keys replayed once the swap ends.
+        if !menuPressMayHaveRun(pressed) { _ = AX.perform(menu, "AXCancel") }
+        return pressed
     }
 
     /// A context menu open in the app: a child of the app or of one of its
@@ -2185,7 +2232,7 @@ public final class WindowManager {
                 guard age >= Self.agentSettleMs, let ax = AX.window(pid: info.pid, id: info.id),
                       ["AXStandardWindow", "AXDialog", "AXSystemDialog"].contains(AX.string(ax, "AXSubrole") ?? "") else { continue }
                 let app = NSRunningApplication(processIdentifier: info.pid)
-                register(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught))
+                guard registerCaught(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught)) else { continue }
                 lock.lock(); seenOnAgent[info.id] = -1e12; lock.unlock()
                 Log.info("session \(sessionKey.prefix(8)): \(info.owner) window \(info.id) came up on the agent display after this session's step in that app; it's the session's now")
                 continue
@@ -2267,7 +2314,7 @@ public final class WindowManager {
                 moveToAgent(ax, size: info.bounds.size)
             }
             let app = NSRunningApplication(processIdentifier: info.pid)
-            register(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught))
+            guard registerCaught(AgentWindow(id: info.id, pid: info.pid, appName: app?.localizedName ?? info.owner, bundleID: app?.bundleIdentifier, kind: .caught)) else { continue }
             focusGuard.record("caught a new \(app?.localizedName ?? info.owner) \(dialog ? "dialog" : "window") on your display and moved it to the agent display")
         }
 
