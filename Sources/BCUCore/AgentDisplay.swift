@@ -801,9 +801,45 @@ public final class AgentDisplay {
         return retina
     }
 
+    /// The displays to take out of mirroring so the agent display mirrors
+    /// nothing and nothing mirrors it: itself when it mirrors a display, and
+    /// each display that mirrors it. `mirrorOf` is what each online display
+    /// mirrors (0: none).
+    static func unmirrorTargets(agent: CGDirectDisplayID, mirrorOf: [CGDirectDisplayID: CGDirectDisplayID]) -> [CGDirectDisplayID] {
+        mirrorOf.filter { id, of in of != 0 && (id == agent || of == agent) }.map(\.key).sorted()
+    }
+
+    /// A user display mirroring the agent display (Control Center's Screen
+    /// Mirroring, a mirroring shortcut, or a mirror set macOS remembered)
+    /// takes on its 1600x1000 mode: the user's screen shrinks to that, at the
+    /// wrong shape on a screen that isn't 16:10 (measured on macOS 26.1: the
+    /// built-in display went from 1680x1050 to 1600x1000 and stayed so while
+    /// the agent display was there), and macOS fits the user's windows to it.
+    /// The other way round, the agent display sits on top of the user's
+    /// screen. Undo it before anything else; a mode set while mirrored is
+    /// the whole mirror set's.
+    private func unmirror() {
+        var mirrorOf: [CGDirectDisplayID: CGDirectDisplayID] = [:]
+        for id in Self.onlineDisplayIDs() { mirrorOf[id] = CGDisplayMirrorsDisplay(id) }
+        let targets = Self.unmirrorTargets(agent: displayID, mirrorOf: mirrorOf)
+        guard !targets.isEmpty else { return }
+        var config: CGDisplayConfigRef?
+        CGBeginDisplayConfiguration(&config)
+        for id in targets { CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay) }
+        let err = CGCompleteDisplayConfiguration(config, .forSession)
+        Self.noteChange()
+        // (A failure repeated every second is logged once.)
+        if err == .success || err != lastUnmirrorError {
+            Log.info("agent display \(slot + 1) (\(displayID)) was mirrored (displays \(targets.map(String.init).joined(separator: ", "))); \(err == .success ? "stopped the mirroring" : "stopping it failed: \(err.rawValue)")")
+        }
+        lastUnmirrorError = err
+    }
+    private var lastUnmirrorError: CGError = .success
+
     /// Put the display at its place, and into `mode` if given, in one
     /// configuration: each one macOS completes rearranges every display.
     fileprivate func place(mode: CGDisplayMode? = nil) {
+        unmirror()
         userBounds = computeUserBounds()
         let origin = anchor().flatMap { abs($0.x) < 1e6 && abs($0.y) < 1e6 ? $0 : nil }
         let current = CGDisplayBounds(displayID)
@@ -911,7 +947,9 @@ public final class AgentDisplay {
             return
         }
         let accepted = adjusted.map { $0.wanted == wanted && $0.got == b.origin } ?? false
-        if unplaced || user != userBounds || (b.origin != wanted && !accepted) {
+        // Mirrored since it was placed (see `unmirror`).
+        let mirrored = CGDisplayIsInMirrorSet(displayID) != 0
+        if unplaced || mirrored || user != userBounds || (b.origin != wanted && !accepted) {
             let was = unplaced
             unplaced = false
             place()

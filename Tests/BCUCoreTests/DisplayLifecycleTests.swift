@@ -91,6 +91,22 @@ final class DisplayLifecycleTests: XCTestCase {
         XCTAssertEqual(most.value, 1, "displays were being made at the same time")
     }
 
+    /// A user display mirroring the agent display takes its 1600x1000 mode
+    /// (issue #97): that display is taken out of the mirroring.
+    func testAUserDisplayMirroringTheAgentDisplayIsFreed() {
+        XCTAssertEqual(AgentDisplay.unmirrorTargets(agent: 50, mirrorOf: [1: 50, 50: 0]), [1])
+    }
+
+    /// The agent display mirroring the user's sits on their screen: it's freed.
+    func testTheAgentDisplayMirroringAUserDisplayIsFreed() {
+        XCTAssertEqual(AgentDisplay.unmirrorTargets(agent: 50, mirrorOf: [1: 0, 50: 1]), [50])
+    }
+
+    /// Mirroring between the user's own displays is theirs: left alone.
+    func testTheUsersOwnMirroringIsLeftAlone() {
+        XCTAssertEqual(AgentDisplay.unmirrorTargets(agent: 50, mirrorOf: [1: 0, 2: 1, 50: 0]), [])
+    }
+
     func testNoDisplayNoCorner() {
         XCTAssertNil(AgentDisplay.corner(of: []))
         XCTAssertNil(AgentDisplay.corner(of: [.null]))
