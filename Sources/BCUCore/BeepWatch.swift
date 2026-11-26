@@ -129,7 +129,7 @@ public final class BeepWatch {
     private func pruneRecent() {
         let cutoff = Date().addingTimeInterval(-60)
         guard recent.count > 256 || recent.first.map({ $0.at < cutoff }) == true else { return }
-        let pending = { (b: Beep) in self.assigned[b.seq].map(self.pendingStep) == true }
+        let pending = { (b: Beep) in self.unread(b.seq, at: b.at) }
         let others = recent.filter { !pending($0) && $0.at >= cutoff }.suffix(256)
         recent = (recent.filter(pending) + others).sorted { $0.seq < $1.seq }
     }
@@ -138,6 +138,19 @@ public final class BeepWatch {
     /// been looked at yet. An earlier call of the same session has.
     private func pendingStep(_ step: Step) -> Bool {
         calls[step.owner].map { step.call >= $0 } == true
+    }
+
+    /// How far each session has read the beeps (`attribute`), and the
+    /// session a beep is for when that's known (assigned, or held back on
+    /// arrival for a call under way).
+    private var readUpTo: [String: Int] = [:]
+    private var ownerOf: [Int: String] = [:]
+
+    /// Under `lock`. A beep its session hasn't read yet: kept past the
+    /// minute and the cap (up to 10 minutes, for a session that went away).
+    private func unread(_ seq: Int, at: Date) -> Bool {
+        guard let owner = assigned[seq]?.owner ?? ownerOf[seq] else { return false }
+        return seq > readUpTo[owner, default: 0] && Date().timeIntervalSince(at) < 600
     }
 
     /// Calls under way, by session: when each began.
@@ -160,6 +173,7 @@ public final class BeepWatch {
     /// when that call looks.
     private func assignOnArrival(_ b: Beep) {
         guard let step = Self.agents([b], steps: steps, owner: nil).first?.step else { return }
+        ownerOf[b.seq] = step.owner
         if let c = calls[step.owner], c <= b.at, step.call < c { return }
         assigned[b.seq] = step
     }
@@ -256,7 +270,8 @@ public final class BeepWatch {
             steps = steps.filter { $0.end >= cutoff }.suffix(200)
         }
         // The last 200, and any for a call still under way (it hasn't looked).
-        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 || pendingStep($0.value) } }
+        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 || pendingStep($0.value) || $0.key > readUpTo[$0.value.owner, default: 0] } }
+        if ownerOf.count > 400 { ownerOf = ownerOf.filter { $0.key > nextSeq - 200 || $0.key > readUpTo[$0.value, default: 0] } }
     }
 
     /// Which input each beep was put down to, once some session has: later
@@ -267,6 +282,7 @@ public final class BeepWatch {
     /// it was first put down to.
     public func attribute(_ beeps: [Beep], owner: String, tail: TimeInterval = 1.0) -> [(beep: Beep, step: Step)] {
         lock.lock(); defer { lock.unlock() }
+        if let last = beeps.map(\.seq).max() { readUpTo[owner] = max(readUpTo[owner, default: 0], last) }
         var out: [(beep: Beep, step: Step)] = []
         for b in beeps {
             let step: Step

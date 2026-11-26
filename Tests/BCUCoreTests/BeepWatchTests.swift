@@ -192,6 +192,24 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertLessThanOrEqual(w.beeps(after: 0).count, 257)
     }
 
+    /// A beep logged after its call returned, while the next call runs on,
+    /// is kept until the session reads it, past the cap.
+    func testALateBeepIsKeptUntilRead() {
+        let w = BeepWatch()
+        let t0 = Date()
+        let first = t0.addingTimeInterval(-1)
+        w.record(BeepWatch.Step(start: first, end: t0.addingTimeInterval(-0.9), key: "escape", pids: [62902], owner: "a", call: first))
+        let start = w.lastSeq
+        // The next call has begun; the first call's beep arrives late.
+        w.beginCall("a", at: t0.addingTimeInterval(-0.85))
+        w.inject((t0.addingTimeInterval(-0.8), 62902, "TextEdit", 4096))
+        for _ in 0..<300 { w.inject((Date(), 1, "Finder", 16)) }
+        let found = w.attribute(w.beeps(after: start), owner: "a")
+        XCTAssertEqual(found.count, 1)
+        XCTAssertEqual(found.first?.step.key, "escape")
+        w.endCall("a")
+    }
+
     /// Completed input is pruned on the begin/finish path too.
     func testFinishPrunes() {
         let w = BeepWatch()
