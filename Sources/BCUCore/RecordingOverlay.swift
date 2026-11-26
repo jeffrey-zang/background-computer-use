@@ -150,7 +150,8 @@ public enum RecordingOverlay {
         let rec = line("REC  \(RecordingText.clock(t))", font(20 * u, bold: true), CGColor(gray: 1, alpha: 1))
         let labelLine = line(RecordingText.clip(label, 40), font(17 * u, bold: false), CGColor(gray: 1, alpha: 0.85))
         let boxW = max(width(rec) + 52 * u, width(labelLine) + 28 * u)
-        let box = CGRect(x: W - boxW - 16 * u, y: H - 16 * u - 66 * u, width: boxW, height: 66 * u)
+        // Below the menu bar, which has the clock in that corner.
+        let box = CGRect(x: W - boxW - 16 * u, y: H - 44 * u - 66 * u, width: boxW, height: 66 * u)
         ctx.setFillColor(CGColor(gray: 0.06, alpha: 0.78))
         ctx.addPath(CGPath(roundedRect: box, cornerWidth: 12 * u, cornerHeight: 12 * u, transform: nil)); ctx.fillPath()
         ctx.setFillColor(red)

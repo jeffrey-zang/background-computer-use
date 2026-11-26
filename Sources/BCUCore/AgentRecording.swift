@@ -104,24 +104,29 @@ public final class AgentRecording {
         var points = CGSize(width: display.bounds.width, height: display.bounds.height)
         if let windowID, let wb = WindowList.info(windowID)?.bounds { points = wb.size }
         size = Self.videoSize(points)
-        let start = nowMs()
-        startMs = start
-        steps = StepLog(redactAll: redactAll) { nowMs() - start }
 
-        writer = try AVAssetWriter(outputURL: dir.appendingPathComponent("raw.mp4"), fileType: .mp4)
-        input = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(size, bitrate: 10_000_000))
-        input.expectsMediaDataInRealTime = true
-        input.mediaTimeScale = 1000
-        writer.movieTimeScale = 1000
-        adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+        let w = try AVAssetWriter(outputURL: dir.appendingPathComponent("raw.mp4"), fileType: .mp4)
+        let inp = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(size, bitrate: 10_000_000))
+        inp.expectsMediaDataInRealTime = true
+        inp.mediaTimeScale = 1000
+        w.movieTimeScale = 1000
+        let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: inp, sourcePixelBufferAttributes: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey as String: Int(size.width),
             kCVPixelBufferHeightKey as String: Int(size.height),
         ])
-        guard writer.canAdd(input) else { throw ToolError("couldn't set up the video writer") }
-        writer.add(input)
-        guard writer.startWriting() else { throw ToolError("couldn't start the video: \(writer.error.map { "\($0)" } ?? "unknown error")") }
-        writer.startSession(atSourceTime: .zero)
+        guard w.canAdd(inp) else { throw ToolError("couldn't set up the video writer") }
+        w.add(inp)
+        guard w.startWriting() else { throw ToolError("couldn't start the video: \(w.error.map { "\($0)" } ?? "unknown error")") }
+        w.startSession(atSourceTime: .zero)
+        writer = w
+        input = inp
+        adaptor = ad
+        // The video's clock starts once the writer is ready (setting it up
+        // can take a second), with the first frame.
+        let start = nowMs()
+        startMs = start
+        steps = StepLog(redactAll: redactAll) { nowMs() - start }
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now(), repeating: 1.0 / Double(self.fps), leeway: .milliseconds(5))
         t.setEventHandler { [weak self] in self?.tick() }
@@ -254,7 +259,9 @@ public final class AgentRecording {
     /// Reads `raw` back frame by frame, draws the steps over each and writes `out`.
     private func render(raw: URL, to out: URL, maps: [(t: Int64, map: FrameMapping)], steps all: [RecordedStep], endMs: Double) throws {
         let asset = AVURLAsset(url: raw)
-        guard let track = asset.tracks(withMediaType: .video).first else { throw ToolError("the raw video has no frames") }
+        guard let track = try Capture.blocking(timeoutMs: 30_000, { try await asset.loadTracks(withMediaType: .video) }).first else {
+            throw ToolError("the raw video has no frames")
+        }
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
         output.alwaysCopiesSampleData = false
