@@ -199,6 +199,8 @@ public final class FocusGuard {
     private var keptOnClick: [pid_t: Double] = [:]
     /// When macOS last said the active Space changed (or a display came or went).
     private var spaceChangedMs = -Double.infinity
+    /// Where the user's last mouse button went down.
+    private var lastMouseDownPoint = CGPoint.zero
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
@@ -682,7 +684,7 @@ public final class FocusGuard {
     /// nothing says the click was meant to bring it: only a link, or a
     /// window that's new (not a title that changed, which an inbox's
     /// unread count does by itself), counts (`LateLook.keptOpened`).
-    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false) {
+    private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false, clickedIn: pid_t? = nil) {
         let name = { (p: pid_t) in NSRunningApplication(processIdentifier: p)?.localizedName ?? "pid \(p)" }
         DispatchQueue.global(qos: .userInitiated).async {
             while nowMs() - click.ms < LateLook.forMs {
@@ -711,7 +713,9 @@ public final class FocusGuard {
                 // aren't the click's).
                 self.lock.lock()
                 let holding = !self.holdTokens.isEmpty || self.draining || !self.held.isEmpty
-                let movedOn = self.lastUserSwitchKeyMs > click.ms || self.arrivals.contains { $0.ms > click.ms } || self.spaceChangedMs > click.ms
+                // (The click itself may bring the app it was in forward: not that.)
+                let movedOn = self.lastUserSwitchKeyMs > click.ms || self.arrivals.contains { $0.ms > click.ms && $0.pid != clickedIn }
+                    || self.spaceChangedMs > click.ms
                 self.lock.unlock()
                 if kept && movedOn { return }
                 if kept && holding { continue }
@@ -796,7 +800,7 @@ public final class FocusGuard {
             guard c.point == p else { return }
             for pid in acting where pid != on && pid != self.userFront {
                 self.lock.lock(); self.keptOnClick[pid] = c.ms; self.lock.unlock()
-                self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true)
+                self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true, clickedIn: on)
             }
         }
     }
@@ -1683,13 +1687,18 @@ public final class FocusGuard {
             // every event on the Mac. Also before a step begins: a step that
             // begins within the lift is kept back from the click on.
             let on = lookedOwner(at: event.location)
+            lock.lock(); lastMouseDownPoint = event.location; lock.unlock()
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
             // Only a plain left click on a Dock icon brings its app forward
             // (a right or control click opens its menu).
             let activates = type == .leftMouseDown && !event.flags.contains(.maskControl)
             lock.lock(); gateClickOn = activates ? on : nil; lock.unlock()
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
-            gate.pointer(down: false, ms: Self.clickLiftMs)
+            // A drag can end somewhere else (a file on a Dock icon): what's
+            // let go on decides, so everyone goes through, as for any drop.
+            lock.lock(); let from = lastMouseDownPoint; lock.unlock()
+            let p = event.location
+            gate.pointer(down: false, ms: Self.clickLiftMs, dragEnded: hypot(p.x - from.x, p.y - from.y) > 4)
         case .keyDown:
             let code = event.getIntegerValueField(.keyboardEventKeycode)
             let opens = code == 36 || code == 76 || !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty
@@ -2078,7 +2087,7 @@ public final class FocusGuard {
             // Not once the user has clicked, typed, switched or come to another app since.
             self.lock.lock()
             let same = self.lastClick.ms == clickMs && self.lastUserKeyMs < clickMs && self.lastUserSwitchKeyMs < clickMs
-                && !self.arrivals.contains { $0.ms > clickMs }
+                && !self.arrivals.contains { $0.ms > clickMs } && self.spaceChangedMs <= clickMs
                 // Nor while the user's input is held: the click is decided
                 // again when it's replayed, after what came before it.
                 && self.holdTokens.isEmpty && !self.draining && self.held.isEmpty

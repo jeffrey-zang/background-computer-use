@@ -594,7 +594,10 @@ public final class FrontGate {
     /// while an agent scrolled in a browser let the browser through, and it
     /// came forward over them (issue #87). (A link they clicked that opens
     /// in that browser is brought forward once it shows, see `LateLook`.)
-    public func pointer(down: Bool, ms: Double, on app: pid_t? = nil) {
+    ///
+    /// `dragEnded`: the button came up away from where it went down. What
+    /// it's let go on can come forward, whoever's window it started in.
+    public func pointer(down: Bool, ms: Double, on app: pid_t? = nil, dragEnded: Bool = false) {
         let now = nowMs()
         fromTap {
             if down {
@@ -609,6 +612,11 @@ public final class FrontGate {
                 self.openForUserLocked(keeping: self.clickAll ? [] : self.lastActing.subtracting(self.clickedApps))
             } else {
                 self.pointerDown = false
+                if dragEnded {
+                    self.clickAll = true
+                    self.clickedApps = []
+                    self.openForUserLocked()
+                }
             }
             self.clickLiftedUntilMs = max(self.clickLiftedUntilMs, now + ms)
         }

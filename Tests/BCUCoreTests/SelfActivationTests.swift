@@ -136,6 +136,19 @@ final class SelfActivationTests: XCTestCase {
         g.stop()
     }
 
+    /// A drag that started in the user's window and ends elsewhere (a file
+    /// let go on the agent's app's Dock icon) lets everyone through.
+    func testADragLetsEveryoneThroughWhenLetGo() {
+        let g = gate(FrontGate.Targets(pids: [agent], stepping: [agent]))
+        g.pointer(down: true, ms: 1000, on: user)
+        XCTAssertFalse(list.contains(psn(agent)))
+        g.pointer(down: false, ms: 1000, dragEnded: true)
+        XCTAssertTrue(list.contains(psn(agent)))
+        _ = g.passForTests()
+        XCTAssertTrue(list.contains(psn(agent)))
+        g.stop()
+    }
+
     func testNarrowed() {
         let want = FrontGate.Targets(pids: [agent, other], stepping: [agent], settling: [other])
         XCTAssertEqual(FrontGate.narrowed(want, want: want, open: true, keyOpen: false, clickOpen: false, clicked: []).pids, [])
