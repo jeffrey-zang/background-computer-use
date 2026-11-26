@@ -598,14 +598,14 @@ public final class FrontGate {
         let now = nowMs()
         fromTap {
             if down {
-                if !self.pointerDown && now >= self.clickLiftedUntilMs {
-                    // A new click lift: the last one's apps are done with.
-                    self.clickAll = false
-                    self.clickedApps = []
-                }
+                // Each click says where the user is now: one in their own
+                // app right after one that let everyone through (on the Dock,
+                // or before an agent was acting) keeps the agent's app back.
+                // (An app the last click let through is in front already.)
+                self.clickAll = app == nil
+                self.clickedApps = app.map { [$0] } ?? []
                 if !self.pointerDown { self.pointerSinceMs = now }
                 self.pointerDown = true
-                if let app { self.clickedApps.insert(app) } else { self.clickAll = true }
                 self.openForUserLocked(keeping: self.clickAll ? [] : self.lastActing.subtracting(self.clickedApps))
             } else {
                 self.pointerDown = false

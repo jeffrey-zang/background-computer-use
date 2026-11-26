@@ -121,6 +121,21 @@ final class SelfActivationTests: XCTestCase {
         g.stop()
     }
 
+    /// The user clicks in their app every moment, the first time before
+    /// the agent's step began (that click let everyone through): the next
+    /// click, during the step, keeps the agent's app back again.
+    func testAClickInTheUsersWindowAfterAnOpenOneKeepsTheAppBack() {
+        let g = gate(FrontGate.Targets(pids: [agent], stepping: [agent]))
+        g.pointer(down: true, ms: 1000, on: nil)
+        g.pointer(down: false, ms: 1000)
+        XCTAssertTrue(list.contains(psn(agent)))
+        g.pointer(down: true, ms: 1000, on: user)
+        g.pointer(down: false, ms: 1000)
+        _ = g.passForTests()
+        XCTAssertFalse(list.contains(psn(agent)))
+        g.stop()
+    }
+
     func testNarrowed() {
         let want = FrontGate.Targets(pids: [agent, other], stepping: [agent], settling: [other])
         XCTAssertEqual(FrontGate.narrowed(want, want: want, open: true, keyOpen: false, clickOpen: false, clicked: []).pids, [])
