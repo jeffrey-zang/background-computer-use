@@ -432,11 +432,9 @@ public final class AgentDisplay {
         // isn't taken away while the user is typing. There's no hurry unless
         // an agent is waiting for a place; `tend` asks again every second.
         if !all, !someoneWaiting, let activity = FocusGuard.shared?.activity, QuietWait.typing(activity.snapshot, now: nowMs()) { return }
-        // Where every display is (before the lock: `anchorDisplayIDs` takes it).
+        // Where every display is.
         let ids = onlineDisplayIDs().filter { CGDisplayMirrorsDisplay($0) == 0 }
         let rects = ids.map { CGDisplayBounds($0) }
-        let anchors = Set(anchorDisplayIDs())
-        let roots = Set(ids.indices.filter { anchors.contains(ids[$0]) })
         registryLock.lock()
         let now = nowMs()
         var gone = spares.filter { all || now - $0.sinceMs > spareLifeMs }
@@ -451,11 +449,10 @@ public final class AgentDisplay {
             // on the way land on the user's screen (measured on 0.1.18: an
             // agent's window at 135,212 on the main display for half a
             // second when three idle displays before its own were removed).
-            // So never one that a display staying (in use, a spare that
-            // stays, another app's) reaches the user's displays through. By
+            // So never one that holds the layout together (`removable`). By
             // where the displays are, not by slot: they stay wherever macOS
             // leaves them, in any order (#110).
-            let ok = removable(gone.compactMap { g in ids.firstIndex(of: g.id) }, rects: rects, roots: roots)
+            let ok = removable(gone.compactMap { g in ids.firstIndex(of: g.id) }, rects: rects)
             gone.removeAll { g in !(ids.firstIndex(of: g.id).map(ok.contains) ?? false) }
             for b in busy {
                 let bounds = CGDisplayBounds(b.id)
@@ -487,32 +484,40 @@ public final class AgentDisplay {
     }
 
     /// Which of `candidates` (indices into `rects`) can be taken away
-    /// together without leaving any other display cut off from `roots`
-    /// (the user's displays): every display left must still reach one
-    /// through displays that touch (along an edge or at a corner). Taken
-    /// from the far end first, the way the staircase was built.
-    static func removable(_ candidates: [Int], rects: [CGRect], roots: Set<Int>) -> Set<Int> {
+    /// together without splitting the layout: displays that reached each
+    /// other (through displays that touch, along an edge or at a corner)
+    /// still do, through the ones left. Then no display is cut off, from
+    /// the user's or from another of theirs a spare happened to join
+    /// (macOS would move it). Taken from the far end first, the way the
+    /// staircase was built.
+    static func removable(_ candidates: [Int], rects: [CGRect]) -> Set<Int> {
         func touch(_ a: CGRect, _ b: CGRect) -> Bool {
             a.minX <= b.maxX && b.minX <= a.maxX && a.minY <= b.maxY && b.minY <= a.maxY
         }
-        func allConnected(without gone: Set<Int>) -> Bool {
-            let left = rects.indices.filter { !gone.contains($0) }
-            var reached = Set(left.filter { roots.contains($0) })
-            guard !reached.isEmpty else { return left.isEmpty }
-            var frontier = Array(reached)
-            while let i = frontier.popLast() {
-                for j in left where !reached.contains(j) && touch(rects[i], rects[j]) {
-                    reached.insert(j); frontier.append(j)
+        func components(_ members: [Int]) -> [Set<Int>] {
+            var left = Set(members), out: [Set<Int>] = []
+            while let start = left.first {
+                var comp: Set<Int> = [start], frontier = [start]
+                left.remove(start)
+                while let i = frontier.popLast() {
+                    for j in left where touch(rects[i], rects[j]) {
+                        left.remove(j); comp.insert(j); frontier.append(j)
+                    }
                 }
+                out.append(comp)
             }
-            return reached.count == left.count
+            return out
+        }
+        let before = components(Array(rects.indices))
+        func keepsLayout(without gone: Set<Int>) -> Bool {
+            before.allSatisfy { comp in components(comp.filter { !gone.contains($0) }.sorted()).count <= 1 }
         }
         var taken: Set<Int> = []
-        let order = candidates.filter { !roots.contains($0) }.sorted { (rects[$0].maxX + rects[$0].maxY) > (rects[$1].maxX + rects[$1].maxY) }
+        let order = candidates.sorted { (rects[$0].maxX + rects[$0].maxY) > (rects[$1].maxX + rects[$1].maxY) }
         var changed = true
         while changed {
             changed = false
-            for c in order where !taken.contains(c) && allConnected(without: taken.union([c])) {
+            for c in order where !taken.contains(c) && keepsLayout(without: taken.union([c])) {
                 taken.insert(c); changed = true
             }
         }
@@ -770,8 +775,7 @@ public final class AgentDisplay {
     static func holdsOthersUp(_ id: CGDirectDisplayID) -> Bool {
         let ids = onlineDisplayIDs().filter { CGDisplayMirrorsDisplay($0) == 0 }
         guard let me = ids.firstIndex(of: id) else { return false }
-        let roots = Set(anchorDisplayIDs())
-        return removable([me], rects: ids.map { CGDisplayBounds($0) }, roots: Set(ids.indices.filter { roots.contains(ids[$0]) })).isEmpty
+        return removable([me], rects: ids.map { CGDisplayBounds($0) }).isEmpty
     }
 
     /// The user's real displays: every active display that isn't an agent's.
