@@ -538,7 +538,16 @@ public final class StepLog {
                 if t == "type_text" || t == "set_value" || (t == "press_key" && RecordedStep.typesACharacter(c)) { foreignTyping = true }
             }
         }
-        defer { if foreignTyping { (open.last ?? steps.last)?.foreignTyping = true } }
+        if foreignTyping {
+            // Its later reads can show it too.
+            if redactAll {
+                if !hidValues { hidValuesFrom = clock() }
+                hidValues = true
+            } else {
+                if !hideFieldValues { hideFieldValuesFrom = clock() }
+                hideFieldValues = true
+            }
+        }
         var a = args
         a["_session"] = nil
         a["_recording_dir"] = nil
@@ -577,6 +586,7 @@ public final class StepLog {
         s.window = window
         s.originalModifiers = modifiers
         s.multiField = (original["text"] ?? "").contains("\t")
+        s.foreignTyping = foreignTyping
         steps.append(s)
         if tracked { open.append(s) }
         return s

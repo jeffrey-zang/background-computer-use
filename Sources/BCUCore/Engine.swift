@@ -489,7 +489,10 @@ public final class Engine {
     /// `stoppedByUserNotification` tells the session's host.
     public func stopAll(byUser: Bool = false) {
         queue.async {
+            // Not filmed while they go back.
+            self.stateLock.lock(); self.releasingAll = true; self.stateLock.unlock()
             let results = self.windows.releaseAll()
+            self.stateLock.lock(); self.releasingAll = false; self.stateLock.unlock()
             self.snapshots.removeAll()
             self.log("Stopped by you: " + (results.isEmpty ? "no windows open" : results.joined(separator: "; ")))
             if byUser { NotificationCenter.default.post(name: Self.stoppedByUserNotification, object: self) }

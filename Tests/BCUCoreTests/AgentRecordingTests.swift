@@ -782,6 +782,20 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(b.result, StepLog.foreignLeftOut)
     }
 
+    func testAForeignBatchDuringALocalStepFlagsItselfAndHidesLaterReads() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let w = log.begin(tool: "wait", args: [:])
+        let b = log.begin(tool: "batch", args: ["actions": [["tool": "press_key", "key": "4"], ["tool": "press_key", "key": "2"]]], tracked: false, foreign: true)
+        log.end(b, result: "1. press_key: Pressed 4.\n2. press_key: Pressed 2.", isError: false)
+        log.end(w, result: "Waited.", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[3] TextField \"PIN\" value=\"42\" @(0,0 10x10)", isError: false)
+        log.redactAgain()
+        XCTAssertEqual(b.result, StepLog.foreignLeftOut)
+        XCTAssertEqual(w.result, "Waited.")
+        XCTAssertFalse(r.result.contains("42"), r.result)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

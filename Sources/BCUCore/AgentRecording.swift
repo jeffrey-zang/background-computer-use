@@ -237,6 +237,8 @@ public final class AgentRecording {
             // Released while the screenshot was being taken: it may already
             // show the window on the user's screen.
             guard owns(windowID) else { lock.lock(); windowReleased = true; lock.unlock(); return nil }
+            // Resized while it was taken: the picture and its geometry may not match.
+            guard WindowList.info(windowID)?.bounds.size == wb.size else { return nil }
             if nowMs() - lastWindowFrameMs >= 500 {
                 lastWindowFrameMs = nowMs()
                 onWindowFrame(windowID, image)
