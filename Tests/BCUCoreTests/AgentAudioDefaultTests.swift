@@ -58,6 +58,18 @@ final class AgentAudioDefaultTests: XCTestCase {
         XCTAssertTrue(mixed?.contains("isn't being kept off them") == true, mixed ?? "nil")
     }
 
+    /// Safari's toolbar button says it for the selected tab while it plays;
+    /// otherwise the record holds only while the window has one tab.
+    func testTabMuteStateIsReadNotAssumed() {
+        XCTAssertEqual(Engine.tabMuted(button: "Unmute This Tab", tabs: 3, recorded: false), true)
+        XCTAssertEqual(Engine.tabMuted(button: "Mute This Tab", tabs: 1, recorded: true), false)
+        XCTAssertEqual(Engine.tabMuted(button: nil, tabs: 0, recorded: true), true)
+        XCTAssertEqual(Engine.tabMuted(button: nil, tabs: 1, recorded: true), true)
+        // A second tab (one the agent opened) may be the selected one.
+        XCTAssertNil(Engine.tabMuted(button: nil, tabs: 2, recorded: true))
+        XCTAssertEqual(Engine.tabMuted(button: nil, tabs: 2, recorded: false), false)
+    }
+
     func testTabMenuTitles() {
         XCTAssertEqual(Engine.muteTabTitles, ["Mute This Tab"])
         XCTAssertEqual(Engine.unmuteTabTitles, ["Unmute This Tab"])

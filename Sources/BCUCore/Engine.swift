@@ -1727,7 +1727,7 @@ public final class Engine {
         // denied. A tap that doesn't take is caught below.)
         if BCUAudioCapturePreflight() == 2 {
             log("An agent wanted to keep its sound off your speakers, but System Audio Recording isn't allowed yet: allow it in Settings")
-            if mutedTabs.contains(w.id) { return ToolResult(text: Self.mutedTabOnly(w, why: "System Audio Recording isn't allowed for Background Computer Use yet (it's asked for in its setup and Settings, not mid-task)")) }
+            if tabMuted(w) == true { return ToolResult(text: Self.mutedTabOnly(w, why: "System Audio Recording isn't allowed for Background Computer Use yet (it's asked for in its setup and Settings, not mid-task)")) }
             throw ToolError(Self.audioNotAllowed(appName: w.appName))
         }
         var mute: AXNode?
@@ -1768,11 +1768,21 @@ public final class Engine {
             audioClaims.remove(w.id)
             audio.keepRecording = !audioClaims.isIdle
             audio.routeNow(audioApps())
-            if mutedTabs.contains(w.id) { return ToolResult(text: Self.mutedTabOnly(w, why: "\(w.appName)'s sound can't be recorded: \(why)")) }
+            if tabMuted(w) == true { return ToolResult(text: Self.mutedTabOnly(w, why: "\(w.appName)'s sound can't be recorded: \(why)")) }
             throw ToolError("\(w.appName)'s sound can't be kept off the user's speakers: \(why). Don't play sound in it; if the task needs sound, tell the user.")
         }
-        // Muted on the speakers now, so the recording can have the tab's sound.
-        let unmuted = unmuteTab(w) ? " Your tab, muted when the window opened, is unmuted so its sound is recorded." : ""
+        // Muted on the speakers now, so the recording can have the tab's
+        // sound: only while the claim still holds when the tab's turn comes
+        // (the user may take the app back while the step waits for them).
+        let unmuted = unmuteTab(w, while: { [audioClaims] in audioClaims.has(w.id) })
+            ? " Your tab, muted when the window opened, is unmuted so its sound is recorded." : ""
+        if !unmuted.isEmpty, let m = mute {
+            // The toggle it named may read otherwise now ("Mute This Tab"):
+            // what it reads while the sound plays is what giving the app back
+            // compares with.
+            audioClaims.add(AudioClaims.Claim(window: w.id, pid: w.pid, appName: w.appName, mute: m.element, muteName: muteName,
+                                              muteLook: AudioClaims.look(m.element)))
+        }
         if agentsOnly {
             return ToolResult(text: "Only agents have windows in \(w.appName), so its sound stays off the user's speakers and is recorded to \(audio.url.path)\(opening). Play it now.\(unmuted)")
         }
@@ -1818,9 +1828,10 @@ public final class Engine {
     }
 
     /// Unmute the agent's tab once its app is muted on the speakers and
-    /// recorded (a claim): the recording should have its sound.
-    private func unmuteTab(_ w: AgentWindow) -> Bool {
-        guard mutedTabs.contains(w.id), toggleTab(w, cause: "unmuting your tab") else { return false }
+    /// recorded (a claim): the recording should have its sound. `still`
+    /// is asked again right before the press.
+    private func unmuteTab(_ w: AgentWindow, while still: @escaping () -> Bool = { true }) -> Bool {
+        guard tabMuted(w) == true, toggleTab(w, cause: "unmuting your tab", while: still) else { return false }
         mutedTabs.remove(w.id)
         Log.info("audio: unmuted window \(w.id)'s tab in \(w.appName)")
         return true
@@ -1830,11 +1841,12 @@ public final class Engine {
     /// window's tab, whatever it's titled: over accessibility its title
     /// stays the one it had for the window last shown in the menu (the
     /// user's), so `mutedTabs` is what says which way it goes.
-    private func toggleTab(_ w: AgentWindow, cause: String) -> Bool {
+    private func toggleTab(_ w: AgentWindow, cause: String, while still: () -> Bool = { true }) -> Bool {
         guard let item = Self.menuItem(w.pid, titled: Self.muteTabTitles + Self.unmuteTabTitles) else { return false }
         do {
             let err = try keyed(w, cause: cause) { check, _ -> AXError in
                 try check()
+                guard still() else { return .cannotComplete }
                 let before = "\(AX.string(item, "AXTitle") ?? "?") enabled=\(AX.bool(item, "AXEnabled").map(String.init) ?? "?")"
                 let e = AX.perform(item, "AXPress")
                 Log.info("audio: \(cause) in window \(w.id): item read \(before) before the press, \(AX.string(item, "AXTitle") ?? "?") enabled=\(AX.bool(item, "AXEnabled").map(String.init) ?? "?") after (\(AX.errorName(e)))")
@@ -1846,6 +1858,44 @@ public final class Engine {
             Log.info("audio: \(cause) in window \(w.id) of \(w.appName) failed: \(error)")
         }
         return false
+    }
+
+    /// Whether the window's selected tab is muted, as far as can be told
+    /// without taking focus. While it plays, Safari's toolbar has a button
+    /// for it ("Mute This Tab" / "Unmute This Tab"), which says so for the
+    /// selected tab. Otherwise this session's own record (`mutedTabs`)
+    /// holds, but only while the window has a single tab: one the agent
+    /// opened since may be the selected one, and isn't muted. Nil: unknown.
+    private func tabMuted(_ w: AgentWindow) -> Bool? {
+        guard let ax = AX.window(pid: w.pid, id: w.id) else { return nil }
+        let (button, tabs) = Self.tabControls(ax)
+        return Self.tabMuted(button: button, tabs: tabs, recorded: mutedTabs.contains(w.id))
+    }
+
+    static func tabMuted(button: String?, tabs: Int, recorded: Bool) -> Bool? {
+        if let b = button { return unmuteTabTitles.contains(b) }
+        guard recorded else { return false }
+        return tabs <= 1 ? true : nil
+    }
+
+    /// The tab mute button's title in a window's toolbar, if it shows one,
+    /// and how many tab buttons its tab bar has (0 without a tab bar).
+    static func tabControls(_ window: AXUIElement) -> (button: String?, tabs: Int) {
+        var button: String?
+        var tabs = 0
+        func walk(_ e: AXUIElement, _ depth: Int) {
+            guard depth < 6 else { return }
+            let role = AX.string(e, "AXRole") ?? ""
+            if role == "AXWebArea" { return }
+            if role == "AXButton" {
+                let t = [AX.string(e, "AXTitle"), AX.string(e, "AXDescription")].compactMap { $0 }.first { !$0.isEmpty } ?? ""
+                if (muteTabTitles + unmuteTabTitles).contains(t) { button = t }
+            }
+            if AX.string(e, "AXSubrole") == "AXTabButton" { tabs += 1 }
+            for c in AX.children(e) { walk(c, depth + 1) }
+        }
+        walk(window, 0)
+        return (button, tabs)
     }
 
     /// This session's apps sending sound to an output now. Any thread.
@@ -1870,9 +1920,10 @@ public final class Engine {
             let mine = windows.windows.filter { $0.pid == pid }
             guard let name = mine.first?.appName else { return nil }
             let shared = onAgent[pid] != true || mine.contains(where: \.withUser)
+            let states = mine.map { ($0, tabMuted($0)) }
             return Self.soundNote(appName: name, routed: routed.contains(pid), shared: shared,
-                                  mutedTabs: mine.filter { mutedTabs.contains($0.id) }.map(\.id),
-                                  unmutedWindows: mine.filter { !mutedTabs.contains($0.id) }.count,
+                                  mutedTabs: states.filter { $0.1 == true }.map(\.0.id),
+                                  unmutedWindows: states.filter { $0.1 != true }.count,
                                   told: { id in !self.toldMutedTab.insert(id).inserted },
                                   access: access)
         }
