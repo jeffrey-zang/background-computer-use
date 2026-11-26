@@ -1569,11 +1569,16 @@ public final class WindowManager {
         if wasWithUser { moveToAgent(ax, size: AX.size(ax) ?? CGSize(width: 1200, height: 800)) }
     }
 
+    /// The `keep_open` a cleanup (the agent gone, BCU quitting) releases a
+    /// window with: the agent's own, if it released the window while its
+    /// app wasn't answering, so the cleanup doesn't overrule it.
+    func keepOpenOnCleanup(_ id: CGWindowID) -> Bool { pendingRelease(id) ?? false }
+
     /// Close opened windows and return borrowed ones. `discard`: see `release`.
     public func releaseAll(discard: Bool = false) -> [String] {
         windows.map { w in
             let discards = discard && !Self.handedToUser(handedOff: w.handedOff, withUser: w.withUser)
-            return (try? release(w.id, keepOpen: false, discard: discards)) ?? "window \(w.id): failed"
+            return (try? release(w.id, keepOpen: keepOpenOnCleanup(w.id), discard: discards)) ?? "window \(w.id): failed"
         }
     }
 

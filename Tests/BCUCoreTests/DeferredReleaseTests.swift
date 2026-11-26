@@ -95,4 +95,18 @@ final class DeferredReleaseTests: XCTestCase {
         XCTAssertEqual(Engine.withNote(base, nil).text, "status")
         XCTAssertEqual(Engine.withNote(base, "\n[released window] Window 7 didn't close").text, "status\n[released window] Window 7 didn't close")
     }
+
+    /// The agent goes away (or BCU quits) while the app still hangs: the
+    /// cleanup's release keeps the keep_open the agent asked for, rather than
+    /// replacing it with keep_open: false.
+    func testCleanupKeepsTheAgentsKeepOpen() {
+        let m = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-c-\(UUID().uuidString)")
+        let kept: CGWindowID = 4_000_000_004, plain: CGWindowID = 4_000_000_005
+        m.register(AgentWindow(id: kept, pid: 1, appName: "Dia", bundleID: nil, kind: .opened))
+        m.register(AgentWindow(id: plain, pid: 1, appName: "Dia", bundleID: nil, kind: .opened))
+        defer { m.unregister(kept); m.unregister(plain) }
+        m.deferRelease(kept, keepOpen: true)
+        XCTAssertTrue(m.keepOpenOnCleanup(kept))
+        XCTAssertFalse(m.keepOpenOnCleanup(plain))
+    }
 }

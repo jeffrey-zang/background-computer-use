@@ -309,7 +309,8 @@ public final class Engine {
                 case .keepForUser:
                     notes.append("kept \(w.appName) window \(w.id): it's waiting for you")
                 case .release:
-                    notes.append((try? self.windows.release(w.id, keepOpen: false)) ?? "window \(w.id): failed")
+                    // (A window it released while its app hung keeps the keep_open it asked for.)
+                    notes.append((try? self.windows.release(w.id, keepOpen: self.windows.keepOpenOnCleanup(w.id))) ?? "window \(w.id): failed")
                 }
             }
             self.snapshots.removeAll()
