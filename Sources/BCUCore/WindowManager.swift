@@ -1669,7 +1669,8 @@ public final class WindowManager {
             let firstSeen = seenOnUser[info.id], agentBegan = spawnedAfter[info.id]
             lock.unlock()
             guard let firstSeen, firstSeen > 0, agentBegan != nil else { continue }
-            let userInApp = info.pid == front && info.pid == focusGuard.userFront
+            let userInApp = (info.pid == front && info.pid == focusGuard.userFront)
+                || focusGuard.linkClickKeptBack(info.pid, firstSeenMs: firstSeen)
             guard let cause = NewWindow.fromUserScreen(NewWindow.Facts(
                 firstSeenMs: firstSeen, userInApp: userInApp,
                 userOpenInputMs: focusGuard.lastUserOpenInputMs, agentBeganMs: agentBegan?.ms,

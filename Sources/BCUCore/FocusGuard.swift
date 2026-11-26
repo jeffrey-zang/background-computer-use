@@ -192,6 +192,8 @@ public final class FocusGuard {
     /// The app the gate took the last click to be in (`lookedOwner`), nil
     /// if it let everyone through.
     private var gateClickOn: pid_t?
+    /// When the gate last kept each app back for a click in another app's window.
+    private var keptOnClick: [pid_t: Double] = [:]
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
@@ -772,7 +774,10 @@ public final class FocusGuard {
             }
             self.lock.lock(); let c = self.lastClick; self.lock.unlock()
             guard c.point == p else { return }
-            for pid in acting where pid != on && pid != self.userFront { self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true) }
+            for pid in acting where pid != on && pid != self.userFront {
+                self.lock.lock(); self.keptOnClick[pid] = c.ms; self.lock.unlock()
+                self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true)
+            }
         }
     }
 
@@ -2020,7 +2025,7 @@ public final class FocusGuard {
                     self.lastClick.element = element
                 }
                 self.lock.unlock()
-                self.finishDockSwitch(target, gateOn: gateOn, clickMs: ms)
+                self.finishKeptSwitch(target, gateOn: gateOn, clickMs: ms)
             }
         }
     }
@@ -2028,21 +2033,31 @@ public final class FocusGuard {
     /// The gate kept the apps an agent is acting on back for a click it took
     /// to be in another app's window, from a look at the screen up to 400 ms
     /// old, but accessibility says it was on one of their Dock icons (the
-    /// Dock came up over that spot since the look): the user asked for that
-    /// app. Bring it forward, as the Dock would have.
-    private func finishDockSwitch(_ target: ClickTarget, gateOn: pid_t?, clickMs: Double) {
-        guard case .dock(let app?) = target, app > 0, let gateOn, gateOn != app, gate.acting.contains(app) else { return }
+    /// Dock came up over that spot since the look) or one of their windows
+    /// (the one covering it there went away since): the user asked for that
+    /// app. Bring it forward, as the click would have.
+    private func finishKeptSwitch(_ target: ClickTarget, gateOn: pid_t?, clickMs: Double) {
+        let app: pid_t
+        switch target {
+        case .dock(let p?) where p > 0: app = p
+        case .app(let p?) where p > 0: app = p
+        default: return
+        }
+        guard let gateOn, gateOn != app, gate.acting.contains(app) else { return }
         DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(80)) {
             // Not once the user has clicked, typed, switched or come to another app since.
             self.lock.lock()
             let same = self.lastClick.ms == clickMs && self.lastUserKeyMs < clickMs && self.lastUserSwitchKeyMs < clickMs
                 && !self.arrivals.contains { $0.ms > clickMs }
+                // Nor while the user's input is held: the click is decided
+                // again when it's replayed, after what came before it.
+                && self.holdTokens.isEmpty && !self.draining && self.held.isEmpty
             self.lock.unlock()
             guard same, BCUFrontProcessPID() != app else { return }
             self.noteUserSwitch()
             _ = BCUSetFrontProcess(app, 0, 0x200)
             let name = NSRunningApplication(processIdentifier: app)?.localizedName ?? "pid \(app)"
-            self.record("your click was on \(name)'s Dock icon, which the gate had kept back; brought \(name) forward")
+            self.record("your click was on \(name) (\(target == .dock(app) ? "its Dock icon" : "its window")), which the gate had kept back; brought \(name) forward")
         }
     }
 
@@ -2055,6 +2070,18 @@ public final class FocusGuard {
             lock.lock(); screenLook = look; lock.unlock()
             usleep(250_000)
         }
+    }
+
+    /// A window of `pid`'s that came up on the user's screen at `firstSeenMs`
+    /// may be one the user's click on a link opened, where the gate kept
+    /// `pid` back for that click (so it didn't come forward, which is what
+    /// says the user is in the app): count it as theirs (`NewWindow`).
+    /// Only for a click accessibility says was on a link; a window an
+    /// agent's step opened just after any other click stays the agent's.
+    public func linkClickKeptBack(_ pid: pid_t, firstSeenMs: Double) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let ms = keptOnClick[pid], firstSeenMs >= ms, firstSeenMs - ms < LateLook.forMs else { return false }
+        return lastClick.ms == ms && lastClick.element == .link
     }
 
     /// The windows on the user's screens in order, every 150 ms while
