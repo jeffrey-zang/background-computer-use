@@ -1,0 +1,311 @@
+import AppKit
+import AVFoundation
+import BCUShared
+
+/// A video of the agent at work that it started with `start_recording`:
+/// the agent display (or one window) captured continuously, every tool call
+/// drawn onto it when it stops, and the list of those calls beside it.
+///
+/// Frames are one-shot ScreenCaptureKit screenshots, as the live preview
+/// takes (`FrameStream`), written as they come to `raw.mp4`. `finish` then
+/// reads that back, draws each step over its frames (knowing by then how
+/// many steps there were and how each ended) and writes `recording.mp4`
+/// (H.264, which QuickTime plays), `actions.md` and `actions.json`, all
+/// readable only by the user.
+public final class AgentRecording {
+    public struct Output {
+        public let dir: URL
+        public let video: URL
+        public let markdown: URL
+        public let json: URL
+        public let audio: URL?
+        public let durationMs: Double
+        public let frames: Int
+        public let size: CGSize
+        public let toolCalls: Int
+        public let failed: Int
+        public let notes: [String]
+    }
+
+    static let defaultFPS = 12
+    /// Capture stops after this long; what was captured is kept.
+    static let maxMs = 30 * 60 * 1000.0
+    /// Recordings kept: older ones are deleted when a new one is saved.
+    static let keep = 20
+
+    public let dir: URL
+    public let windowID: CGWindowID?
+    public let fps: Int
+    public let steps: StepLog
+    public let label: String
+    private let display: AgentDisplay
+    private let startMs: Double
+    private let started = Date()
+    private let size: CGSize
+    private let onDisplayFrame: (CGImage) -> Void
+    private let queue = DispatchQueue(label: "bcu.agent-recording", qos: .userInitiated)
+    private var timer: DispatchSourceTimer?
+    private let writer: AVAssetWriter
+    private let input: AVAssetWriterInput
+    private let adaptor: AVAssetWriterInputPixelBufferAdaptor
+    private let lock = NSLock()
+    /// Per frame written: its time (ms) and where display points land in it.
+    private var mappings: [(t: Int64, map: FrameMapping)] = []
+    private var lastPts: Int64 = -1
+    private var _capturing = true
+    private var capped = false
+    private var windowGone = false
+    public var rawURL: URL { dir.appendingPathComponent("raw.mp4") }
+
+    /// Where recordings go: `agent-recordings/` beside the engine's other state.
+    public static var directory: URL { BCUPaths.supportDirectory.appendingPathComponent("agent-recordings", isDirectory: true) }
+
+    /// A folder name that sorts by time.
+    static func folderName(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.string(from: date)
+    }
+
+    /// The video's size for a source of `points`: one pixel per point, even
+    /// (H.264 wants it), at most 1920 wide.
+    static func videoSize(_ points: CGSize) -> CGSize {
+        let s = min(1, 1920 / max(points.width, 1))
+        func even(_ v: CGFloat) -> CGFloat { max(2, (v * s / 2).rounded(.down) * 2) }
+        return CGSize(width: even(points.width), height: even(points.height))
+    }
+
+    /// Where a source rect (display points) goes in a `canvas`: as big as
+    /// fits, centered.
+    static func fit(_ source: CGSize, in canvas: CGSize) -> CGRect {
+        guard source.width > 0, source.height > 0 else { return CGRect(origin: .zero, size: canvas) }
+        let s = min(canvas.width / source.width, canvas.height / source.height)
+        let w = source.width * s, h = source.height * s
+        return CGRect(x: (canvas.width - w) / 2, y: (canvas.height - h) / 2, width: w, height: h)
+    }
+
+    /// `onDisplayFrame` gets each whole-display frame (for the history, which
+    /// then needs no captures of its own meanwhile).
+    init(display: AgentDisplay, windowID: CGWindowID?, fps: Int, label: String, redactAll: Bool,
+         onDisplayFrame: @escaping (CGImage) -> Void) throws {
+        self.display = display
+        self.windowID = windowID
+        self.fps = min(30, max(2, fps))
+        self.label = label
+        self.onDisplayFrame = onDisplayFrame
+        let fm = FileManager.default
+        try fm.createDirectory(at: Self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var d = Self.directory.appendingPathComponent(Self.folderName(started), isDirectory: true)
+        var i = 2
+        while fm.fileExists(atPath: d.path) { d = Self.directory.appendingPathComponent(Self.folderName(started) + "-\(i)"); i += 1 }
+        try fm.createDirectory(at: d, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        dir = d
+        var points = CGSize(width: display.bounds.width, height: display.bounds.height)
+        if let windowID, let wb = WindowList.info(windowID)?.bounds { points = wb.size }
+        size = Self.videoSize(points)
+        let start = nowMs()
+        startMs = start
+        steps = StepLog(redactAll: redactAll) { nowMs() - start }
+
+        writer = try AVAssetWriter(outputURL: dir.appendingPathComponent("raw.mp4"), fileType: .mp4)
+        input = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(size, bitrate: 10_000_000))
+        input.expectsMediaDataInRealTime = true
+        input.mediaTimeScale = 1000
+        writer.movieTimeScale = 1000
+        adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: Int(size.width),
+            kCVPixelBufferHeightKey as String: Int(size.height),
+        ])
+        guard writer.canAdd(input) else { throw ToolError("couldn't set up the video writer") }
+        writer.add(input)
+        guard writer.startWriting() else { throw ToolError("couldn't start the video: \(writer.error.map { "\($0)" } ?? "unknown error")") }
+        writer.startSession(atSourceTime: .zero)
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now(), repeating: 1.0 / Double(self.fps), leeway: .milliseconds(5))
+        t.setEventHandler { [weak self] in self?.tick() }
+        t.resume()
+        timer = t
+    }
+
+    static func videoSettings(_ size: CGSize, bitrate: Int) -> [String: Any] {
+        [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: Int(size.width),
+            AVVideoHeightKey: Int(size.height),
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: bitrate,
+                AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoMaxKeyFrameIntervalKey: 60,
+                AVVideoAllowFrameReorderingKey: false,
+            ] as [String: Any],
+        ]
+    }
+
+    /// Still capturing (not stopped, not past `maxMs`).
+    public var isCapturing: Bool { lock.lock(); defer { lock.unlock() }; return _capturing }
+    public var elapsedMs: Double { nowMs() - startMs }
+
+    private func tick() {
+        guard isCapturing else { return }
+        if elapsedMs > Self.maxMs {
+            lock.lock(); capped = true; _capturing = false; lock.unlock()
+            timer?.cancel()
+            return
+        }
+        guard display.isRunning else { return }
+        let b = display.bounds
+        let image: CGImage?
+        let source: CGRect  // display points the image shows
+        if let windowID {
+            guard let wb = WindowList.info(windowID)?.bounds else { lock.lock(); windowGone = true; lock.unlock(); return }
+            image = Capture.windowFrame(windowID)
+            guard let image else { return }
+            let covered = Capture.coveredRect(image, bounds: wb, display: b)
+            source = covered.offsetBy(dx: -b.minX, dy: -b.minY)
+        } else {
+            image = Capture.display(display)
+            source = CGRect(origin: .zero, size: b.size)
+            if let image { onDisplayFrame(image) }
+        }
+        guard let image, input.isReadyForMoreMediaData, let pool = adaptor.pixelBufferPool else { return }
+        let pts = Int64(elapsedMs.rounded())
+        guard pts > lastPts else { return }
+        var buffer: CVPixelBuffer?
+        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+        guard let buffer else { return }
+        let fit = Self.fit(source.size, in: size)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        if let ctx = CGContext(data: CVPixelBufferGetBaseAddress(buffer), width: Int(size.width), height: Int(size.height), bitsPerComponent: 8,
+                               bytesPerRow: CVPixelBufferGetBytesPerRow(buffer), space: CGColorSpaceCreateDeviceRGB(),
+                               bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
+            ctx.setFillColor(CGColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1))
+            ctx.fill(CGRect(origin: .zero, size: size))
+            ctx.interpolationQuality = .high
+            ctx.draw(image, in: CGRect(x: fit.minX, y: size.height - fit.maxY, width: fit.width, height: fit.height))
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        if adaptor.append(buffer, withPresentationTime: CMTime(value: pts, timescale: 1000)) {
+            let scale = fit.width / max(source.width, 1)
+            let map = FrameMapping(scale: scale, offset: CGPoint(x: fit.minX - source.minX * scale, y: fit.minY - source.minY * scale))
+            lock.lock(); mappings.append((pts, map)); lock.unlock()
+            lastPts = pts
+        }
+    }
+
+    /// Stops capturing, draws the steps onto the video and writes the
+    /// files. Blocks while it renders (about a second per 10 s of video).
+    /// `audio`: a file of the session's sound to keep beside the video.
+    func finish(audio: URL? = nil) throws -> Output {
+        // One more frame, so the video shows the call that stops it.
+        queue.sync { self.tick() }
+        lock.lock(); _capturing = false; lock.unlock()
+        timer?.cancel()
+        queue.sync {}
+        let durationMs = elapsedMs
+        input.markAsFinished()
+        let done = DispatchSemaphore(value: 0)
+        writer.endSession(atSourceTime: CMTime(value: max(lastPts, 0) + 1, timescale: 1000))
+        writer.finishWriting { done.signal() }
+        done.wait()
+        lock.lock(); let maps = mappings; let wasCapped = capped; let gone = windowGone; lock.unlock()
+        var notes: [String] = []
+        if wasCapped { notes.append("Capture stopped after \(Int(Self.maxMs / 60_000)) minutes; later steps are listed but not in the video.") }
+        if gone { notes.append("The window closed before the recording stopped; the video ends with its last frame.") }
+        guard writer.status == .completed, !maps.isEmpty else {
+            throw ToolError("no frames were recorded (\(writer.error.map { "\($0)" } ?? "the display showed nothing")). The action list is still saved in \(dir.path).")
+        }
+        let all = steps.all
+        let video = dir.appendingPathComponent("recording.mp4")
+        try render(raw: rawURL, to: video, maps: maps, steps: all, endMs: durationMs)
+        try? FileManager.default.removeItem(at: rawURL)
+        var audioOut: URL?
+        if let audio, FileManager.default.fileExists(atPath: audio.path) {
+            let dest = dir.appendingPathComponent("audio" + (audio.pathExtension.isEmpty ? "" : "." + audio.pathExtension))
+            if (try? FileManager.default.copyItem(at: audio, to: dest)) != nil {
+                audioOut = dest
+                notes.append("The session's sound is in [\(dest.lastPathComponent)](\(dest.lastPathComponent)), from when it started playing (it isn't in the video).")
+            }
+        }
+        let info = ActionList.Info(started: started, durationMs: durationMs, source: windowID == nil ? "display" : "window",
+                                   windowID: windowID.map(Int.init), fps: fps, frames: maps.count, size: size, label: label,
+                                   redactAll: steps.redactAll, video: video.lastPathComponent, notes: notes)
+        let md = dir.appendingPathComponent("actions.md"), js = dir.appendingPathComponent("actions.json")
+        try ActionList.markdown(all, info: info).write(to: md, atomically: true, encoding: .utf8)
+        try ActionList.json(all, info: info).write(to: js, options: .atomic)
+        for f in [video, md, js] + (audioOut.map { [$0] } ?? []) {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: f.path)
+        }
+        Self.prune(keeping: dir)
+        let flat = StepLog.flatten(all)
+        return Output(dir: dir, video: video, markdown: md, json: js, audio: audioOut, durationMs: durationMs, frames: maps.count,
+                      size: size, toolCalls: all.count, failed: flat.filter(\.isError).count, notes: notes)
+    }
+
+    /// Stops without keeping anything (the recording couldn't be finished).
+    func discard() {
+        lock.lock(); _capturing = false; lock.unlock()
+        timer?.cancel()
+        queue.sync {}
+        writer.cancelWriting()
+    }
+
+    /// Reads `raw` back frame by frame, draws the steps over each and writes `out`.
+    private func render(raw: URL, to out: URL, maps: [(t: Int64, map: FrameMapping)], steps all: [RecordedStep], endMs: Double) throws {
+        let asset = AVURLAsset(url: raw)
+        guard let track = asset.tracks(withMediaType: .video).first else { throw ToolError("the raw video has no frames") }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        output.alwaysCopiesSampleData = false
+        reader.add(output)
+        try? FileManager.default.removeItem(at: out)
+        let w = try AVAssetWriter(outputURL: out, fileType: .mp4)
+        w.shouldOptimizeForNetworkUse = true
+        let inp = AVAssetWriterInput(mediaType: .video, outputSettings: Self.videoSettings(size, bitrate: 5_000_000))
+        inp.expectsMediaDataInRealTime = false
+        inp.mediaTimeScale = 1000
+        w.movieTimeScale = 1000
+        let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: inp, sourcePixelBufferAttributes: nil)
+        w.add(inp)
+        guard reader.startReading(), w.startWriting() else { throw ToolError("couldn't render the video: \(reader.error ?? w.error.map { $0 as Error } ?? ToolError("?"))") }
+        w.startSession(atSourceTime: .zero)
+        let flat = StepLog.flatten(all)
+        var mi = 0
+        var last: CMTime = .zero
+        while let sample = output.copyNextSampleBuffer() {
+            guard let px = CMSampleBufferGetImageBuffer(sample) else { continue }
+            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            let ms = Int64((pts.seconds * 1000).rounded())
+            while mi + 1 < maps.count && maps[mi + 1].t <= ms { mi += 1 }
+            CVPixelBufferLockBaseAddress(px, [])
+            if let ctx = CGContext(data: CVPixelBufferGetBaseAddress(px), width: CVPixelBufferGetWidth(px), height: CVPixelBufferGetHeight(px),
+                                   bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(px), space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
+                RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: maps[mi].map,
+                                      label: label, redactAll: steps.redactAll)
+            }
+            CVPixelBufferUnlockBaseAddress(px, [])
+            while !inp.isReadyForMoreMediaData { usleep(2000) }
+            if ad.append(px, withPresentationTime: pts) { last = pts }
+        }
+        inp.markAsFinished()
+        // The last frame stays up a moment, so the last step can be read.
+        let endAt = max(CMTime(value: Int64(endMs.rounded()), timescale: 1000), last + CMTime(value: 1500, timescale: 1000))
+        w.endSession(atSourceTime: endAt)
+        let done = DispatchSemaphore(value: 0)
+        w.finishWriting { done.signal() }
+        done.wait()
+        guard w.status == .completed else { throw ToolError("couldn't write the video: \(w.error.map { "\($0)" } ?? "unknown error")") }
+    }
+
+    /// Deletes all but the newest `keep` recordings (never `keeping`).
+    static func prune(keeping: URL) {
+        let fm = FileManager.default
+        let dirs = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+            .filter(\.hasDirectoryPath).sorted { $0.lastPathComponent > $1.lastPathComponent }
+        for d in dirs.dropFirst(keep) where d.standardizedFileURL != keeping.standardizedFileURL {
+            try? fm.removeItem(at: d)
+        }
+    }
+}

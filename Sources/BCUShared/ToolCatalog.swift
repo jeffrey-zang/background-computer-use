@@ -93,6 +93,29 @@ public enum ToolCatalog {
                 "required": ["window_id"],
             ] as JSONObject,
         ],
+        [
+            "name": "start_recording",
+            "description": "Start a video of your work to give the user: your display (or one window) recorded continuously at about 12 fps, with every tool call you make from now on drawn onto it (a caption per step naming what you acted on, a box on the element, a ripple where you clicked, keycaps for keys, failures in red, a step counter) and listed in actions.md and actions.json, one entry per call, failures and reads included. What you type into password fields is never shown. Call stop_recording when you're done. One recording at a time; it stops capturing by itself after 30 minutes.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "window_id": ["type": "integer", "description": "Record only this window of yours. Omit for your whole display."],
+                    "fps": ["type": "integer", "description": "Frames per second, 2 to 30 (default 12)."],
+                    "hide_typing": ["type": "boolean", "description": "Hide all text you type or set, not just what goes into password fields (default false)."],
+                    "audio": ["type": "boolean", "description": "Keep the session's sound file (see capture_audio) beside the video (default false)."],
+                ],
+            ] as JSONObject,
+        ],
+        [
+            "name": "stop_recording",
+            "description": "Stop the recording you started and save it: returns the paths of recording.mp4 (H.264, plays in QuickTime) and of actions.md and actions.json. Give the user those paths. Works while paused, and hands over a recording that ended because your display went away.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "reveal": ["type": "boolean", "description": "Also show the video in the Finder on the user's screen (default false). Only when the user wants to see it now."],
+                ],
+            ] as JSONObject,
+        ],
     ]
 
     private static func resolvePlatform(_ value: Any) -> Any {

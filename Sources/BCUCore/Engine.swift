@@ -49,6 +49,18 @@ public final class Engine {
     let audioClaims = AudioClaims()
     /// Keeps what the display showed, for the history viewer.
     let recorder: SessionRecorder
+    /// The video the agent is recording (`start_recording`), while it runs.
+    private var _recording: AgentRecording?
+    /// Whether that video keeps the session's sound file beside it.
+    private var _recordingAudio = false
+    /// A recording that ended without `stop_recording` (its display went
+    /// away), for the next `stop_recording` to hand over.
+    private var endedRecording: Result<AgentRecording.Output, Error>?
+    var currentRecording: AgentRecording? { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
+    /// Test support: a list of steps kept as a recording would, with no video.
+    var testStepLog: StepLog?
+    /// Where the recording under way lists the calls, if one is.
+    var recordingSteps: StepLog? { stateLock.lock(); defer { stateLock.unlock() }; return _recording?.steps ?? testStepLog }
 
     /// A frame of the live preview (the whole display), for the history.
     public func recordPreview(_ image: CGImage) { recorder.previewFrame(image) }
@@ -227,6 +239,9 @@ public final class Engine {
     public func tearDownIfIdle(idleMs: Double) {
         queue.async {
             guard self.display.isRunning, self.windows.windows.isEmpty, !self.userInControl else { return }
+            // A recording keeps its display while the agent is around
+            // (it stops capturing by itself after `AgentRecording.maxMs`).
+            if idleMs > 0, self.currentRecording?.isCapturing == true { return }
             self.stateLock.lock()
             let idle = self._busy == nil && nowMs() - self.lastCallMs > idleMs
             self.stateLock.unlock()
@@ -241,6 +256,7 @@ public final class Engine {
                 }
                 return
             }
+            self.endRecordingForTeardown()
             self.recorder.stop()
             // Quitting removes the display itself.
             guard onMainUnlessQuitting({
@@ -339,6 +355,7 @@ public final class Engine {
     /// Main thread, after the windows are released, so nothing lands on the
     /// user's screen when the display goes away.
     public func finishShutdown() {
+        endRecordingForTeardown()
         recorder.stop()
         windows.stopWatchdog()
         display.stop(remove: true)
@@ -506,6 +523,8 @@ public final class Engine {
     /// Why a call is turned away before it runs, if it is. `notes` gives the
     /// user's notes for the agent (taking them).
     static func refusal(tool: String, userInControl: Bool, paused: Bool, notes: () -> String?) -> String? {
+        // Saving a video touches no window.
+        if tool == "stop_recording" { return nil }
         // Closing a window the user is working in would pull it out from under them.
         if userInControl && (!readOnlyTools.contains(tool) || tool == "release_window") {
             return "The user took over your display and is using your windows. Wait and retry later, or tell the user you're blocked." + (notes() ?? "")
@@ -564,65 +583,76 @@ public final class Engine {
     /// Called from socket threads. Blocks until the tool finishes.
     public func call(tool: String, args: JSONObject) -> ToolResult {
         let touch = { [self] in stateLock.lock(); lastCallMs = nowMs(); stateLock.unlock() }
-        if let result = Self.answerOffQueue(tool, touch: touch, run: { status(Args(args)) }) { return result }
-        return queue.sync {
+        if let result = Self.answerOffQueue(tool, touch: touch, run: { recorded(tool, args) { status(Args(args)) } }) { return result }
+        return queue.sync { recorded(tool, args) { callOnQueue(tool: tool, args: args) } }
+    }
+
+    /// `body`'s call, listed in the recording under way, if any.
+    private func recorded(_ tool: String, _ args: JSONObject, _ body: () -> ToolResult) -> ToolResult {
+        guard let steps = recordingSteps else { return body() }
+        let step = steps.begin(tool: tool, args: args)
+        let result = body()
+        steps.end(step, result: result.text, isError: result.isError)
+        return result
+    }
+
+    private func callOnQueue(tool: String, args: JSONObject) -> ToolResult {
+        stateLock.lock()
+        lastCallMs = nowMs()
+        _busy = Self.describe(tool)
+        stateLock.unlock()
+        changed()
+        defer {
             stateLock.lock()
+            _busy = nil
+            _waitingReason = nil
             lastCallMs = nowMs()
-            _busy = Self.describe(tool)
             stateLock.unlock()
             changed()
-            defer {
-                stateLock.lock()
-                _busy = nil
-                _waitingReason = nil
-                lastCallMs = nowMs()
-                stateLock.unlock()
-                changed()
-                recorder.captureSoon()
+            recorder.captureSoon()
+        }
+        let readOnly = Self.readOnlyTools
+        if let refusal = Self.refusal(tool: tool, userInControl: userInControl, paused: paused, notes: takeUserNotes) {
+            return .error(refusal)
+        }
+        let monitored = !readOnly.contains(tool) || tool == "get_window_state"
+        let startMs = nowMs()
+        waitNotes = []
+        agentWaitNotes = []
+        waitBudget.step()
+        touched = []
+        do {
+            var result = try run(tool: tool, args: Args(args))
+            if !waitNotes.isEmpty {
+                result.text += "\n[user first] " + waitNotes.map(Self.sentence).joined(separator: " ") + " That's expected: the step ran, don't repeat it."
+                waitNotes = []
             }
-            let readOnly = Self.readOnlyTools
-            if let refusal = Self.refusal(tool: tool, userInControl: userInControl, paused: paused, notes: takeUserNotes) {
-                return .error(refusal)
+            if !agentWaitNotes.isEmpty {
+                result.text += "\n[other agents] " + agentWaitNotes.map(Self.sentence).joined(separator: " ") + " That's expected: the step ran, don't repeat it."
+                agentWaitNotes = []
             }
-            let monitored = !readOnly.contains(tool) || tool == "get_window_state"
-            let startMs = nowMs()
-            waitNotes = []
-            agentWaitNotes = []
-            waitBudget.step()
-            touched = []
-            do {
-                var result = try run(tool: tool, args: Args(args))
-                if !waitNotes.isEmpty {
-                    result.text += "\n[user first] " + waitNotes.map(Self.sentence).joined(separator: " ") + " That's expected: the step ran, don't repeat it."
-                    waitNotes = []
-                }
-                if !agentWaitNotes.isEmpty {
-                    result.text += "\n[other agents] " + agentWaitNotes.map(Self.sentence).joined(separator: " ") + " That's expected: the step ran, don't repeat it."
-                    agentWaitNotes = []
-                }
-                let soundNotes = audioClaims.takeNotes()
-                if !soundNotes.isEmpty { result.text += "\n[sound] " + soundNotes.joined(separator: " ") }
-                if monitored, let focusNote = focusReport() {
-                    focusGuard.record("\(tool): \(focusNote)")
-                    result.text += "\n[focus guard] \(focusNote)"
-                }
-                if let note = takeLeaveNotes() { result.text += note }
-                if let note = takeUserNotes() { result.text += note }
-                if tool != "status" && tool != "guard_report" {
-                    log("\(tool) (\(Int(nowMs() - startMs)) ms): \(Self.summary(of: result))", error: result.isError)
-                }
-                return result
-            } catch {
-                var text = "\(error)"
-                if monitored, let focusNote = focusReport() {
-                    focusGuard.record("\(tool): \(focusNote)")
-                    text += "\n[focus guard] \(focusNote)"
-                }
-                if let note = takeUserNotes() { text += note }
-                log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
-                recorder.captureFailure()
-                return .error(text)
+            let soundNotes = audioClaims.takeNotes()
+            if !soundNotes.isEmpty { result.text += "\n[sound] " + soundNotes.joined(separator: " ") }
+            if monitored, let focusNote = focusReport() {
+                focusGuard.record("\(tool): \(focusNote)")
+                result.text += "\n[focus guard] \(focusNote)"
             }
+            if let note = takeLeaveNotes() { result.text += note }
+            if let note = takeUserNotes() { result.text += note }
+            if tool != "status" && tool != "guard_report" {
+                log("\(tool) (\(Int(nowMs() - startMs)) ms): \(Self.summary(of: result))", error: result.isError)
+            }
+            return result
+        } catch {
+            var text = "\(error)"
+            if monitored, let focusNote = focusReport() {
+                focusGuard.record("\(tool): \(focusNote)")
+                text += "\n[focus guard] \(focusNote)"
+            }
+            if let note = takeUserNotes() { text += note }
+            log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
+            recorder.captureFailure()
+            return .error(text)
         }
     }
 
@@ -683,7 +713,7 @@ public final class Engine {
             throw ToolError(refusal)
         }
         // Opening or borrowing a window is what needs a display.
-        if tool == "open_window" || tool == "borrow_window" { try ensureDisplay() }
+        if tool == "open_window" || tool == "borrow_window" || tool == "start_recording" { try ensureDisplay() }
         return try dispatch(tool: tool, args: args)
     }
 
@@ -736,6 +766,8 @@ public final class Engine {
         case "guard_report": return guardReport()
         case "capture_audio": return try captureAudio(args)
         case "batch": return try batch(args)
+        case "start_recording": return try startRecording(args)
+        case "stop_recording": return try stopRecording(args)
         // Maintenance, not in the agent tool catalog.
         case "admin_close_window":
             return ToolResult(text: windows.closeAny(try args.requireWindowID("window_id")) ? "closed" : "failed")
@@ -1051,8 +1083,16 @@ public final class Engine {
         let pointer = AgentPointer(point: clamp(p), kind: kind)
         stateLock.lock()
         if case .drag(let to) = kind { _lastPointer = to } else { _lastPointer = pointer.point }
+        let rec = _recording?.steps ?? testStepLog
         stateLock.unlock()
         recorder.pointer(pointer)
+        if let rec {
+            let rel = { (q: CGPoint) in CGPoint(x: q.x - b.minX, y: q.y - b.minY) }
+            var click = false, to: CGPoint?
+            if case .click = kind { click = true }
+            if case .drag(let end) = kind { to = rel(end) }
+            rec.setPoint(rel(pointer.point), click: click, dragTo: to)
+        }
         DispatchQueue.main.async {
             NotificationCenter.default.post(name: Self.pointerNotification, object: self, userInfo: ["pointer": pointer])
         }
@@ -1095,7 +1135,25 @@ public final class Engine {
             }
             throw ToolError("element \(index) isn't in the last get_window_state for window \(window.id)")
         }
+        if let rec = recordingSteps {
+            let b = display.bounds
+            rec.setTarget(StepTarget(element: n.index, role: n.role, label: n.label,
+                                           frame: liveFrame(n).offsetBy(dx: -b.minX, dy: -b.minY), secure: n.secure))
+        }
         return n
+    }
+
+    /// Where an element is now. The frame from the last read is where it
+    /// was then: the window, or its whole display, may have moved since
+    /// (another agent display before this one in the arrangement went away,
+    /// and every display after it moved up, windows and all).
+    private func liveFrame(_ n: AXNode) -> CGRect {
+        Self.currentFrame(live: AX.frame(n.element), read: n.frame)
+    }
+
+    static func currentFrame(live: CGRect?, read: CGRect) -> CGRect {
+        guard let live, live.width > 0 || live.height > 0 else { return read }
+        return live
     }
 
     private func pngImage(_ image: CGImage) -> ToolImage? {
@@ -2103,14 +2161,19 @@ public final class Engine {
                 // takes key focus too.
                 if i + 1 >= steps.count || !Self.mayTakeKey(steps[i + 1]["tool"] as? String ?? "", Args(argsOf(i + 1))) { closeCover() }
             }
+            // The recording under way lists each step on its own.
+            let rec = recordingSteps
+            let recStep = rec?.begin(tool: tool, args: stepArgs, inBatch: true)
             if tool == "wait" {
                 let ms = min(max(Args(stepArgs).double("ms") ?? 500, 0), 5000)
                 sleepMs(ms)
                 lines.append("\(i + 1). wait: \(Int(ms)) ms")
+                if let recStep { rec?.end(recStep, result: "Waited \(Int(ms)) ms.", isError: false) }
                 continue
             }
             do {
                 let r = try run(tool: tool, args: Args(stepArgs))
+                if let recStep { rec?.end(recStep, result: r.text, isError: r.isError) }
                 let first = r.text.split(separator: "\n").first.map(String.init) ?? "done"
                 // History gets each step, not just the whole batch at the end.
                 recorder.note("\(tool): \(first)", error: false)
@@ -2119,6 +2182,7 @@ public final class Engine {
                 if !waitNotes.isEmpty { line += " (\(waitNotes.joined(separator: "; ")))"; waitedNotes += waitNotes.count; waitNotes = [] }
                 lines.append(line)
             } catch {
+                if let recStep { rec?.end(recStep, result: "\(error)", isError: true) }
                 // History gets the failed step too, flagged, and a frame of it.
                 recorder.note("\(tool) FAILED: \(error)", error: true)
                 recorder.captureFailure()
@@ -2182,7 +2246,7 @@ public final class Engine {
         let count = args.int("count") ?? 1
         if args.int("element") != nil {
             let n = try node(args, window: w)
-            point(n.frame.center, .click)
+            point(liveFrame(n).center, .click)
             // A click at the element's place lands on whatever is there now,
             // so it's only for an element that's still there and has no
             // accessibility action for this click.
@@ -2262,7 +2326,7 @@ public final class Engine {
         let (w, _) = try agentWindow(args)
         let n = try node(args, window: w)
         let value = try args.requireString("value")
-        point(n.frame.center)
+        point(liveFrame(n).center)
         let err = try guarded(w, cause: "setting a value") { AX.set(n.element, "AXValue", value as CFString) }
         guard err == .success else {
             throw ToolError("couldn't set element \(n.index)'s value (\(AX.errorName(err))). Try type_text with element=\(n.index).")
@@ -2284,7 +2348,7 @@ public final class Engine {
         } else if !action.hasPrefix("AX") {
             action = "AX" + action.prefix(1).uppercased() + action.dropFirst()
         }
-        point(n.frame.center, .click)
+        point(liveFrame(n).center, .click)
         let err = try guarded(w, cause: "performing \(action)") { AX.perform(n.element, action) }
         guard err == .success else {
             throw ToolError("\(action) on element \(n.index) failed: \(AX.errorName(err)). Its actions: \(n.actions.joined(separator: ", "))")
@@ -2297,7 +2361,11 @@ public final class Engine {
         let text = try args.requireString("text")
         var target: AXNode?
         if args.int("element") != nil { target = try node(args, window: w) }
-        if let n = target { point(n.frame.center) }
+        if let n = target { point(liveFrame(n).center) }
+        // Keys into whatever has focus: a recording hides them if that's a password field.
+        if target == nil, let rec = recordingSteps, Self.isSecureField(AX.element(AX.app(w.pid), "AXFocusedUIElement")) {
+            rec.setFocusSecure()
+        }
 
         // An open or save panel takes keys in its own process, without the
         // app's key window changing (see `Panel`), so it needs none of what
@@ -2579,7 +2647,7 @@ public final class Engine {
         let (w, ax) = try agentWindow(args)
         let p: CGPoint
         if args.int("element") != nil {
-            p = try node(args, window: w).frame.center
+            p = liveFrame(try node(args, window: w)).center
         } else if args.double("x") != nil {
             p = try globalPoint(args, window: ax, of: w)
         } else {
@@ -2978,6 +3046,85 @@ public final class Engine {
         }
         guard err == .success else { throw ToolError("pressing \(path.joined(separator: " > ")) failed: \(AX.errorName(err))") }
         return ToolResult(text: "Chose \(path.joined(separator: " > ")).")
+    }
+
+    static func isSecureField(_ el: AXUIElement?) -> Bool {
+        guard let el else { return false }
+        return AX.string(el, "AXRole") == "AXSecureTextField" || AX.string(el, "AXSubrole") == "AXSecureTextField"
+    }
+
+    // MARK: Recording
+
+    private func startRecording(_ args: Args) throws -> ToolResult {
+        if let r = currentRecording {
+            throw ToolError("a recording is already under way (for \(Int(r.elapsedMs / 1000)) s, into \(r.dir.path)). Call stop_recording first.")
+        }
+        guard Capture.hasPermission else { throw ToolError("Screen Recording permission is missing, so nothing can be recorded. Tell the user.") }
+        var windowID: CGWindowID?
+        if args.int("window_id") != nil { windowID = try agentWindow(args).0.id }
+        let rec = try AgentRecording(display: display, windowID: windowID, fps: args.int("fps") ?? AgentRecording.defaultFPS,
+                                     label: label, redactAll: args.bool("hide_typing") ?? false,
+                                     onDisplayFrame: { [weak self] in self?.recordPreview($0) })
+        let what = windowID.map { "window \($0)" } ?? "your display"
+        let text = "Recording \(what) at \(rec.fps) fps. Every tool call from now on is drawn on the video and listed, failures included. Call stop_recording when you're done: it saves recording.mp4 with actions.md and actions.json into \(rec.dir.path)."
+        // This call is the recording's first step.
+        let first = rec.steps.begin(tool: "start_recording", args: args.raw)
+        rec.steps.end(first, result: text, isError: false)
+        stateLock.lock()
+        _recording = rec
+        _recordingAudio = args.bool("audio") ?? false
+        endedRecording = nil
+        stateLock.unlock()
+        return ToolResult(text: text)
+    }
+
+    private func stopRecording(_ args: Args) throws -> ToolResult {
+        stateLock.lock()
+        let rec = _recording, withAudio = _recordingAudio
+        _recording = nil
+        let ended = endedRecording
+        endedRecording = nil
+        stateLock.unlock()
+        let out: AgentRecording.Output
+        if let rec {
+            // This call is its last step.
+            if let last = rec.steps.all.last, last.tool == "stop_recording" {
+                rec.steps.end(last, result: "Stopped the recording and saved it.", isError: false)
+            }
+            out = try rec.finish(audio: withAudio ? audio.url : nil)
+        } else if let ended {
+            out = try ended.get()
+        } else {
+            throw ToolError("no recording is under way. Call start_recording first.")
+        }
+        if args.bool("reveal") == true {
+            let video = out.video
+            DispatchQueue.main.async { NSWorkspace.shared.activateFileViewerSelecting([video]) }
+        }
+        return ToolResult(text: Self.describe(out, revealed: args.bool("reveal") == true))
+    }
+
+    static func describe(_ out: AgentRecording.Output, revealed: Bool) -> String {
+        var lines = ["Saved the recording: \(RecordingText.clock(out.durationMs)), \(Int(out.size.width))x\(Int(out.size.height)), \(out.frames) frames, \(out.toolCalls) tool calls\(out.failed > 0 ? " (\(out.failed) failed)" : "")."]
+        lines.append("Video (H.264 MP4, plays in QuickTime): \(out.video.path)")
+        lines.append("Action list: \(out.markdown.path) (and \(out.json.lastPathComponent) beside it)")
+        if let a = out.audio { lines.append("Sound: \(a.path)") }
+        lines += out.notes
+        lines.append(revealed ? "It's shown in the Finder for the user." : "Give the user these paths. stop_recording with reveal=true shows the video in the Finder.")
+        return lines.joined(separator: "\n")
+    }
+
+    /// The display is going away: save the recording under way, for the
+    /// next stop_recording to hand over.
+    private func endRecordingForTeardown() {
+        stateLock.lock()
+        let rec = _recording, withAudio = _recordingAudio
+        _recording = nil
+        stateLock.unlock()
+        guard let rec else { return }
+        let result = Result { try rec.finish(audio: withAudio ? audio.url : nil) }
+        stateLock.lock(); endedRecording = result; stateLock.unlock()
+        if case .success(let out) = result { Log.info("recording saved as the display went away: \(out.video.path)") }
     }
 
     private func handoff(_ args: Args) throws -> ToolResult {

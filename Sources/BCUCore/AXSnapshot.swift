@@ -8,6 +8,11 @@ public struct AXNode {
     public let frame: CGRect          // global coordinates
     public let actions: [String]
     public let valueSettable: Bool
+    /// What the element is called (its title or description, else its
+    /// placeholder), for a recording's captions. Empty when it has none.
+    public var label: String = ""
+    /// A password field: what's typed into it is never shown.
+    public var secure = false
 }
 
 public struct AXSnapshotResult {
@@ -97,7 +102,7 @@ public enum AXSnapshot {
         let windowFrame = AX.frame(window) ?? .zero
         // Collected first and numbered after the walk. `element` is nil for a
         // plain text line (the popup heading).
-        struct Entry { let element: AXUIElement?; let indent: String; let body: String; let node: (String, CGRect, [String], Bool)? }
+        struct Entry { let element: AXUIElement?; let indent: String; let body: String; let node: (String, CGRect, [String], Bool)?; var label = ""; var secure = false }
         var entries: [Entry] = []
         var overflow: [(element: AXUIElement, role: String, frame: CGRect)] = []
         var outOfView: [AXUIElement] = []
@@ -158,7 +163,8 @@ public enum AXSnapshot {
                         .map { $0.replacingOccurrences(of: "AX", with: "").lowercased() }
                     if !acts.isEmpty { flags.append(acts.joined(separator: ",")) }
                     if !flags.isEmpty { line += " [\(flags.joined(separator: " "))]" }
-                    entries.append(Entry(element: el, indent: String(repeating: "  ", count: min(indent, 12)), body: line, node: (raw.role, f, actions, settable)))
+                    entries.append(Entry(element: el, indent: String(repeating: "  ", count: min(indent, 12)), body: line, node: (raw.role, f, actions, settable),
+                                         label: clean(label.isEmpty ? raw.placeholder : label, 80), secure: secure))
                     childIndent = indent + 1
                 }
             }
@@ -213,7 +219,7 @@ public enum AXSnapshot {
             }
             used.insert(idx)
             let line = e.indent + "[\(idx)] " + e.body
-            nodes[idx] = AXNode(index: idx, element: el, role: n.0, frame: n.1, actions: n.2, valueSettable: n.3)
+            nodes[idx] = AXNode(index: idx, element: el, role: n.0, frame: n.1, actions: n.2, valueSettable: n.3, label: e.label, secure: e.secure)
             lineByIndex[idx] = line
             indexByElement[el] = idx
             listing.append(line)
@@ -234,7 +240,8 @@ public enum AXSnapshot {
                     unlisted.insert(old)
                     hiddenLines[old] = prev.lines[old] ?? prev.hiddenLines[old]
                     nodes[old] = AXNode(index: old, element: o.element, role: o.role, frame: o.frame,
-                                        actions: AX.actions(o.element), valueSettable: AX.isSettable(o.element, "AXValue"))
+                                        actions: AX.actions(o.element), valueSettable: AX.isSettable(o.element, "AXValue"),
+                                        label: prev.nodes[old]?.label ?? "", secure: prev.nodes[old]?.secure ?? false)
                 }
             }
             for el in outOfView {

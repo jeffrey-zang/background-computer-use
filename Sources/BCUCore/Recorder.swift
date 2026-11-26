@@ -715,15 +715,23 @@ public final class SessionRecorder {
     /// Where an action is about to land.
     func pointer(_ p: AgentPointer) {
         let t = wallMs()
+        // Relative to where the display is now, as the point was worked
+        // out: the display can move in the arrangement before the queue
+        // gets to it (another display before it went away).
+        let rel = Self.relative(p, display: display.bounds)
         queue.async {
             guard let writer = self.writer else { return }
-            let b = self.display.bounds
-            var point = p.point
-            if case .drag(let to) = p.kind { point = to }
-            var click = false
-            if case .click = p.kind { click = true }
-            writer.pointer(CGPoint(x: point.x - b.minX, y: point.y - b.minY), click: click, t: t)
+            writer.pointer(rel.point, click: rel.click, t: t)
         }
+    }
+
+    /// Where `p` lands on a display at `display` (global points), and whether it's a click.
+    static func relative(_ p: AgentPointer, display b: CGRect) -> (point: CGPoint, click: Bool) {
+        var point = p.point
+        if case .drag(let to) = p.kind { point = to }
+        var click = false
+        if case .click = p.kind { click = true }
+        return (CGPoint(x: point.x - b.minX, y: point.y - b.minY), click)
     }
 
     /// A call just finished: take a frame soon, even for a small change.
