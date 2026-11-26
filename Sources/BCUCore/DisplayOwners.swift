@@ -41,18 +41,39 @@ enum DisplayOwners {
         directory.appendingPathComponent(String(id))
     }
 
+    /// Claims and releases, across every engine of the user, one at a
+    /// time: a release reads the record and deletes it, and another engine
+    /// can be given the same display ID in between (the display is already
+    /// gone when its record is released). An exclusive `flock` on a file in
+    /// the records' directory; the kernel drops it if the process dies.
+    static func withLock<T>(_ body: () -> T) -> T {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fd = open(directory.appendingPathComponent(".lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        // (No lock file: carry on unlocked rather than lose the record.)
+        guard fd >= 0 else { return body() }
+        defer { close(fd) }
+        while flock(fd, LOCK_EX) != 0 && errno == EINTR {}
+        defer { flock(fd, LOCK_UN) }
+        return body()
+    }
+
     /// This process made display `id`.
     static func claim(_ id: CGDirectDisplayID, as owner: Owner? = me) {
         guard id != 0, let owner else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? Data("\(owner.pid) \(owner.start)\n".utf8).write(to: file(id), options: .atomic)
+        withLock {
+            try? Data("\(owner.pid) \(owner.start)\n".utf8).write(to: file(id), options: .atomic)
+        }
     }
 
     /// Display `id` is gone. Only our own record goes: another engine may
-    /// have been given the same ID since.
+    /// have been given the same ID since. Checked and deleted under the
+    /// lock, so a claim can't land between the two.
     static func release(_ id: CGDirectDisplayID, as owner: Owner? = me) {
-        guard id != 0, let owner, self.owner(of: id) == owner else { return }
-        try? FileManager.default.removeItem(at: file(id))
+        guard id != 0, let owner else { return }
+        withLock {
+            guard self.owner(of: id) == owner else { return }
+            try? FileManager.default.removeItem(at: file(id))
+        }
     }
 
     /// Who recorded display `id`, alive or not.

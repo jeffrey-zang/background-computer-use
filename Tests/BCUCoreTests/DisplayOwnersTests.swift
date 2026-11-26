@@ -68,4 +68,32 @@ final class DisplayOwnersTests: XCTestCase {
         XCTAssertTrue(saved.path.hasPrefix("/private/var/folders/") || saved.path.hasPrefix("/var/folders/"), saved.path)
         XCTAssertFalse(saved.path.hasPrefix(BCUPaths.supportDirectory.path))
     }
+
+    /// A claim waits while another engine holds the lock to check and
+    /// delete a record, so it can't land between the two (the lock is a
+    /// `flock`, which another open of the file, as another process's is,
+    /// can't take at the same time).
+    func testAClaimWaitsForARelease() throws {
+        let (p, owner) = try otherEngine()
+        defer { p.terminate() }
+        DisplayOwners.claim(905)
+        let held = expectation(description: "lock held")
+        let done = expectation(description: "release done")
+        DispatchQueue.global().async {
+            DisplayOwners.withLock {
+                held.fulfill()
+                Thread.sleep(forTimeInterval: 0.3)
+                if DisplayOwners.owner(of: 905) == DisplayOwners.me {
+                    try? FileManager.default.removeItem(at: DisplayOwners.directory.appendingPathComponent("905"))
+                }
+            }
+            done.fulfill()
+        }
+        wait(for: [held], timeout: 5)
+        let t0 = Date()
+        DisplayOwners.claim(905, as: owner)
+        XCTAssertGreaterThan(Date().timeIntervalSince(t0), 0.2, "the claim waited for the lock")
+        wait(for: [done], timeout: 5)
+        XCTAssertEqual(DisplayOwners.owner(of: 905), owner, "the new owner's record survives the old owner's release")
+    }
 }
