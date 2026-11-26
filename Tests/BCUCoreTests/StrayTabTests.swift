@@ -73,9 +73,9 @@ final class StrayTabTests: XCTestCase {
     func testALateWindowFromMoveTabIsTheUsers() {
         let pending = (before: Set<CGWindowID>([1, 2]), untilMs: seen + 10_000, title: "TAB OPENED BY CODEX")
         let title = "TAB OPENED BY CODEX - Google Chrome"
-        func late(_ id: CGWindowID, standard: Bool = true, registered: Bool = false, opening: Bool = false, title t: String? = title,
+        func late(_ id: CGWindowID, standard: Bool = true, registered: Bool = false, opening: Bool = false, title t: String? = title, stepSince: Bool = true,
                   pending p: (before: Set<CGWindowID>, untilMs: Double, title: String)? = pending, at now: Double = seen) -> Bool {
-            WindowManager.isLateHandout(id: id, standard: standard, registered: registered, opening: opening, windowTitle: t, pending: p, nowMs: now)
+            WindowManager.isLateHandout(id: id, standard: standard, registered: registered, opening: opening, windowTitle: t, stepSince: stepSince, pending: p, nowMs: now)
         }
         XCTAssertTrue(late(3))
         // One that was there before, a popup, too late, or none pending.
@@ -91,6 +91,11 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(late(3, title: "New Tab - Google Chrome"))
         XCTAssertFalse(late(3, title: nil))
         XCTAssertFalse(late(3, pending: (before: [1, 2], untilMs: seen + 10_000, title: "")))
+        // With no agent step since the move, nothing else could have made
+        // it: the user's even if its page loaded or redirected meanwhile.
+        XCTAssertTrue(late(3, title: "Redirected page - Google Chrome", stepSince: false))
+        XCTAssertTrue(late(3, title: nil, stepSince: false))
+        XCTAssertFalse(late(3, standard: false, stepSince: false))
     }
 
     /// After a handout the baseline is the tabs from before it, less the

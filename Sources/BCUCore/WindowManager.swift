@@ -1658,7 +1658,12 @@ public final class WindowManager {
                 guard let tabs = Self.tabs(of: ax) else { seen[w.id] = before; continue }
                 seen[w.id] = (tabs, readMs)
                 guard let before else { continue }
-                guard let stray = tabs.first(where: { t in AX.bool(t, "AXValue") == true && !before.tabs.contains { CFEqual($0, t) } }),
+                let added = tabs.filter { t in !before.tabs.contains { CFEqual($0, t) } }
+                let selected = added.map { AX.bool($0, "AXValue") }
+                // A new tab whose selected state couldn't be read: no read,
+                // or it would be taken in as known before it was judged.
+                if selected.contains(where: { $0 == nil }) { seen[w.id] = before; continue }
+                guard let stray = zip(added, selected).first(where: { $0.1 == true })?.0,
                       Self.strayTab(newSelected: true, lastActionMs: focusGuard.lastActionMs(w.pid),
                                     sinceMs: before.ms, userDriving: userArranging) else { continue }
                 switch handOutSelectedTab(w, tab: stray, sinceMs: before.ms) {
@@ -1723,6 +1728,9 @@ public final class WindowManager {
         // the new window for the one it asked for.
         guard Self.openLock.try() else { return .later }
         defer { Self.openLock.unlock() }
+        // One moved tab's window on its way at a time per app: a second
+        // reservation would replace the first (see `lateHandouts`).
+        if let until = Self.lateHandoutUntil(w.pid), nowMs() < until { return .later }
         let appLock = Engine.inputLock(w.pid)
         appLock.lock()
         defer { appLock.unlock() }
@@ -1796,14 +1804,18 @@ public final class WindowManager {
     /// Whether a window is the late one a handout made: new since the
     /// handout, a standard window, in time, and not a window some session
     /// has (an open's catcher, mid-open, takes the app's next window first).
-    /// And it shows the moved tab: its title is the tab's (Chromium titles
-    /// a window "<tab> - <browser>"), so a window the agent's own keys or
-    /// clicks opened meanwhile (cmd+N, a popup) isn't taken for it.
-    static func isLateHandout(id: CGWindowID, standard: Bool, registered: Bool, opening: Bool, windowTitle: String?,
+    /// When an agent step ran in the app since the handout
+    /// (`stepSince`), its window must also show the moved tab: its title is
+    /// the tab's (Chromium titles a window "<tab> - <browser>"), so a window
+    /// the step's keys or clicks opened (cmd+N, a popup) isn't taken for it.
+    /// With no step since, nothing but the move could have made it, so it's
+    /// the user's whatever its page has become (loaded, redirected).
+    static func isLateHandout(id: CGWindowID, standard: Bool, registered: Bool, opening: Bool, windowTitle: String?, stepSince: Bool,
                               pending: (before: Set<CGWindowID>, untilMs: Double, title: String)?, nowMs: Double) -> Bool {
-        guard let pending, nowMs < pending.untilMs, !pending.before.contains(id), !pending.title.isEmpty,
-              let windowTitle, windowTitle == pending.title || windowTitle.hasPrefix(pending.title + " - ") else { return false }
-        return standard && !registered && !opening
+        guard let pending, nowMs < pending.untilMs, !pending.before.contains(id), standard, !registered, !opening else { return false }
+        guard stepSince else { return true }
+        guard !pending.title.isEmpty, let windowTitle else { return false }
+        return windowTitle == pending.title || windowTitle.hasPrefix(pending.title + " - ")
     }
 
     /// When the pending handout in `pid` stops waiting, if there is one.
@@ -1839,7 +1851,9 @@ public final class WindowManager {
             let ax = AX.window(pid: info.pid, id: info.id)
             let standard = ax.flatMap { AX.string($0, "AXSubrole") } == "AXStandardWindow"
             guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
-                                     windowTitle: ax.flatMap { AX.string($0, "AXTitle") }, pending: late[info.pid], nowMs: nowMs()) else { continue }
+                                     windowTitle: ax.flatMap { AX.string($0, "AXTitle") },
+                                     stepSince: (focusGuard.lastActionMs(info.pid) ?? -.infinity) >= late[info.pid]!.untilMs - Self.lateHandoutMs,
+                                     pending: late[info.pid], nowMs: nowMs()) else { continue }
             // Taken once: the same pending handout (still there, the one
             // this sweep saw) can't also claim another window, in this
             // sweep or another session's.
