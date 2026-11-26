@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import CPrivate
+import IOKit
 
 /// An agent's private display. Each agent session gets its own. The first
 /// touches the user's displays at a single corner (bottom-right of their
@@ -792,18 +793,61 @@ public final class AgentDisplay {
         return real.isEmpty ? ids : real
     }
 
-    /// A display made with macOS's virtual display API, by any app.
+    /// A display with no screen behind it: one an app made with macOS's
+    /// virtual display API. It isn't built in, and no display hardware in
+    /// the I/O Registry has its vendor. (Asked of the kernel, not of
+    /// WindowServer: CoreDisplay's info dictionary answers that directly,
+    /// but for another app's virtual display WindowServer may have to ask
+    /// that app, and a main thread waiting on that hung every app's view
+    /// of the displays for minutes in testing.) Unknown hardware: false.
     static var isVirtualDisplay: (CGDirectDisplayID) -> Bool = { id in
-        guard let info = coreDisplayInfo, let dict = info(id)?.takeRetainedValue() as? [String: Any] else { return false }
-        return (dict["kCGDisplayIsVirtualDevice"] as? NSNumber)?.boolValue ?? false
+        if CGDisplayIsBuiltin(id) != 0 { return false }
+        guard let vendors = hardwareDisplayVendors() else { return false }
+        return !vendors.contains(CGDisplayVendorNumber(id))
     }
 
-    private typealias DisplayInfo = @convention(c) (CGDirectDisplayID) -> Unmanaged<CFDictionary>?
-    private static let coreDisplayInfo: DisplayInfo? = {
-        guard let lib = dlopen("/System/Library/Frameworks/CoreDisplay.framework/CoreDisplay", RTLD_LAZY),
-              let sym = dlsym(lib, "CoreDisplay_DisplayCreateInfoDictionary") else { return nil }
-        return unsafeBitCast(sym, to: DisplayInfo.self)
-    }()
+    private static var hardwareVendorCache: (atMs: Double, vendors: Set<UInt32>?) = (-1, nil)
+
+    /// The vendors of the display hardware attached (each framebuffer's
+    /// EDID manufacturer, as `CGDisplayVendorNumber` gives it), looked up
+    /// at most once a second. nil when there's no framebuffer to read.
+    static func hardwareDisplayVendors() -> Set<UInt32>? {
+        let now = nowMs()
+        registryLock.lock()
+        if now - hardwareVendorCache.atMs < 1000 { let v = hardwareVendorCache.vendors; registryLock.unlock(); return v }
+        registryLock.unlock()
+        var vendors: Set<UInt32> = []
+        var found = false
+        // Apple silicon: each screen's framebuffer has its EDID's maker.
+        forEachService("IOMobileFramebuffer") { service in
+            found = true
+            guard let attrs = IORegistryEntryCreateCFProperty(service, "DisplayAttributes" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any],
+                  let product = attrs["ProductAttributes"] as? [String: Any],
+                  let vendor = (product["LegacyManufacturerID"] as? NSNumber)?.uint32Value else { return }
+            vendors.insert(vendor)
+        }
+        // Intel: one IODisplay per screen.
+        forEachService("IODisplay") { service in
+            found = true
+            guard let vendor = (IORegistryEntryCreateCFProperty(service, "DisplayVendorID" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? NSNumber)?.uint32Value else { return }
+            vendors.insert(vendor)
+        }
+        let result: Set<UInt32>? = found && !vendors.isEmpty ? vendors : nil
+        registryLock.lock()
+        hardwareVendorCache = (now, result)
+        registryLock.unlock()
+        return result
+    }
+
+    private static func forEachService(_ className: String, _ body: (io_service_t) -> Void) {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(className), &iterator) == KERN_SUCCESS else { return }
+        defer { IOObjectRelease(iterator) }
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            body(service)
+            IOObjectRelease(service)
+        }
+    }
 
     /// The bottom-right corner of the rightmost of `displays` (the lowest,
     /// of those that end as far right). Not the corner of their bounding
@@ -1006,7 +1050,7 @@ public final class AgentDisplay {
 
     /// Main thread: macOS finished rearranging the displays.
     fileprivate static func displaysChanged() {
-        registryLock.lock(); fencedCache.atMs = -1; strayCache.atMs = -1; registryLock.unlock()
+        registryLock.lock(); fencedCache.atMs = -1; strayCache.atMs = -1; hardwareVendorCache.atMs = -1; registryLock.unlock()
         for d in running { d.reconfigured() }
     }
 
