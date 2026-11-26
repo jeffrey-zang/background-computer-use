@@ -146,4 +146,11 @@ final class SeparateDisplayTests: XCTestCase {
         XCTAssertFalse(AgentDisplay.mayRecreate(sessionEmpty: true, slot: 0, runningSlots: [1]))
         XCTAssertFalse(AgentDisplay.mayRecreate(sessionEmpty: false, slot: 0, runningSlots: []))
     }
+
+    /// Nor while a window the registry doesn't know is on it (and not on a
+    /// user display): it would land on the user's screen (review).
+    func testNotReplacedWithAWindowOnIt() {
+        XCTAssertFalse(AgentDisplay.mayRecreate(sessionEmpty: true, occupied: true, slot: 0, runningSlots: []))
+        XCTAssertTrue(AgentDisplay.mayRecreate(sessionEmpty: true, occupied: false, slot: 0, runningSlots: []))
+    }
 }

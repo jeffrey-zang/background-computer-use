@@ -787,7 +787,7 @@ public final class AgentDisplay {
                 return
             }
             // With the user's screens asleep macOS won't rearrange anything.
-            let replaceable = Self.mayRecreate(sessionEmpty: canRecreate, slot: slot, runningSlots: Self.running.filter { $0 !== self }.map(\.slot))
+            let replaceable = Self.mayRecreate(sessionEmpty: canRecreate, occupied: canRecreate && occupied, slot: slot, runningSlots: Self.running.filter { $0 !== self }.map(\.slot))
             let remedy = Self.userDisplaysAwake ? Self.remedy(for: problem, tried: tried, recreated: recreated, canRecreate: replaceable) : nil
             guard let remedy else {
                 Log.info("agent display \(slot + 1) (\(displayID)) isn't a screen of its own: \(problem.text)\(fixed.isEmpty ? "" : " (tried \(fixed.joined(separator: ", then ")))")")
@@ -900,8 +900,18 @@ public final class AgentDisplay {
     /// on it (`sessionEmpty`), and no display after it in the staircase is
     /// in use. Removing it moves every display after it, and their windows
     /// cross the user's screen on the way (see `reapSpares`).
-    static func mayRecreate(sessionEmpty: Bool, slot: Int, runningSlots: [Int]) -> Bool {
-        sessionEmpty && !runningSlots.contains { $0 > slot }
+    /// `occupied`: a window is on it that isn't also on a user display (one
+    /// the registry may not know: the sweep doesn't catch windows while the
+    /// display isn't separate); removing the display would move it onto the
+    /// user's screen.
+    static func mayRecreate(sessionEmpty: Bool, occupied: Bool = false, slot: Int, runningSlots: [Int]) -> Bool {
+        sessionEmpty && !occupied && !runningSlots.contains { $0 > slot }
+    }
+
+    /// Some window lies on this display and not on a user display.
+    private var occupied: Bool {
+        let users = Self.userDisplayIDs().map { CGDisplayBounds($0) }
+        return WindowManager.windows(on: CGDisplayBounds(displayID)).contains { WindowManager.strandedOnStray($0.bounds, userDisplays: users) }
     }
 
     /// Serials this display shouldn't be made with again (see `recreate`).
