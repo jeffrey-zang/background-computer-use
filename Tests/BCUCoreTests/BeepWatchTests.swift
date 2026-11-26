@@ -117,6 +117,15 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertLessThanOrEqual(w.recentSteps.count, 200)
     }
 
+    /// A call that only waits isn't input to the app.
+    func testWaitingIsNotInput() {
+        XCTAssertFalse(Engine.acts("batch", ["actions": [["tool": "wait", "ms": 500]]]))
+        XCTAssertTrue(Engine.acts("batch", ["actions": [["tool": "wait", "ms": 500], ["tool": "click", "element": 3]]]))
+        XCTAssertTrue(Engine.acts("click", [:]))
+        XCTAssertFalse(Engine.acts("capture_audio", [:]))
+        XCTAssertFalse(Engine.acts("take_back", [:]))
+    }
+
     /// Keys sent to an open or save panel's service: its beeps count.
     func testAPanelServiceBeepCounts() {
         let t0 = Date()

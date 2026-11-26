@@ -616,7 +616,7 @@ public final class Engine {
                 }
                 let soundNotes = audioClaims.takeNotes()
                 if !soundNotes.isEmpty { result.text += "\n[sound] " + soundNotes.joined(separator: " ") }
-                if input { noteInputStep(start: stepStart, window: (try? Args(args).windowID("window_id")) ?? nil) }
+                if input { noteInputStep(start: stepStart, window: (try? Args(args).windowID("window_id")) ?? nil, tool: tool, args: args) }
                 if let beeps = beepNote(tool: tool, current: stepStart) { result.text += "\n[beep] " + beeps }
                 if monitored, let focusNote = focusReport() {
                     focusGuard.record("\(tool): \(focusNote)")
@@ -634,13 +634,23 @@ public final class Engine {
                     focusGuard.record("\(tool): \(focusNote)")
                     text += "\n[focus guard] \(focusNote)"
                 }
-                if input { noteInputStep(start: stepStart, window: (try? Args(args).windowID("window_id")) ?? nil) }
+                if input { noteInputStep(start: stepStart, window: (try? Args(args).windowID("window_id")) ?? nil, tool: tool, args: args) }
                 if let beeps = beepNote(tool: tool, current: stepStart) { text += "\n[beep] " + beeps }
                 if let note = takeUserNotes() { text += note }
                 log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
                 return .error(text)
             }
         }
+    }
+
+    /// Calls that can act on an app without sending input under its lock
+    /// (an accessibility press or value, a menu item, a page load, a new
+    /// window). Not a wait, nor a batch of only waits.
+    static func acts(_ tool: String, _ args: JSONObject) -> Bool {
+        if tool == "batch" {
+            return ((args["actions"] as? [JSONObject]) ?? []).contains { ($0["tool"] as? String) != "wait" }
+        }
+        return ["click", "set_value", "perform_action", "type_text", "press_key", "press_menu_item", "navigate", "open_window", "borrow_window", "choose_file", "drag", "scroll"].contains(tool)
     }
 
     /// Input went to these processes from `start` until now: a beep from
@@ -662,8 +672,8 @@ public final class Engine {
     /// lock (an accessibility press or value): the whole call counts, for
     /// the apps it acted on (its window's, and any it opened or closed),
     /// not every app the session has windows in.
-    private func noteInputStep(start: Date, window: CGWindowID?) {
-        guard !callSent else { return }
+    private func noteInputStep(start: Date, window: CGWindowID?, tool: String, args: JSONObject) {
+        guard !callSent, Self.acts(tool, args) else { return }
         let target = window.flatMap { windows.window($0)?.pid ?? WindowList.info($0)?.pid }
         let pids = touched.union([target].compactMap { $0 })
         guard !pids.isEmpty else { return }
