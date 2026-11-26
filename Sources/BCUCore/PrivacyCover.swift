@@ -47,6 +47,10 @@ public final class PrivacyCover {
 
     private var panels: [NSPanel] = []
     private var displayID: CGDirectDisplayID = 0
+    /// Counts `hide`s, so a `show` queued before one doesn't put the cover
+    /// back after it.
+    private let genLock = NSLock()
+    private var generation = 0
 
     public init() {}
 
@@ -59,8 +63,10 @@ public final class PrivacyCover {
     /// Put the cover over display `id`, or move it there. Any thread.
     public func show(on id: CGDirectDisplayID) {
         guard Self.enabled, id != 0 else { return }
+        genLock.lock(); let gen = generation; genLock.unlock()
         DispatchQueue.main.async { [self] in
-            guard NSApp != nil else { return }
+            genLock.lock(); let current = generation == gen; genLock.unlock()
+            guard current, NSApp != nil else { return }
             let b = CGDisplayBounds(id)
             guard !b.isEmpty else { return }
             displayID = id
@@ -83,9 +89,13 @@ public final class PrivacyCover {
         show(on: displayID)
     }
 
-    /// Take the cover down. Any thread.
+    /// Take the cover down. Any thread; on the main thread it's down when
+    /// this returns. The display's owner calls it there just before taking
+    /// the display away: a window still on a display that goes away is moved
+    /// onto one of the user's, and this one would cover their screen.
     public func hide() {
-        DispatchQueue.main.async { [self] in
+        genLock.lock(); generation += 1; genLock.unlock()
+        let work = { [self] in
             let gone = panels
             panels = []
             displayID = 0
@@ -96,6 +106,7 @@ public final class PrivacyCover {
                 p.close()
             }
         }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.async(execute: work) }
     }
 
     private func make(label withLabel: Bool) -> NSPanel {
