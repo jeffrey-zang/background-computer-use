@@ -1897,7 +1897,16 @@ public final class WindowManager {
             if userInNow {
                 // Came to the browser during the move: the scope was entered
                 // with nowhere of theirs to give key back to.
-                if !userIn, let userKey, userKey != made { scope.handOff(to: userKey) } else { scope.exit() }
+                if !userIn, let userKey, userKey != made {
+                    // Out of the scope, then the confirmed give-back (a
+                    // single quick set of records is often ignored).
+                    scope.handOff(to: userKey)
+                    if AX.focusedWindowID(w.pid) != userKey && !Self.giveKey(pid: w.pid, to: userKey) {
+                        Log.info("tabs: couldn't confirm key on window \(userKey) in \(w.appName) after the move")
+                    }
+                } else {
+                    scope.exit()
+                }
             } else {
                 scope.handOff(to: made)
             }
@@ -2093,11 +2102,16 @@ public final class WindowManager {
         // Ended unclaimed: the move may have happened all the same, so a
         // read of its source taken meanwhile is marked stale as the
         // reservation goes (`handoutPending` holds until then).
-        for (pid, pending) in Self.lateHandouts where nowMs() >= pending.untilMs {
-            if let source = Self.lateHandoutSource.removeValue(forKey: pid) { Self.tabMovedOut[source] = nowMs() }
+        let cutoff = nowMs()
+        for (pid, pending) in Self.lateHandouts where cutoff >= pending.untilMs {
+            if let source = Self.lateHandoutSource.removeValue(forKey: pid) { Self.tabMovedOut[source] = cutoff }
             Self.lateHandoutUserKey[pid] = nil
+            Self.lateHandouts[pid] = nil
         }
-        Self.lateHandouts = Self.lateHandouts.filter { nowMs() < $0.value.untilMs }
+        // A source whose reservation is gone some other way isn't pending.
+        for pid in Self.lateHandoutSource.keys where Self.lateHandouts[pid] == nil {
+            if let source = Self.lateHandoutSource.removeValue(forKey: pid) { Self.tabMovedOut[source] = cutoff }
+        }
         let late = Self.lateHandouts
         Self.sharedLock.unlock()
         var unread: Set<CGWindowID> = []
