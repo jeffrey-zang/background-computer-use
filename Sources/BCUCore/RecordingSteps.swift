@@ -102,7 +102,11 @@ public enum RecordingText {
     public static func caption(tool: String, args: JSONObject, target: StepTarget?, hidden: Bool) -> String {
         let a = Args(args)
         let on = target.map { " " + $0.name } ?? (a.int("element").map { " element \($0)" } ?? "")
-        let typed: (String) -> String = { hidden ? "(hidden, \($0.count) characters)" : "\"\(clip($0, 48))\"" }
+        // Once a step ends, what it typed is already "(hidden, N characters)" in its arguments.
+        let typed: (String) -> String = { v in
+            guard hidden else { return "\"\(clip(v, 48))\"" }
+            return v.hasPrefix("(hidden") ? v : "(hidden, \(v.count) characters)"
+        }
         switch tool {
         case "click":
             var verb = "click"

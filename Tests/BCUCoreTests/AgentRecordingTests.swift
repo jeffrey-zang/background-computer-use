@@ -101,6 +101,8 @@ final class AgentRecordingTests: XCTestCase {
             XCTAssertTrue(text.contains("hello"), "text typed into an ordinary field is shown")
         }
         XCTAssertNil(s.secret)
+        XCTAssertEqual(RecordingText.caption(tool: s.tool, args: s.args, target: s.target, hidden: true),
+                       "set_value \"Password\" (TextField) = (hidden, 7 characters)", "the count is the secret's, not the placeholder's")
     }
 
     func testHideTypingHidesAllTypedText() {
