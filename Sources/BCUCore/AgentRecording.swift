@@ -63,6 +63,7 @@ public final class AgentRecording {
     /// Per frame, where the windows that hidden typing went into were then
     /// (display points), so their cover follows them.
     private var coverMaps: [[CGWindowID: CGRect]] = []
+    private var coversBefore: [CGWindowID: CGRect] = [:]
     private var lastPts: Int64 = -1
     /// Captures under way (on `queue`), and a group to wait for them.
     private var pending = 0
@@ -214,6 +215,12 @@ public final class AgentRecording {
     private func grab() -> (image: CGImage, source: CGRect)? {
         let live = display.liveBounds
         let b = live.isEmpty ? display.bounds : live
+        // Covered windows' places before the capture (see `write`).
+        var before: [CGWindowID: CGRect] = [:]
+        for id in steps.coverWindows() where id != windowID {
+            if let wb = WindowList.info(id)?.bounds { before[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
+        }
+        lock.lock(); coversBefore = before; lock.unlock()
         if let windowID {
             // Released (handed back to the user, or left open for them): not
             // the session's to film any more, wherever it is.
@@ -262,11 +269,17 @@ public final class AgentRecording {
             let live = display.liveBounds
             let b = live.isEmpty ? display.bounds : live
             var covers: [CGWindowID: CGRect] = [:]
+            lock.lock(); let coversBefore = self.coversBefore; lock.unlock()
             for id in steps.coverWindows() {
                 // The recorded window itself: where this frame shows it (the
                 // same reading of its place as the mapping), not a later one.
                 if id == windowID { covers[id] = source; continue }
-                if let wb = WindowList.info(id)?.bounds { covers[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
+                // Where it was when the capture started and where it is now,
+                // together: it may have moved while the screenshot was taken.
+                if let wb = WindowList.info(id)?.bounds {
+                    let now = wb.offsetBy(dx: -b.minX, dy: -b.minY)
+                    covers[id] = coversBefore[id].map { $0.union(now) } ?? now
+                }
             }
             lock.lock(); mappings.append((pts, map)); coverMaps.append(covers); lock.unlock()
             lastPts = pts

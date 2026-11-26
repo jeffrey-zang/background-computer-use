@@ -743,7 +743,9 @@ public final class Engine {
             if tool == "type_text", (args.string("text") ?? "").contains("\t"), let rec = recordingSteps,
                let id = windowID, let w = windows.window(id) {
                 // With no read of the window, whether it has one isn't known: hidden.
-                if passwordFieldFocused(w) || (snapshots[w.id]?.nodes.values.contains { $0.secure } ?? true) { rec.setFocusSecure() }
+                // A read can leave fields out (max_elements), and the keys
+                // can pass through one on the way: tabbed typing is hidden.
+                rec.setFocusSecure()
                 // It may have filled other fields: the video covers the window.
                 if let bounds = WindowList.info(w.id)?.bounds {
                     let b = display.bounds

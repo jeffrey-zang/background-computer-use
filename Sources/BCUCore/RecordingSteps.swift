@@ -476,6 +476,11 @@ public final class StepLog {
     /// show no field values at all (an edited or partly typed value matches
     /// no text that was typed).
     private var hidValues = false
+    /// When that started (ms into the video): reads that end after it are left out.
+    private var hidValuesFrom = Double.infinity
+    /// What a read's result becomes once typing is hidden.
+    static let readLeftOut = "(Left out: once typed text is hidden, what windows show is left out of this recording's lists.)"
+    static let reads: Set<String> = ["get_window_state", "screenshot", "status", "list_windows", "list_apps", "guard_report"]
     public let redactAll: Bool
     private let clock: () -> Double
 
@@ -507,6 +512,7 @@ public final class StepLog {
         // the moment it starts: a status answered meanwhile can show it already.
         if redactAll, tool == "type_text" || tool == "set_value" || character {
             for v in original.values where RecordingText.redactsLater(v) { addHidden(RecordingText.forms(of: v)) }
+            if !hidValues { hidValuesFrom = clock() }
             hidValues = true
         }
         let window = (a["window_id"] as? NSNumber)?.uint32Value
@@ -544,7 +550,9 @@ public final class StepLog {
         // An element can be named after text hidden earlier (a row with the file name typed).
         // A text field's name can be its (edited) contents, once typing was hidden.
         let textInput = ["TextField", "TextArea", "SearchField", "ComboBox"].contains(target.role)
-        let label = hidValues && textInput && !target.label.isEmpty && target.label != "focused field"
+        // Once typing is hidden, no name at all: any element's can echo it.
+        _ = textInput
+        let label = hidValues && !target.label.isEmpty && target.label != "focused field"
             ? "(hidden)" : RecordingText.redact(redactRunStarts(target.label), secrets: hiddenTexts)
         current?.target = StepTarget(element: target.element, role: target.role, label: label, frame: target.frame, secure: target.secure)
     }
@@ -597,7 +605,10 @@ public final class StepLog {
         // Field values first, on the result as given (a secret replaced
         // first could break up the `value="` it looks for), then text hidden
         // in an earlier step, wherever it shows up again.
-        var result = hidValues ? RecordingText.hideValues(result) : result
+        // Under hide_typing, once something was typed, a read is left out
+        // whole: a window can echo typed text in more ways (titles, labels,
+        // layouts) than can be matched.
+        var result = hidValues && Self.reads.contains(s.tool) ? Self.readLeftOut : (hidValues ? RecordingText.hideValues(result) : result)
         result = RecordingText.redact(redactRunStarts(result), secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
@@ -650,7 +661,10 @@ public final class StepLog {
             // The run is over: its whole text stays hidden, once.
             if let forms = runForms.removeValue(forKey: w) { addHidden(forms) }
         }
-        if s.textHidden && redactAll { hidValues = true }
+        if s.textHidden && redactAll {
+            if !hidValues { hidValuesFrom = s.t }
+            hidValues = true
+        }
         s.original = [:]
         if s.tool == "batch" {
             result = RecordingText.redact(result, secrets: s.steps.compactMap(\.secret))
@@ -695,6 +709,7 @@ public final class StepLog {
         lock.lock(); defer { lock.unlock() }
         guard !hiddenTexts.isEmpty || !keyRuns.isEmpty || !pastRuns.isEmpty else { return }
         for s in Self.flatten(steps) where s.end != nil {
+            if hidValues, Self.reads.contains(s.tool), (s.end ?? 0) >= hidValuesFrom { s.result = Self.readLeftOut; continue }
             s.result = RecordingText.redact(redactRunStarts(s.result), secrets: hiddenTexts)
             s.args = Self.redacted(s.args, hiddenTexts) as? JSONObject ?? s.args
             if let t = s.target {

@@ -154,7 +154,7 @@ final class AgentRecordingTests: XCTestCase {
         // A key or two isn't taken out of everything after it.
         let k = log.begin(tool: "type_text", args: ["text": "\n"])
         log.end(k, result: "Typed 1 characters.", isError: false)
-        let r2 = log.begin(tool: "get_window_state", args: [:])
+        let r2 = log.begin(tool: "click", args: [:])
         log.end(r2, result: "line one\nline two", isError: false)
         XCTAssertEqual(r2.result, "line one\nline two")
     }
@@ -491,7 +491,9 @@ final class AgentRecordingTests: XCTestCase {
         let d = log.begin(tool: "press_key", args: ["key": "delete"]); log.end(d, result: "Pressed delete.", isError: false)
         let r = log.begin(tool: "get_window_state", args: [:])
         log.end(r, result: "[3] TextField \"Note\" value=\"confidentia\" @(0,0 10x10) [settable]", isError: false)
-        XCTAssertEqual(r.result, "[3] TextField \"(hidden)\" value=(hidden) @(0,0 10x10) [settable]")
+        XCTAssertEqual(r.result, StepLog.readLeftOut, "once typing is hidden, a read is left out whole")
+        XCTAssertEqual(RecordingText.hideValues("[3] TextField \"Note\" value=\"confidentia\" @(0,0 10x10) [settable]"),
+                       "[3] TextField \"(hidden)\" value=(hidden) @(0,0 10x10) [settable]")
     }
 
     func testKeyRunsSkipRefusalsAndStayPerWindow() {
@@ -525,7 +527,8 @@ final class AgentRecordingTests: XCTestCase {
         let r = log.begin(tool: "get_window_state", args: [:])
         log.end(r, result: "[3] TextArea value=\"\"Title\" [private notes\" @(0,0 10x10) [settable]", isError: false)
         XCTAssertFalse(r.result.contains("private") || r.result.contains("Title"), r.result)
-        XCTAssertTrue(r.result.contains("@(0,0 10x10) [settable]"), r.result)
+        let line = RecordingText.hideValues("[3] TextArea value=\"\"Title\" [private notes\" @(0,0 10x10) [settable]")
+        XCTAssertEqual(line, "[3] TextArea value=(hidden) @(0,0 10x10) [settable]")
     }
 
     func testManyHiddenKeysStayQuick() {
@@ -601,7 +604,7 @@ final class AgentRecordingTests: XCTestCase {
     func testOptionKeysAreHiddenWhateverTheyMade() {
         let log = StepLog(redactAll: true, clock: { 0 })
         for c in "asd" { let k = log.begin(tool: "press_key", args: ["key": String(c), "modifiers": ["option"], "window_id": 1]); log.setFocus(secure: false); log.end(k, result: "Pressed.", isError: false) }
-        let st = log.begin(tool: "status", args: [:]); log.end(st, result: "1: \"åß∂\"", isError: false)
+        let st = log.begin(tool: "click", args: [:]); log.end(st, result: "1: \"åß∂\"", isError: false)
         XCTAssertFalse(st.result.contains("åß∂"), st.result)
         XCTAssertTrue(st.result.hasPrefix("1: "), "ordinary text isn't taken for it")
     }
@@ -616,9 +619,21 @@ final class AgentRecordingTests: XCTestCase {
         for (k, m) in [("e", ["option"]), ("a", []), ("e", ["option"]), ("e", []), ("e", ["option"]), ("i", [])] {
             let s = log.begin(tool: "press_key", args: ["key": k, "modifiers": m, "window_id": 1]); log.setFocus(secure: false); log.end(s, result: "Pressed.", isError: false)
         }
-        let st = log.begin(tool: "status", args: [:]); log.end(st, result: "1: TextEdit \"áéí\"", isError: false)
+        let st = log.begin(tool: "click", args: [:]); log.end(st, result: "1: TextEdit \"áéí\"", isError: false)
         XCTAssertFalse(st.result.contains("áéí"), st.result)
         XCTAssertTrue(st.result.contains("TextEdit"))
+    }
+
+    /// Once typing is hidden, reads are left out of the lists whole (a German layout's option+l is "@": ASCII no matcher knows).
+    func testReadsAfterHiddenTypingAreLeftOut() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        for _ in 0..<3 { let k = log.begin(tool: "press_key", args: ["key": "l", "modifiers": ["option"], "window_id": 1]); log.setFocus(secure: false); log.end(k, result: "Pressed.", isError: false) }
+        let st = log.begin(tool: "status", args: [:]); log.end(st, result: "1: TextEdit \"@@@\"", isError: false)
+        XCTAssertEqual(st.result, StepLog.readLeftOut)
+        let c = log.begin(tool: "click", args: ["element": 4])
+        log.setTarget(StepTarget(element: 4, role: "AXStaticText", label: "@@@ notes", frame: .zero, secure: false))
+        log.end(c, result: "Pressed.", isError: false)
+        XCTAssertEqual(c.target?.label, "(hidden)")
     }
 
     func testOptionCharactersAreTyping() {

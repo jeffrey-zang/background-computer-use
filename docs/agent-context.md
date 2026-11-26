@@ -205,7 +205,7 @@ Start a video of your work to give the user: your display (or one window) record
 
 - `audio` (boolean): Keep the session's sound file (see capture_audio) beside the video (default false).
 - `fps` (integer): Frames per second, 2 to 30 (default 12).
-- `hide_typing` (boolean): Hide all text you type or set, not just what goes into password fields (default false).
+- `hide_typing` (boolean): Hide all text you type or set, not just what goes into password fields (default false). Once you type, the video covers the windows you type into and window reads are left out of the action list.
 - `window_id` (integer): Record only this window of yours. Omit for your whole display.
 
 ### stop_recording
