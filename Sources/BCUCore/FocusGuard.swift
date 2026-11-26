@@ -823,7 +823,8 @@ public final class FocusGuard {
         guard let on = lookedOwner(at: p) else { return }
         // Not for a click that's being held: it may never be the user's
         // next input to land, and the earlier ones go first.
-        lock.lock(); let holding = !holdTokens.isEmpty || draining || !held.isEmpty; lock.unlock()
+        // The click that just completed (a later press at the same spot is another).
+        lock.lock(); let holding = !holdTokens.isEmpty || draining || !held.isEmpty; let releasedMs = lastClick.ms; lock.unlock()
         guard !holding else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             let kept = acting.subtracting([on]).sorted()
@@ -832,7 +833,7 @@ public final class FocusGuard {
                 Log.info("gate: your click was in \(name(on))'s window; kept \(kept.map(name).joined(separator: ", ")) back, where an agent is acting")
             }
             self.lock.lock(); let c = self.lastClick; self.lock.unlock()
-            guard c.point == p else { return }
+            guard c.ms == releasedMs, c.point == p else { return }
             for pid in apps where pid != on && pid != self.userFront {
                 // Kept back at the click already: an agent was acting on it.
                 let keptNow = keptBack.contains(pid) && acting.contains(pid)
