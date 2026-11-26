@@ -88,6 +88,9 @@ public enum RecordingOverlay {
                     let live = s.coverWindow.flatMap { covers[$0] }
                     if s.multiField {
                         area = live ?? s.cover ?? s.target?.frame
+                    } else if s.target?.role == "Window", let live {
+                        // Where it went wasn't known: the whole window, as it is now.
+                        area = live
                     } else if let now = fields[s.number] {
                         // The field where it is in this frame (scrolled, moved).
                         area = now

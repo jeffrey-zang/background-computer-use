@@ -244,6 +244,14 @@ public enum RecordingText {
                                   options: [.regularExpression])
     }
 
+    /// Window titles in a read (`Window 7 "…" of App`, and the windows a
+    /// status or list_windows lists, `7: App [opened] "…"`) replaced: an app
+    /// can show what was typed in its title.
+    static func hideTitles(_ text: String) -> String {
+        text.replacingOccurrences(of: #"(Window \d+ )"[^\n]*"(?= of )"#, with: "$1\"(hidden)\"", options: .regularExpression)
+            .replacingOccurrences(of: #"(?m)^(\s*\d+: [^\n"]*) "[^\n]*"$"#, with: "$1 \"(hidden)\"", options: .regularExpression)
+    }
+
     /// Every word (between spaces, quotes or line breaks) holding a
     /// character outside ASCII, replaced.
     static func hideNonASCIIWords(_ text: String) -> String {
@@ -636,7 +644,7 @@ public final class StepLog {
         // whole: a window can echo typed text in more ways (titles, labels,
         // layouts) than can be matched.
         var result = hidValues && Self.reads.contains(s.tool) ? Self.readLeftOut
-            : (hidValues || hideFieldValues ? RecordingText.hideValues(result) : result)
+            : (hidValues || hideFieldValues ? RecordingText.hideTitles(RecordingText.hideValues(result)) : result)
         result = RecordingText.redact(redactRunStarts(result), secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"

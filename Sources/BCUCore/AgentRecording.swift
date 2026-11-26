@@ -66,6 +66,7 @@ public final class AgentRecording {
     private var coversBefore: [CGWindowID: CGRect] = [:]
     /// Per frame, where each followed password field was (by step number).
     private var fieldMaps: [[String: CGRect]] = []
+    private var fieldsBefore: [String: CGRect] = [:]
     private var lastPts: Int64 = -1
     /// Captures under way (on `queue`), and a group to wait for them.
     private var pending = 0
@@ -222,7 +223,11 @@ public final class AgentRecording {
         for id in steps.coverWindows() where id != windowID {
             if let wb = WindowList.info(id)?.bounds { before[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
         }
-        lock.lock(); coversBefore = before; lock.unlock()
+        var fieldsBefore: [String: CGRect] = [:]
+        for (key, el) in steps.coverFields() {
+            if let f = AX.frame(el), f.width > 0 { fieldsBefore[key] = f.offsetBy(dx: -b.minX, dy: -b.minY) }
+        }
+        lock.lock(); coversBefore = before; self.fieldsBefore = fieldsBefore; lock.unlock()
         if let windowID {
             // Released (handed back to the user, or left open for them): not
             // the session's to film any more, wherever it is.
@@ -284,8 +289,13 @@ public final class AgentRecording {
                 }
             }
             var fields: [String: CGRect] = [:]
+            lock.lock(); let fieldsBefore = self.fieldsBefore; lock.unlock()
             for (key, el) in steps.coverFields() {
-                if let f = AX.frame(el), f.width > 0 { fields[key] = f.offsetBy(dx: -b.minX, dy: -b.minY) }
+                // Before and after the capture together: it may have scrolled meanwhile.
+                if let f = AX.frame(el), f.width > 0 {
+                    let now = f.offsetBy(dx: -b.minX, dy: -b.minY)
+                    fields[key] = fieldsBefore[key].map { $0.union(now) } ?? now
+                }
             }
             lock.lock(); mappings.append((pts, map)); coverMaps.append(covers); fieldMaps.append(fields); lock.unlock()
             lastPts = pts
