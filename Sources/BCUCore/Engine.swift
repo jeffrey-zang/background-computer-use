@@ -187,6 +187,9 @@ public final class Engine {
         audio = SessionAudio(name: "\(safe)-\(sessionID.prefix(8))")
         recorder = SessionRecorder(sessionID: sessionID, label: label, display: display)
         frontMark = focusGuard.frontMark
+        // A release finished once a hung app answers runs in turn with this
+        // session's calls, so a handoff can't come between its checks and the close.
+        windows.serialize = { [weak self] work in self?.queue.async(execute: work) }
     }
 
     /// Create the session's display if it doesn't exist yet. Any thread.
@@ -607,6 +610,7 @@ public final class Engine {
                     result.text += "\n[focus guard] \(focusNote)"
                 }
                 if let note = takeLeaveNotes() { result.text += note }
+                if let note = takeReleaseNotes() { result.text += note }
                 if let note = takeUserNotes() { result.text += note }
                 if tool != "status" && tool != "guard_report" {
                     log("\(tool) (\(Int(nowMs() - startMs)) ms): \(result.text.split(separator: "\n").first.map(String.init) ?? "")")
@@ -618,6 +622,7 @@ public final class Engine {
                     focusGuard.record("\(tool): \(focusNote)")
                     text += "\n[focus guard] \(focusNote)"
                 }
+                if let note = takeReleaseNotes() { text += note }
                 if let note = takeUserNotes() { text += note }
                 log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
                 return .error(text)
@@ -1553,6 +1558,12 @@ public final class Engine {
     func answersLeave(pid: pid_t, stepStartMs: Double, userOpenInputMs: Double) -> Bool {
         WindowManager.stepAnswersLeave(userInApp: userIsIn(pid), userOpenInputMs: userOpenInputMs, stepStartMs: stepStartMs,
                                        userControlsDisplay: userInControl || anyUserInControl())
+    }
+
+    /// Releases finished after a hung app answered that stopped at a dialog.
+    private func takeReleaseNotes() -> String? {
+        let notes = windows.takeReleaseNotes()
+        return notes.isEmpty ? nil : "\n[released window] " + notes.joined(separator: " ")
     }
 
     /// What pages asked and got Leave since the last call, for its result.

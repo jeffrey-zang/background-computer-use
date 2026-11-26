@@ -57,6 +57,13 @@ public final class WindowManager {
     private var lastReleaseRetryMs = 0.0
     private var retryingReleases = false
     private static let releaseRetryQueue = DispatchQueue(label: "bcu.release-retry", qos: .utility)
+    /// What became of a deferred release that the agent has to hear about
+    /// (the app answered with a dialog): given with its next call's result.
+    private var releaseNotes: [String] = []
+    /// Runs the sweep's finish of a deferred release in turn with the
+    /// session's tool calls (the engine's queue), so a `handoff` or a new
+    /// `release_window` can't land between its checks and the close.
+    var serialize: (@escaping () -> Void) -> Void = { $0() }
 
     init(display: AgentDisplay, focusGuard: FocusGuard, sessionKey: String) {
         self.display = display
@@ -149,10 +156,29 @@ public final class WindowManager {
     func takeOver(from other: WindowManager) -> Int {
         let theirs = other.windows
         for w in theirs {
+            // A release that waits for its app to answer comes along too.
+            let pending = other.pendingRelease(w.id)
             other.unregister(w.id)
             register(w)
+            if let keepOpen = pending { deferRelease(w.id, keepOpen: keepOpen) }
         }
         return theirs.count
+    }
+
+    /// The `keepOpen` of a release waiting for the window's app to answer.
+    func pendingRelease(_ id: CGWindowID) -> Bool? {
+        lock.lock(); defer { lock.unlock() }
+        return releaseWhenAnswering[id]
+    }
+
+    func deferRelease(_ id: CGWindowID, keepOpen: Bool) {
+        lock.lock(); releaseWhenAnswering[id] = keepOpen; lock.unlock()
+    }
+
+    /// What deferred releases came to that the agent has to act on, once.
+    public func takeReleaseNotes() -> [String] {
+        lock.lock(); defer { releaseNotes = []; lock.unlock() }
+        return releaseNotes
     }
 
     func unregister(_ id: CGWindowID) {
@@ -1042,7 +1068,7 @@ public final class WindowManager {
             // it: the agent gave up on it and opened another, and the one it
             // gave up on stayed (issue #99). It stays the session's, and the
             // sweep finishes the release once the app answers.
-            lock.lock(); releaseWhenAnswering[id] = keepOpen; lock.unlock()
+            deferRelease(id, keepOpen: keepOpen)
             return Self.deferredReleaseText(app: w.appName, id: id, borrowed: w.kind == .borrowed, keepOpen: keepOpen)
         }
         lock.lock(); releaseWhenAnswering[id] = nil; lock.unlock()
@@ -1178,10 +1204,49 @@ public final class WindowManager {
                     self.unregister(id)
                     Log.info("\(w.appName) window \(id), released while \(w.appName) wasn't answering, is gone")
                 case .finish:
-                    let said = (try? self.release(id, keepOpen: keepOpen)) ?? "window \(id): failed"
-                    Log.info("\(w.appName) answers again, so its released window was dealt with: \(said)")
+                    self.serialize { [weak self] in self?.finishDeferredRelease(id, keepOpen: keepOpen) }
                 }
             }
+        }
+    }
+
+    /// Whether the sweep may still finish a deferred release, checked again
+    /// in turn with the tool calls: the window may have been handed to the
+    /// user, released again or taken back meanwhile.
+    static func mayFinishDeferred(_ w: AgentWindow?, pending: Bool, userInControl: Bool) -> Bool {
+        guard let w, pending else { return false }
+        return !w.handedOff && !w.withUser && !userInControl
+    }
+
+    /// What a finished deferred release came to: done (closed, put back, or
+    /// gone), deferred again (the app stopped answering again), or stopped at
+    /// a dialog the agent has to answer.
+    enum DeferredOutcome: Equatable { case done, again, needsAgent }
+    static func deferredOutcome(stillRegistered: Bool, stillPending: Bool) -> DeferredOutcome {
+        if !stillRegistered { return .done }
+        return stillPending ? .again : .needsAgent
+    }
+
+    static func deferredNeedsAgentText(app: String, id: CGWindowID, said: String) -> String {
+        "Window \(id), which you released while \(app) wasn't answering, didn't close now that \(app) answers: \(said)"
+    }
+
+    /// On the engine's queue (see `serialize`).
+    private func finishDeferredRelease(_ id: CGWindowID, keepOpen: Bool) {
+        guard Self.mayFinishDeferred(window(id), pending: pendingRelease(id) != nil, userInControl: userArranging),
+              let w = window(id) else { return }
+        let said: String
+        do { said = try release(id, keepOpen: keepOpen) } catch { said = "\(error)" }
+        switch Self.deferredOutcome(stillRegistered: window(id) != nil, stillPending: pendingRelease(id) != nil) {
+        case .done:
+            Log.info("\(w.appName) answers again, so its released window was dealt with: \(said)")
+        case .again:
+            break
+        case .needsAgent:
+            // Not retried: closing again would only ask again. The agent
+            // answers the dialog, then releases the window itself.
+            lock.lock(); releaseWhenAnswering[id] = nil; releaseNotes.append(Self.deferredNeedsAgentText(app: w.appName, id: id, said: said)); lock.unlock()
+            Log.info("\(w.appName) answers again, but its released window \(id) didn't close: \(said)")
         }
     }
 
