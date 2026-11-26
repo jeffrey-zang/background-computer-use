@@ -307,4 +307,13 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.unresolvedLateCandidate(stepSince: true, qualifiesWithoutTitle: false))
         XCTAssertFalse(WindowManager.unresolvedLateCandidate(stepSince: false, qualifiesWithoutTitle: true))
     }
+
+    /// A reservation past its deadline still counts as pending until the
+    /// sweep ends it (and marks the source's reads stale then).
+    func testAPendingHandoutHoldsPastItsDeadlineUntilEnded() {
+        WindowManager.setLateHandoutForTesting(pid: 99_104, before: [], untilMs: nowMs() - 1, source: 990_400)
+        XCTAssertTrue(WindowManager.handoutPending(from: 990_400))
+        WindowManager.setLateHandoutForTesting(pid: 99_104, before: [], untilMs: nowMs() - 1, source: nil)
+        XCTAssertFalse(WindowManager.handoutPending(from: 990_400))
+    }
 }

@@ -1907,8 +1907,9 @@ public final class WindowManager {
             // the browser counts the window that last had key as its current
             // one and opens the next link from another app there. In it: the
             // window they were typing in, before their held keys go there.
-            _ = KeyScope.postRecords(pid: w.pid, from: AX.focusedWindowID(w.pid), to: back, settle: 5)
-            KeyScope.awaitKey(pid: w.pid, target: back, budgetMs: 250)
+            if !Self.giveKey(pid: w.pid, to: back) {
+                Log.info("tabs: couldn't confirm key on window \(back) in \(w.appName) after the move")
+            }
         }
         focusGuard.endSwap(w.pid); swapping = false
         let placed = settleOnUserScreen(pid: w.pid, id: made)
@@ -1937,10 +1938,22 @@ public final class WindowManager {
 
     /// A tab moved out of this agent window hasn't landed in its own window
     /// yet: a read of the window now may still show it.
+    /// Holds past the deadline until the sweep ends the reservation, which
+    /// marks the source's reads stale in the same step.
     static func handoutPending(from id: CGWindowID) -> Bool {
         sharedLock.lock(); defer { sharedLock.unlock() }
-        guard let pid = lateHandoutSource.first(where: { $0.value == id })?.key, let until = lateHandouts[pid]?.untilMs else { return false }
-        return nowMs() < until
+        return lateHandoutSource.values.contains(id)
+    }
+
+    /// Give key to `target` in `pid` and confirm it, as `KeyScope.exit`
+    /// does: a slower second try when the first records were ignored.
+    static func giveKey(pid: pid_t, to target: CGWindowID) -> Bool {
+        for settle in [KeyScope.giveBackSettleMs, 120.0] {
+            _ = KeyScope.postRecords(pid: pid, from: AX.focusedWindowID(pid), to: target, settle: settle)
+            KeyScope.awaitKey(pid: pid, target: target, budgetMs: settle < 50 ? 250 : 400)
+            if AX.focusedWindowID(pid) == target { return true }
+        }
+        return false
     }
     static let lateHandoutMs = 10_000.0
     /// How long after a step a window it caused can still come up
@@ -2077,6 +2090,13 @@ public final class WindowManager {
     /// this time: the sweep leaves them alone until a later look can tell.
     private func claimLateHandouts(_ onScreen: [WindowInfo]) -> Set<CGWindowID> {
         Self.sharedLock.lock()
+        // Ended unclaimed: the move may have happened all the same, so a
+        // read of its source taken meanwhile is marked stale as the
+        // reservation goes (`handoutPending` holds until then).
+        for (pid, pending) in Self.lateHandouts where nowMs() >= pending.untilMs {
+            if let source = Self.lateHandoutSource.removeValue(forKey: pid) { Self.tabMovedOut[source] = nowMs() }
+            Self.lateHandoutUserKey[pid] = nil
+        }
         Self.lateHandouts = Self.lateHandouts.filter { nowMs() < $0.value.untilMs }
         let late = Self.lateHandouts
         Self.sharedLock.unlock()
@@ -2132,8 +2152,9 @@ public final class WindowManager {
                     let appLock = Engine.inputLock(pid)
                     appLock.lock()
                     focusGuard.beginSwap(pid)
-                    _ = KeyScope.postRecords(pid: pid, from: id, to: back, settle: 5)
-                    KeyScope.awaitKey(pid: pid, target: back, budgetMs: 250)
+                    if !Self.giveKey(pid: pid, to: back) {
+                        Log.info("tabs: couldn't confirm key on window \(back) after a late move")
+                    }
                     focusGuard.endSwap(pid)
                     appLock.unlock()
                 }
