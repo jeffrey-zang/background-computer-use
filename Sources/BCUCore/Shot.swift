@@ -34,6 +34,27 @@ enum Shot {
         return content
     }
 
+    /// The list to pick `including` windows from: the cached one, or a
+    /// fresh one when the cached list lacks one of them (a window that just
+    /// opened, which a capture filtered from the old list would leave out).
+    static func content(including ids: [CGWindowID]?) -> SCShareableContent? {
+        guard let cached = content() else { return nil }
+        guard let ids, !unlisted(ids, in: cached.windows.map(\.windowID)).isEmpty else { return cached }
+        return content(maxAgeMs: 0) ?? cached
+    }
+
+    /// Those of `ids` that `listed` (ScreenCaptureKit's window IDs) lacks.
+    static func unlisted(_ ids: [CGWindowID], in listed: [CGWindowID]) -> Set<CGWindowID> {
+        Set(ids).subtracting(listed)
+    }
+
+    /// Those of `ids` that ScreenCaptureKit's latest list lacks: windows a
+    /// capture filtered by that list would have left out.
+    static func unlisted(_ ids: [CGWindowID]) -> Set<CGWindowID> {
+        guard let c = content() else { return Set(ids) }
+        return unlisted(ids, in: c.windows.map(\.windowID))
+    }
+
     private static func scWindow(_ id: CGWindowID) -> SCWindow? {
         if let w = content()?.windows.first(where: { $0.windowID == id }) { return w }
         // A window that just opened isn't in an older list.
@@ -74,7 +95,7 @@ enum Shot {
 
     private static func setup(_ displayID: CGDirectDisplayID, rect: CGRect?, including: [CGWindowID]?, excluding: Set<CGWindowID>,
                               content given: SCShareableContent? = nil) -> (SCContentFilter, SCStreamConfiguration)? {
-        guard let content = given ?? content(), let display = content.displays.first(where: { $0.displayID == displayID }) ?? scDisplay(displayID) else { return nil }
+        guard let content = given ?? content(including: including), let display = content.displays.first(where: { $0.displayID == displayID }) ?? scDisplay(displayID) else { return nil }
         let filter: SCContentFilter
         if let including {
             let wanted = Set(including)

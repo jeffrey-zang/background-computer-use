@@ -604,6 +604,8 @@ public final class SessionRecorder {
     private var lastPreviewMs = 0.0
     /// The agent display's windows at the recorder's last capture.
     private var lastSpots: [WindowSpot]?
+    /// Captures that left out a new window ScreenCaptureKit didn't list yet.
+    private var missedTries: [CGWindowID: Int] = [:]
     private var bundleByPid: [pid_t: String?] = [:]
 
     /// How often the recorder looks: whether it may capture, or a preview frame to keep.
@@ -794,7 +796,10 @@ public final class SessionRecorder {
         // A capture that failed (ScreenCaptureKit timed out) is tried again
         // on a later tick: the frame is still wanted.
         guard capture(force: pendingForced || urgentNow) else { return }
-        lastSpots = spots
+        // The capture shows only windows ScreenCaptureKit listed. One it
+        // didn't list yet (it had just opened) isn't in the frame, so it
+        // still counts as new and is tried again on a later tick.
+        lastSpots = Self.spotsShown(spots, unlisted: Shot.unlisted(spots.map(\.id)), tries: &missedTries)
         pendingForced = false
         urgent = false
     }
@@ -823,6 +828,24 @@ public final class SessionRecorder {
         guard let last else { return false }
         let before = Set(last.map(\.id))
         return spots.contains { !before.contains($0.id) }
+    }
+
+    /// The windows a capture showed, to compare later window lists with:
+    /// `spots` less those ScreenCaptureKit didn't list (`unlisted`), which
+    /// the capture left out, so a later tick sees them as new and takes
+    /// another frame. A window still unlisted after `maxMissedTries`
+    /// captures is let go, so one ScreenCaptureKit never lists doesn't make
+    /// a frame every second.
+    static let maxMissedTries = 3
+    static func spotsShown(_ spots: [WindowSpot], unlisted: Set<CGWindowID>, tries: inout [CGWindowID: Int]) -> [WindowSpot] {
+        let ids = Set(spots.map(\.id))
+        tries = tries.filter { ids.contains($0.key) && unlisted.contains($0.key) }
+        return spots.filter { spot in
+            guard unlisted.contains(spot.id) else { return true }
+            let n = (tries[spot.id] ?? 0) + 1
+            tries[spot.id] = n
+            return n >= maxMissedTries
+        }
     }
 
     /// What the window list says about the agent display (no capture): its
