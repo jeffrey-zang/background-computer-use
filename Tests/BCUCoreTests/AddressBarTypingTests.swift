@@ -29,16 +29,28 @@ final class AddressBarTypingTests: XCTestCase {
     /// follow the focus, so "first\tsecond" doesn't put "second" back into
     /// the first field.
     func testTextAfterATabFollowsTheFocusAsKeys() {
-        XCTAssertEqual(Engine.sharedParts("first\tsecond"), [.text("first"), .key("\t"), .keys("second")])
-        XCTAssertEqual(Engine.sharedParts("a\tb\nc"), [.text("a"), .key("\t"), .keys("b"), .key("\n"), .keys("c")])
+        XCTAssertEqual(Engine.sharedParts("first\tsecond", singleLine: true), [.text("first"), .key("\t"), .keys("second")])
+        XCTAssertEqual(Engine.sharedParts("first\tsecond", singleLine: false), [.text("first"), .key("\t"), .keys("second")])
+        XCTAssertEqual(Engine.sharedParts("a\tb\nc", singleLine: false), [.text("a"), .key("\t"), .keys("b"), .key("\n"), .keys("c")])
     }
 
-    /// Without a Tab, every run of text still goes in through accessibility.
-    func testTextWithoutATabStaysInTheField() {
-        XCTAssertEqual(Engine.sharedParts(url), [.text(String(url.dropLast())), .key("\n")])
-        XCTAssertEqual(Engine.sharedParts("one\ntwo"), [.text("one"), .key("\n"), .text("two")])
-        XCTAssertEqual(Engine.sharedParts("query\t"), [.text("query"), .key("\t")])
-        XCTAssertEqual(Engine.sharedParts("\n"), [.key("\n")])
+    /// In a single-line field Return can move focus too (a form that goes
+    /// on to its next field): the text after it follows as keys.
+    func testTextAfterAReturnInASingleLineFieldFollowsTheFocusAsKeys() {
+        XCTAssertEqual(Engine.sharedParts("first\nsecond", singleLine: true), [.text("first"), .key("\n"), .keys("second")])
+        XCTAssertTrue(Engine.isSingleLine(role: "AXTextField"))
+        XCTAssertTrue(Engine.isSingleLine(role: "AXComboBox"))
+        XCTAssertFalse(Engine.isSingleLine(role: "AXTextArea"))
+        XCTAssertFalse(Engine.isSingleLine(role: nil))
+    }
+
+    /// In a text area Return is a new line and focus stays: every run of
+    /// text goes in through accessibility. A URL and Return is unchanged.
+    func testTextWithoutAFocusMoveStaysInTheField() {
+        XCTAssertEqual(Engine.sharedParts(url, singleLine: true), [.text(String(url.dropLast())), .key("\n")])
+        XCTAssertEqual(Engine.sharedParts("one\ntwo", singleLine: false), [.text("one"), .key("\n"), .text("two")])
+        XCTAssertEqual(Engine.sharedParts("query\t", singleLine: true), [.text("query"), .key("\t")])
+        XCTAssertEqual(Engine.sharedParts("\n", singleLine: true), [.key("\n")])
     }
 
     /// navigate's fallback for a browser it can't drive says to pass the field.

@@ -2419,30 +2419,32 @@ public final class Engine {
     /// key focus, only for Return and Tab and for fields that ignore
     /// accessibility writes.
     /// How `typeShared` puts each part of `text` in: runs of text through
-    /// accessibility into the field, each Return or Tab as a key. A Tab
-    /// moves focus to the next field, and accessibility would still write
-    /// into the first one, so text after a Tab is typed as keys: they go
-    /// where the Tab took focus.
+    /// accessibility into the field, each Return or Tab as a key. A key can
+    /// move focus to another control, and accessibility would still write
+    /// into the first one, so text after it is typed as keys, which go
+    /// where focus went: after a Tab always, and after a Return in a
+    /// `singleLine` field (a form can move on to its next field on Return).
+    /// In a text area Return is a new line and focus stays.
     enum SharedPart: Equatable {
         case text(String)
         case key(Character)
         case keys(String)
     }
 
-    static func sharedParts(_ text: String) -> [SharedPart] {
+    static func sharedParts(_ text: String, singleLine: Bool) -> [SharedPart] {
         var parts: [SharedPart] = []
         var run = ""
-        var afterTab = false
+        var focusMayHaveMoved = false
         func flush() {
             guard !run.isEmpty else { return }
-            parts.append(afterTab ? .keys(run) : .text(run))
+            parts.append(focusMayHaveMoved ? .keys(run) : .text(run))
             run = ""
         }
         for ch in text {
             if Input.isReturn(ch) || ch == "\t" {
                 flush()
                 parts.append(.key(ch))
-                if ch == "\t" { afterTab = true }
+                if ch == "\t" || singleLine { focusMayHaveMoved = true }
             } else {
                 run.append(ch)
             }
@@ -2451,12 +2453,19 @@ public final class Engine {
         return parts
     }
 
+    /// A text field that holds one line: Return there submits or moves on.
+    static func isSingleLine(role: String?) -> Bool {
+        guard let role else { return false }
+        return textRoles.contains(role) && role != "AXTextArea"
+    }
+
     private func typeShared(_ w: AgentWindow, text: String, target: AXNode?) throws -> ToolResult {
         let element = target?.element ?? focusedTextElement(in: w)
         var viaAX = 0, viaKeys = 0, textKeys = 0
         var focused = target == nil
         var changedTo: String?
-        for p in Self.sharedParts(text) {
+        let role = target?.role ?? element.flatMap { AX.string($0, "AXRole") }
+        for p in Self.sharedParts(text, singleLine: Self.isSingleLine(role: role)) {
             let part: String
             switch p {
             case .text(let s): part = s
@@ -2494,7 +2503,7 @@ public final class Engine {
         if viaAX == 0 {
             return ToolResult(text: "Typed \(viaKeys) characters\(into) with keystrokes.")
         }
-        let keysAre = textKeys > 0 ? "(Return/Tab, and the text after a Tab, which goes to the field the Tab moved to)" : "(Return/Tab)"
+        let keysAre = textKeys > 0 ? "(Return/Tab, and the text after them, which follows wherever they moved focus)" : "(Return/Tab)"
         return ToolResult(text: "Typed \(viaAX) characters\(into) through accessibility and \(viaKeys) \(keysAre) with keystrokes.\(changed)")
     }
 
