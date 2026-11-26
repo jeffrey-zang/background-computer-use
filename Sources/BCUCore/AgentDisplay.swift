@@ -651,6 +651,59 @@ public final class AgentDisplay {
             throw ToolError("virtual display never came online")
         }
         Self.making { finishStart() }
+        // macOS can bring the display online and still not give it a place
+        // of its own (mirroring the user's display, or making it the main
+        // one): then everything "on the agent display" is on the user's
+        // screen. Looked at once the displays have settled, since macOS can
+        // change that just after the display comes online.
+        Self.awaitSettled(quietMs: 300, capMs: 3000)
+        if let problem = separationProblem {
+            Log.info("agent display \(slot + 1) (\(displayID)) isn't a screen of its own: \(problem); removed")
+            try? onMain { self.stop(remove: true) }
+            throw ToolError(Self.notSeparateRefusal(problem))
+        }
+    }
+
+    // MARK: A screen of its own
+
+    /// What macOS says about where an agent display is (see `separationProblem`).
+    struct Placement {
+        /// It mirrors a display, or one mirrors it.
+        var mirrored: Bool
+        var isMain: Bool
+        var bounds: CGRect
+        /// The user's displays.
+        var user: [CGRect]
+    }
+
+    /// Why a display placed like this isn't a separate screen the user
+    /// can't see, or nil when it is.
+    static func separationProblem(_ p: Placement) -> String? {
+        if p.mirrored { return "macOS is mirroring it with the user's display" }
+        if p.isMain { return "macOS made it the main display" }
+        if p.bounds.isEmpty { return "it isn't online" }
+        if let u = p.user.first(where: { let i = $0.intersection(p.bounds); return !i.isNull && i.width * i.height > 0 }) {
+            return "it lies over the user's display at \(u.short)"
+        }
+        return nil
+    }
+
+    /// Why this display isn't a separate screen right now, or nil when it is
+    /// (or isn't running).
+    public var separationProblem: String? {
+        let id = displayID
+        guard isRunning else { return nil }
+        return Self.separationProblem(Placement(
+            mirrored: CGDisplayIsInMirrorSet(id) != 0 || CGDisplayMirrorsDisplay(id) != kCGNullDirectDisplay,
+            isMain: CGDisplayIsMain(id) != 0,
+            bounds: CGDisplayBounds(id),
+            user: Self.userDisplayIDs().map { CGDisplayBounds($0) }))
+    }
+
+    /// What the agent is told when its display isn't a screen of its own.
+    static func notSeparateRefusal(_ problem: String) -> String {
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return "the agent display isn't a separate screen on this Mac (\(problem); macOS \(v.majorVersion).\(v.minorVersion).\(v.patchVersion)), so a window put there would be on the user's own screen. Nothing was opened or moved. Tell the user Background Computer Use can't work in the background on this Mac right now."
     }
 
     /// Displays are made and placed one at a time, for every session (the

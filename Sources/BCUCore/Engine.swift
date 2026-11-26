@@ -672,7 +672,12 @@ public final class Engine {
             throw ToolError(refusal)
         }
         // Opening or borrowing a window is what needs a display.
-        if tool == "open_window" || tool == "borrow_window" { try ensureDisplay() }
+        if tool == "open_window" || tool == "borrow_window" {
+            try ensureDisplay()
+            // It was a screen of its own when it was made (`open` checks),
+            // but macOS can mirror it or move it since.
+            if let problem = display.separationProblem { throw ToolError(AgentDisplay.notSeparateRefusal(problem)) }
+        }
         return try dispatch(tool: tool, args: args)
     }
 
