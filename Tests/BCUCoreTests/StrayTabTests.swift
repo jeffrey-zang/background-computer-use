@@ -142,4 +142,13 @@ final class StrayTabTests: XCTestCase {
         XCTAssertTrue(WindowManager.takeLateHandout(pid: pid, untilMs: seen))
         XCTAssertNil(WindowManager.lateHandoutUntil(pid))
     }
+
+    /// After a tab was moved out of the agent's window, its last read (and
+    /// the element numbers from it) is out of date until it reads again.
+    func testElementNumbersFromBeforeAHandoutAreStale() {
+        XCTAssertTrue(Engine.staleAfterTabMovedOut(movedMs: seen + 10, readMs: seen))
+        XCTAssertTrue(Engine.staleAfterTabMovedOut(movedMs: seen, readMs: nil))
+        XCTAssertFalse(Engine.staleAfterTabMovedOut(movedMs: seen, readMs: seen + 10))
+        XCTAssertFalse(Engine.staleAfterTabMovedOut(movedMs: nil, readMs: seen))
+    }
 }

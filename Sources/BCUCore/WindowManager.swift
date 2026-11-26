@@ -1741,7 +1741,10 @@ public final class WindowManager {
         focusGuard.beginAction(pid: w.pid, cause: "handing the user a tab another app opened in the agent's window", upkeep: true)
         defer { focusGuard.endAction(pid: w.pid, upkeep: true) }
         focusGuard.beginSwap(w.pid)
-        defer { focusGuard.endSwap(w.pid) }
+        // Ended as soon as key is back where it belongs, not after the
+        // window has settled: the user's keys are held while it lasts.
+        var swapping = true
+        defer { if swapping { focusGuard.endSwap(w.pid) } }
         let userIn = BCUFrontProcessPID() == w.pid
         let before = Set(WindowList.of(pid: w.pid).map(\.id))
         guard let scope = try? KeyScope.enter(pid: w.pid, window: w.id, giveBackTo: userIn ? focusGuard.userWindow(of: w.pid) : nil) else {
@@ -1758,6 +1761,11 @@ public final class WindowManager {
         }
         let tabTitle = AX.string(tab, "AXTitle") ?? ""
         let pressed = AX.perform(item.element, "AXPress")
+        if Self.menuPressMayHaveRun(pressed) {
+            // The agent's element numbers for the window may be the moved
+            // tab's: its next step re-reads it first (`Engine.guarded`).
+            Self.sharedLock.lock(); Self.tabMovedOut[w.id] = nowMs(); Self.sharedLock.unlock()
+        }
         guard Self.menuPressMayHaveRun(pressed) else {
             scope.exit()
             Log.info("tabs: Move Tab to New Window in \(w.appName) failed (\(pressed.rawValue)); the tab stays")
@@ -1788,6 +1796,7 @@ public final class WindowManager {
         // Key goes to the new window (the user's), so the browser's last
         // window is theirs; or back to theirs if they're in the browser.
         if userIn { scope.exit() } else { scope.handOff(to: made) }
+        focusGuard.endSwap(w.pid); swapping = false
         let placed = settleOnUserScreen(pid: w.pid, id: made)
         if userIn { focusGuard.scheduleReclaim(w.pid) }
         focusGuard.record("another app opened a tab in your agent's \(w.appName) window; it's in a window of yours on your screen now")
@@ -1816,6 +1825,13 @@ public final class WindowManager {
         guard stepSince else { return true }
         guard !pending.title.isEmpty, let windowTitle else { return false }
         return windowTitle == pending.title || windowTitle.hasPrefix(pending.title + " - ")
+    }
+
+    /// When a tab was last moved out of each agent window.
+    private static var tabMovedOut: [CGWindowID: Double] = [:]
+    static func tabMovedOutMs(_ id: CGWindowID) -> Double? {
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        return tabMovedOut[id]
     }
 
     /// When the pending handout in `pid` stops waiting, if there is one.

@@ -76,6 +76,8 @@ public final class Engine {
     private let queue = DispatchQueue(label: "bcu.engine")
     private let stateLock = NSLock()
     private var snapshots: [CGWindowID: AXSnapshotResult] = [:]
+    /// When each window's last `get_window_state` began reading it.
+    private var snapshotMs: [CGWindowID: Double] = [:]
     /// When the agent last acted on each window, so a state read can wait for it to settle.
     private var lastActionMs: [CGWindowID: Double] = [:]
     private var enhancedPids: Set<pid_t> = []
@@ -1502,6 +1504,13 @@ public final class Engine {
         (s.prefix(1).uppercased() + s.dropFirst()) + "."
     }
 
+    /// Whether a window's last read is out of date because a tab was moved
+    /// out of it after (or while) it was read.
+    static func staleAfterTabMovedOut(movedMs: Double?, readMs: Double?) -> Bool {
+        guard let movedMs else { return false }
+        return movedMs >= (readMs ?? -.infinity)
+    }
+
     private func guarded<T>(_ w: AgentWindow, cause: String, _ body: () throws -> T) throws -> T {
         // A batch runs its steps without going back through `call`.
         if paused { throw ToolError("paused by the user") }
@@ -1509,6 +1518,12 @@ public final class Engine {
         let appLock = Self.inputLock(w.pid)
         appLock.lock()
         defer { appLock.unlock() }
+        // Under the lock the handout takes too: a tab another app opened in
+        // this window went to the user since the agent last read it. Its
+        // element numbers (and the selected page) may be that tab's now.
+        if Self.staleAfterTabMovedOut(movedMs: WindowManager.tabMovedOutMs(w.id), readMs: snapshotMs[w.id]) {
+            throw ToolError("a tab another app opened in window \(w.id) was moved to a window of the user's since you last read it, so its element numbers are out of date: call get_window_state window_id=\(w.id), then act")
+        }
         touched.insert(w.pid)
         focusGuard.beginAction(pid: w.pid, cause: cause)
         windows.noteBefore(pid: w.pid, window: w.id)
@@ -1959,6 +1974,7 @@ public final class Engine {
             if fresh { sleepMs(300) }
         }
         let previous = snapshots[w.id]
+        let readBegan = nowMs()
         func take() -> AXSnapshotResult {
             let popups = popupWindows(of: w, frame: AX.frame(ax))
             return AXSnapshot.take(window: ax, windowID: w.id, title: AX.string(ax, "AXTitle") ?? title, appName: w.appName, pid: w.pid,
@@ -1986,6 +2002,7 @@ public final class Engine {
             lastActionMs[w.id] = nil
         }
         snapshots[w.id] = snap
+        snapshotMs[w.id] = readBegan
         var images: [ToolImage] = []
         if args.bool("screenshot") ?? true, let raw = try? Capture.window(w.id) {
             recorder.windowShot(w.id, raw)
