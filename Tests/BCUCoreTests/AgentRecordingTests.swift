@@ -248,6 +248,24 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertTrue(s.result.hasPrefix("no frames"))
     }
 
+    /// A PIN pressed key by key into a password field is hidden, keycaps and all.
+    func testCharacterKeysIntoAPasswordFieldAreHidden() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let k = log.begin(tool: "press_key", args: ["key": "7"])
+        log.setFocus(secure: true)
+        log.end(k, result: "Pressed 7.", isError: false)
+        XCTAssertEqual(k.args["key"] as? String, "(hidden, 1 characters)")
+        XCTAssertFalse(k.result.contains("7"), k.result)
+        XCTAssertEqual(RecordingText.caption(tool: k.tool, args: k.args, target: nil, hidden: k.hidesText(redactAll: false)), "press_key (a hidden key)")
+        XCTAssertTrue(RecordingOverlay.marking([k], at: 100).allSatisfy { $0.hidesText(redactAll: false) })
+        // Shortcuts and keys into ordinary fields are shown.
+        let c = log.begin(tool: "press_key", args: ["key": "l", "modifiers": ["cmd"]]); log.end(c, result: "Pressed cmd+l.", isError: false)
+        XCTAssertEqual(c.args["key"] as? String, "l")
+        let o = log.begin(tool: "press_key", args: ["key": "a"]); log.setFocus(secure: false); log.end(o, result: "Pressed a.", isError: false)
+        XCTAssertEqual(o.args["key"] as? String, "a")
+        XCTAssertEqual(RecordingText.caption(tool: "scroll", args: ["dy": Int.min], target: nil, hidden: false), "scroll up 9223372036854775808")
+    }
+
     func testHugeNumbersInArgumentsDontCrashCaptions() {
         XCTAssertEqual(RecordingText.caption(tool: "click", args: ["x": 1e300, "y": 5], target: nil, hidden: false), "click at (1e+300, 5)")
         XCTAssertEqual(RecordingText.caption(tool: "wait", args: ["ms": Double.infinity], target: nil, hidden: false), "wait inf ms")

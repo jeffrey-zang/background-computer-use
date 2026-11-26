@@ -127,7 +127,7 @@ public enum RecordingOverlay {
 
         let barH = 96 * u
         // Keycaps, above the caption bar.
-        if let s = marking(flat, at: t).last(where: { $0.tool == "press_key" }) {
+        if let s = marking(flat, at: t).last(where: { $0.tool == "press_key" && !$0.hidesText(redactAll: redactAll) }) {
             let a = Args(s.args)
             let caps = RecordingText.keycaps(key: a.string("key") ?? "?", modifiers: a.strings("modifiers") ?? [])
             let font = font(30 * u, bold: true)

@@ -711,6 +711,12 @@ public final class Engine {
                let id = windowID, let w = windows.window(id), passwordFieldFocused(w) {
                 rec.setFocusSecure()
             }
+            // A character key pressed into a password field (a PIN typed key
+            // by key) is hidden like typed text.
+            if tool == "press_key", RecordedStep.typesACharacter(args.raw), let rec = recordingSteps,
+               let id = windowID, let w = windows.window(id) {
+                rec.setFocus(secure: passwordFieldFocused(w))
+            }
         }
         defer {
             if Self.batchable.contains(tool), tool != "wait", let id = windowID {

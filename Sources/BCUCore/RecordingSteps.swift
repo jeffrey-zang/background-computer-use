@@ -50,6 +50,8 @@ public final class RecordedStep {
     public internal(set) var steps: [RecordedStep] = []
     /// The focused field was a password field when text was typed without `element`.
     var focusSecure = false
+    /// Its text (or key) was taken out of its arguments when it ended.
+    var textHidden = false
     /// Where its typing goes was looked at (an element, or the focus).
     var focusChecked = false
     /// What it typed that's hidden, to take out of its batch's result too. Never written anywhere.
@@ -72,9 +74,22 @@ public final class RecordedStep {
     /// A step still running (the recording is saved as the app quits) may
     /// not know yet where its text goes, so it's hidden too.
     func hidesText(redactAll: Bool) -> Bool {
+        if textHidden { return true }
+        // A character key on its own is typing one key at a time (a PIN).
+        if tool == "press_key" {
+            guard Self.typesACharacter(args) else { return false }
+            return redactAll || focusSecure || end == nil || !focusChecked
+        }
         guard tool == "type_text" || tool == "set_value" else { return false }
         // Not knowing where it went (refused before it got that far) counts as secret.
         return redactAll || target?.secure == true || focusSecure || end == nil || (target == nil && !focusChecked)
+    }
+
+    /// A press_key of one printable character, with no modifier but shift.
+    static func typesACharacter(_ args: JSONObject) -> Bool {
+        guard let key = args["key"] as? String, key.count == 1, let ch = key.first, !ch.isWhitespace else { return false }
+        let mods = (args["modifiers"] as? [Any] ?? []).compactMap { ($0 as? String)?.lowercased() }
+        return mods.allSatisfy { $0 == "shift" }
     }
 
     /// Its arguments as written out: typed text that's to be hidden and
@@ -82,7 +97,7 @@ public final class RecordedStep {
     func exportedArgs(redactAll: Bool) -> JSONObject {
         var a = args
         if hidesText(redactAll: redactAll) {
-            for key in ["text", "value"] {
+            for key in ["text", "value", "key"] {
                 if let v = a[key] as? String, !v.hasPrefix("(hidden") { a[key] = "(hidden, \(v.count) characters)" }
             }
         }
@@ -137,6 +152,7 @@ public enum RecordingText {
         case "set_value":
             return "set_value" + on + " = " + typed(a.string("value") ?? "")
         case "press_key":
+            if hidden { return "press_key (a hidden key)" }
             return "press_key " + keycaps(key: a.string("key") ?? "?", modifiers: a.strings("modifiers") ?? []).joined()
         case "navigate":
             var url = a.string("url") ?? ""
@@ -145,8 +161,9 @@ public enum RecordingText {
         case "scroll":
             let dy = a.int("dy") ?? 0, dx = a.int("dx") ?? 0
             var dir: [String] = []
-            if dy != 0 { dir.append(dy > 0 ? "down \(dy)" : "up \(-dy)") }
-            if dx != 0 { dir.append(dx > 0 ? "right \(dx)" : "left \(-dx)") }
+            // `magnitude`: -Int.min overflows.
+            if dy != 0 { dir.append(dy > 0 ? "down \(dy)" : "up \(dy.magnitude)") }
+            if dx != 0 { dir.append(dx > 0 ? "right \(dx)" : "left \(dx.magnitude)") }
             return "scroll " + (dir.isEmpty ? "0" : dir.joined(separator: ", ")) + (on.isEmpty ? "" : " in" + on)
         case "perform_action":
             return "perform_action \(a.string("action") ?? "?") on" + (on.isEmpty ? " ?" : on)
@@ -320,11 +337,12 @@ public final class StepLog {
         // Text hidden in an earlier step, wherever it shows up again.
         var result = RecordingText.redact(result, secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
-            let key = s.tool == "type_text" ? "text" : "value"
+            let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
             if let secret = s.args[key] as? String {
                 result = RecordingText.hideQuoted(RecordingText.redact(result, secrets: [secret]))
                 s.args[key] = "(hidden, \(secret.count) characters)"
                 s.secret = secret
+                s.textHidden = true
                 if RecordingText.redactsLater(secret) { hiddenTexts.append(secret) }
             }
         }
