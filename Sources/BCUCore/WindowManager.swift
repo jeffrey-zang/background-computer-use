@@ -2123,15 +2123,24 @@ public final class WindowManager {
     }
 
     /// Hold the user's input (`hold`), then wait for the app's input lock
-    /// (`lock`, bounded: false when it timed out, and `body` runs anyway,
-    /// as the guard's hand-over does), run `body`, and undo both on the way
-    /// out, the lock only if it was taken.
-    static func holdThenLock(hold: () -> Void, lock: () -> Bool, unlock: () -> Void, release: () -> Void, body: () -> Void) {
+    /// (`lock`, bounded: false when it timed out), run `body` only with the
+    /// lock, and undo both on the way out. True if `body` ran.
+    @discardableResult
+    static func holdThenLock(hold: () -> Void, lock: () -> Bool, unlock: () -> Void, release: () -> Void, body: () -> Void) -> Bool {
         hold()
         defer { release() }
-        let locked = lock()
-        defer { if locked { unlock() } }
+        guard lock() else { return false }
+        defer { unlock() }
         body()
+        return true
+    }
+
+    /// The user's window to give key back to after a late move: the one the
+    /// guard last saw them in (`tracked`), unless it's the moved tab's own
+    /// window or gone; else the one recorded when the handout began.
+    static func lateRestoreTarget(tracked: CGWindowID?, snapshot: CGWindowID?, made: CGWindowID, exists: (CGWindowID) -> Bool) -> CGWindowID? {
+        if let tracked, tracked != made, exists(tracked) { return tracked }
+        return snapshot
     }
 
     /// What keeps the automatic handout from starting now, if anything.
@@ -2219,25 +2228,33 @@ public final class WindowManager {
                 guard let self else { return }
                 // Arriving late, it may take key from the window the user is
                 // typing in: back to theirs, with their keys held meanwhile.
-                if let back = Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: userKey, keyNow: AX.focusedWindowID(pid), made: id),
+                // Their window now, not when the handout began: they may
+                // have gone from one browser window to another meanwhile.
+                func target() -> CGWindowID? {
+                    Self.lateRestoreTarget(tracked: self.focusGuard.lastUserWindow(pid), snapshot: userKey, made: id) { WindowList.info($0) != nil }
+                }
+                if let back = Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: target(), keyNow: AX.focusedWindowID(pid), made: id),
                    WindowList.info(back) != nil {
                     // Their keys are held from now, not from when the lock
                     // comes: a step in the app (an accessibility-only one
                     // starts no swap) can hold it a while, and meanwhile
                     // their typing would go to the detached tab. Waited for
-                    // as the guard's hand-over waits, `maxHoldMs` at most.
+                    // `maxHoldMs` at most; not had by then, key is left alone
+                    // (the holder is mid-step in the app and hands key back
+                    // itself), never changed under another step's feet.
                     let appLock = Engine.inputLock(pid)
-                    Self.holdThenLock(hold: { self.focusGuard.beginSwap(pid) },
-                                      lock: { appLock.lock(before: Date().addingTimeInterval(FocusGuard.maxHoldMs / 1000)) },
-                                      unlock: { appLock.unlock() },
-                                      release: { self.focusGuard.endSwap(pid) }) {
+                    let ran = Self.holdThenLock(hold: { self.focusGuard.beginSwap(pid) },
+                                                lock: { appLock.lock(before: Date().addingTimeInterval(FocusGuard.maxHoldMs / 1000)) },
+                                                unlock: { appLock.unlock() },
+                                                release: { self.focusGuard.endSwap(pid) }) {
                         // Looked at again with the lock: the user may have
                         // moved on (another window, another app) meanwhile.
-                        if Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: back, keyNow: AX.focusedWindowID(pid), made: id) == back,
-                           !Self.giveKey(pid: pid, to: back) {
-                            Log.info("tabs: couldn't confirm key on window \(back) after a late move")
+                        if let now = Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: target() ?? back, keyNow: AX.focusedWindowID(pid), made: id),
+                           !Self.giveKey(pid: pid, to: now) {
+                            Log.info("tabs: couldn't confirm key on window \(now) after a late move")
                         }
                     }
+                    if !ran { Log.info("tabs: a step in pid \(pid) kept its input lock; key left alone after a late move") }
                 }
                 let placed = settleOnUserScreen(pid: pid, id: id)
                 focusGuard.record("another app opened a tab in your agent's \(owner) window; it's in a window of yours now")

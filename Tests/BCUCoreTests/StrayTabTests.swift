@@ -269,13 +269,25 @@ final class StrayTabTests: XCTestCase {
     /// app's lock, and lets both go on every exit (the lock only if taken).
     func testALateGiveBackHoldsInputBeforeWaitingForTheLock() {
         var order: [String] = []
-        WindowManager.holdThenLock(hold: { order.append("hold") }, lock: { order.append("lock"); return true },
-                                   unlock: { order.append("unlock") }, release: { order.append("release") }) { order.append("body") }
+        XCTAssertTrue(WindowManager.holdThenLock(hold: { order.append("hold") }, lock: { order.append("lock"); return true },
+                                   unlock: { order.append("unlock") }, release: { order.append("release") }) { order.append("body") })
         XCTAssertEqual(order, ["hold", "lock", "body", "unlock", "release"])
         order = []
-        WindowManager.holdThenLock(hold: { order.append("hold") }, lock: { order.append("lock"); return false },
-                                   unlock: { order.append("unlock") }, release: { order.append("release") }) { order.append("body") }
-        XCTAssertEqual(order, ["hold", "lock", "body", "release"])
+        XCTAssertFalse(WindowManager.holdThenLock(hold: { order.append("hold") }, lock: { order.append("lock"); return false },
+                                   unlock: { order.append("unlock") }, release: { order.append("release") }) { order.append("body") })
+        // Not had in time: nothing changes key under the holder's feet.
+        XCTAssertEqual(order, ["hold", "lock", "release"])
+    }
+
+    /// A late move gives key to the user's window as of now: the one the
+    /// guard last saw them in, not the one recorded when the handout began,
+    /// unless that's the detached window itself or gone.
+    func testALateMoveRestoresTheUsersLatestWindow() {
+        XCTAssertEqual(WindowManager.lateRestoreTarget(tracked: 2, snapshot: 1, made: 9) { _ in true }, 2)
+        XCTAssertEqual(WindowManager.lateRestoreTarget(tracked: 9, snapshot: 1, made: 9) { _ in true }, 1)
+        XCTAssertEqual(WindowManager.lateRestoreTarget(tracked: 2, snapshot: 1, made: 9) { $0 != 2 }, 1)
+        XCTAssertEqual(WindowManager.lateRestoreTarget(tracked: nil, snapshot: 1, made: 9) { _ in true }, 1)
+        XCTAssertNil(WindowManager.lateRestoreTarget(tracked: nil, snapshot: nil, made: 9) { _ in true })
     }
 
     /// A move whose window came late: claiming it marks the agent's window

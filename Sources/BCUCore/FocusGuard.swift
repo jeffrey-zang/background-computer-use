@@ -515,6 +515,13 @@ public final class FocusGuard {
         }
     }
 
+    /// The user's window in `pid` as last seen (`watchUserWindow`), if
+    /// they're in it.
+    func lastUserWindow(_ pid: pid_t) -> CGWindowID? {
+        lock.lock(); defer { lock.unlock() }
+        return userFrontPid == pid ? userFrontWindow : nil
+    }
+
     public func isSwapping(_ pid: pid_t) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return swapping[pid] != nil
