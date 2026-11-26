@@ -689,8 +689,13 @@ public final class FocusGuard {
     private func lookLate(at pid: pid_t, click: Click, putBackMs: Double, kept: Bool = false, clickedIn: pid_t? = nil) {
         let name = { (p: pid_t) in NSRunningApplication(processIdentifier: p)?.localizedName ?? "pid \(p)" }
         DispatchQueue.global(qos: .userInitiated).async {
+            // For the kept path: the gate kept it back at some point (an
+            // agent acting on it) since the click. An app it let through
+            // could come forward by itself, and didn't.
+            var wasKept = false
             while nowMs() - click.ms < LateLook.forMs {
                 sleepMs(LateLook.everyMs)
+                if kept && self.gate.acting.contains(pid) { wasKept = true }
                 self.lock.lock()
                 let now = self.lastClick.ms == click.ms ? self.lastClick : click
                 let inputSince = LateLook.inputSince(clickMs: click.ms, putBackMs: putBackMs, mouseDownMs: self.lastUserMouseDownMs, keyMs: self.lastUserKeyMs)
@@ -720,7 +725,7 @@ public final class FocusGuard {
                     || self.spaceChangedMs > click.ms
                 self.lock.unlock()
                 if kept && movedOn { return }
-                if kept && holding { continue }
+                if kept && (holding || !wasKept) { continue }
                 self.lock.lock(); self.putBackOnClick[pid] = nil; self.lock.unlock()
                 // Theirs: the switch the guard makes for them counts as their cmd+Tab.
                 self.noteUserSwitch()
@@ -1698,12 +1703,12 @@ public final class FocusGuard {
             let on = lookedOwner(at: event.location)
             lock.lock()
             lastMouseDownPoint = event.location
-            lastDownPlainLeft = type == .leftMouseDown && !event.flags.contains(.maskControl)
+            lastDownPlainLeft = type == .leftMouseDown && event.flags.intersection([.maskControl, .maskCommand]).isEmpty
             lock.unlock()
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
             // Only a plain left click on a Dock icon brings its app forward
-            // (a right or control click opens its menu).
-            let activates = type == .leftMouseDown && !event.flags.contains(.maskControl)
+            // (a right or control click opens its menu, command shows it in Finder).
+            let activates = type == .leftMouseDown && event.flags.intersection([.maskControl, .maskCommand]).isEmpty
             lock.lock(); gateClickOn = activates ? on : nil; lock.unlock()
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             // A drag can end somewhere else (a file on a Dock icon): what's
