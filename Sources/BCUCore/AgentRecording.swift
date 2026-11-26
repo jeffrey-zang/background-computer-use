@@ -156,9 +156,10 @@ public final class AgentRecording {
     public var isCapturing: Bool { lock.lock(); defer { lock.unlock() }; return _capturing }
     public var elapsedMs: Double { nowMs() - startMs }
 
-    /// Starts a capture, unless `maxInFlight` are under way already: a
-    /// one-shot screenshot takes about 80–120 ms, so taking them one after
-    /// another would top out under the frame rate. Runs on `queue`.
+    /// Starts a capture, unless one is under way already (a one-shot
+    /// screenshot takes about 60–100 ms at the video's size; more at once
+    /// slow down everyone else's captures, the cover a key swap puts up
+    /// included). Runs on `queue`.
     private func tick() {
         guard isCapturing else { return }
         if elapsedMs > Self.maxMs {
@@ -179,7 +180,7 @@ public final class AgentRecording {
         }
     }
 
-    static let maxInFlight = 3
+    static let maxInFlight = 1
 
     /// A frame of what's recorded, and the display points it shows.
     private func grab() -> (image: CGImage, source: CGRect)? {
@@ -226,9 +227,9 @@ public final class AgentRecording {
     /// files. Blocks while it renders (about a second per 10 s of video).
     /// `audio`: a file of the session's sound to keep beside the video.
     func finish(audio: URL? = nil) throws -> Output {
-        // One more frame, so the video shows the call that stops it.
-        queue.sync { self.tick() }
-        inFlight.wait()
+        // One more frame, so the video shows the call that stops it, then
+        // no more: the timer would keep starting captures while this waits.
+        queue.sync { tick() }
         lock.lock(); _capturing = false; lock.unlock()
         timer?.cancel()
         queue.sync {}
