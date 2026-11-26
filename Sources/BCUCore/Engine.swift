@@ -1730,6 +1730,13 @@ public final class Engine {
             if tabMuted(w) == true { return ToolResult(text: Self.mutedTabOnly(w, why: "System Audio Recording isn't allowed for Background Computer Use yet (it's asked for in its setup and Settings, not mid-task)")) }
             throw ToolError(Self.audioNotAllowed(appName: w.appName))
         }
+        // A tab muted at open, in an app the user also has windows in: it's
+        // left muted, and no claim is made. Unmuting it for a recording
+        // would hand its silencing to the claim's release, which can't be
+        // made safe against the user taking the app back mid-press.
+        if !agentsOnly && mutedTabs.contains(w.id) && tabMuted(w) == true {
+            return ToolResult(text: Self.mutedTabOnly(w, why: "\(w.appName)'s sound from this tab isn't recorded while the user also has \(w.appName) windows (unmuting it for a recording could let it reach them as they take \(w.appName) back)"))
+        }
         var mute: AXNode?
         if args.int("mute_element") != nil {
             var muteArgs = args.raw
@@ -1763,7 +1770,7 @@ public final class Engine {
         if renewing {
             // An unmute that couldn't be told the first time (another tab
             // was selected) can be done now.
-            let unmuted = unmuteForRecording(w, mute: mute, muteName: muteName)
+            let unmuted = unmuteForRecording(w, mute: mute, muteName: muteName, agentsOnly: agentsOnly)
             return ToolResult(text: (mute == nil ? "\(w.appName) is still muted on the user's speakers." : "\(w.appName) is still muted on the user's speakers; when the user starts using it, \(muteName) is pressed to silence yours.") + unmuted)
         }
         audio.routeNow(audioApps())
@@ -1779,7 +1786,7 @@ public final class Engine {
             if tabMuted(w) == true { return ToolResult(text: Self.mutedTabOnly(w, why: "\(w.appName)'s sound can't be recorded: \(why)")) }
             throw ToolError("\(w.appName)'s sound can't be kept off the user's speakers: \(why). Don't play sound in it; if the task needs sound, tell the user.")
         }
-        let unmuted = unmuteForRecording(w, mute: mute, muteName: muteName)
+        let unmuted = unmuteForRecording(w, mute: mute, muteName: muteName, agentsOnly: agentsOnly)
         if agentsOnly {
             return ToolResult(text: "Only agents have windows in \(w.appName), so its sound stays off the user's speakers and is recorded to \(audio.url.path)\(opening). Play it now.\(unmuted)")
         }
@@ -1795,7 +1802,7 @@ public final class Engine {
     /// sound: only while the claim still holds when the tab's turn comes
     /// (the user may take the app back while the step waits for them). What
     /// to tell the agent.
-    private func unmuteForRecording(_ w: AgentWindow, mute: AXNode?, muteName: String) -> String {
+    private func unmuteForRecording(_ w: AgentWindow, mute: AXNode?, muteName: String, agentsOnly: Bool) -> String {
         guard mutedTabs.contains(w.id) else { return "" }
         // The tab plays out loud from here (once unmuted): only then may the
         // named element silence it when the user takes the app back.
@@ -1812,6 +1819,8 @@ public final class Engine {
         }
         switch tabMuted(w) {
         case true?:
+            // Only where no user takes the app back: see captureAudio.
+            guard agentsOnly else { return " Your tab stays muted (the user also has \(w.appName) windows), so nothing from it is recorded." }
             guard unmuteTab(w, while: muting) else { return "" }
             // The toggle it named may read otherwise now ("Mute This Tab"):
             // what it reads while the sound plays is what giving the app back
@@ -1822,8 +1831,8 @@ public final class Engine {
         case nil:
             return " Your window has more than one tab, and the one you play in may still be muted from when the window opened, which would leave your recording silent: once it plays, call this again and it's unmuted if it is."
         case false?:
-            // Not muted after all (Safari says so while it plays).
-            mutedTabs.remove(w.id)
+            // The selected tab isn't muted (Safari says so while it plays):
+            // another tab, maybe. The one muted at open keeps its record.
             arm()
             return ""
         }
