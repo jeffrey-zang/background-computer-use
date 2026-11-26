@@ -528,6 +528,19 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertTrue(r.result.contains("@(0,0 10x10) [settable]"), r.result)
     }
 
+    func testManyHiddenKeysStayQuick() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let start = Date()
+        for _ in 0..<600 {
+            let k = log.begin(tool: "press_key", args: ["key": "a", "window_id": 1]); log.setFocus(secure: false)
+            log.end(k, result: "Pressed a.", isError: false)
+        }
+        log.redactAgain()
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "x \(String(repeating: "a", count: 600)) y", isError: false)
+        XCTAssertFalse(r.result.contains("aaa"), String(r.result.prefix(80)))
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

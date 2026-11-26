@@ -2441,7 +2441,9 @@ public final class Engine {
         if target == nil, let rec = recordingSteps {
             let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
             let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
-            rec.setFocus(secure: Self.isSecureField(mine) || passwordFieldFocused(w))
+            // Not knowing the field it goes to (a window borrowed and never
+            // read, the user's focus elsewhere in the app) counts as secret.
+            rec.setFocus(secure: mine == nil || Self.isSecureField(mine) || passwordFieldFocused(w))
             recordFocusTarget(w, mine, rec)
         }
 

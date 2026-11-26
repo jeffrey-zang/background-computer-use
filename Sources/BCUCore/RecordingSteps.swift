@@ -391,7 +391,24 @@ public final class StepLog {
     /// Text that was hidden where it was typed, taken out of every later
     /// result too (a read of the window shows what's in its fields). Never
     /// written anywhere.
-    private var hiddenTexts: [String] = []
+    private var hiddenSet: Set<String> = []
+    /// The forms of each window's key run so far: replaced as the run grows,
+    /// not piled up key by key.
+    private var runForms: [UInt32: [String]] = [:]
+    private var sortedCache: [String]?
+    /// All of it, longest first (a shorter one replaced first could break up
+    /// a longer one that holds it).
+    private var hiddenTexts: [String] {
+        if let c = sortedCache { return c }
+        let c = hiddenSet.union(runForms.values.joined()).sorted { $0.count > $1.count }
+        sortedCache = c
+        return c
+    }
+    private func addHidden(_ forms: [String]) {
+        let before = hiddenSet.count
+        hiddenSet.formUnion(forms)
+        if hiddenSet.count != before { sortedCache = nil }
+    }
     /// Characters hidden one press_key at a time, in a row: together they're
     /// what went into the field.
     private var keyRuns: [UInt32: String] = [:]
@@ -429,8 +446,7 @@ public final class StepLog {
         // Under hide_typing, what a call types is hidden from everything from
         // the moment it starts: a status answered meanwhile can show it already.
         if redactAll, tool == "type_text" || tool == "set_value" || character {
-            for v in original.values where RecordingText.redactsLater(v) { hiddenTexts += RecordingText.forms(of: v) }
-            hiddenTexts.sort { $0.count > $1.count }
+            for v in original.values where RecordingText.redactsLater(v) { addHidden(RecordingText.forms(of: v)) }
             hidValues = true
         }
         let window = (a["window_id"] as? NSNumber)?.uint32Value
@@ -527,21 +543,20 @@ public final class StepLog {
                 // a length limit): the result quotes it, and a later read shows it.
                 let accepted = RecordingText.quotedSpans(given).filter { RecordingText.redactsLater($0) }
                 result = RecordingText.hideQuoted(RecordingText.redact(result, secrets: [secret]))
-                for a in accepted { hiddenTexts += RecordingText.forms(of: a) }
+                for a in accepted { addHidden(RecordingText.forms(of: a)) }
                 s.args[key] = "(hidden, \(secret.count) characters)"
                 s.secret = secret
                 s.textHidden = true
-                if RecordingText.redactsLater(secret) { hiddenTexts += RecordingText.forms(of: secret) }
+                if RecordingText.redactsLater(secret) { addHidden(RecordingText.forms(of: secret)) }
                 // Typing that stopped partway left part of it in the field,
                 // which a later read shows.
                 if isError {
                     for part in RecordingText.partsTyped(secret, result: result) where RecordingText.redactsLater(part) {
-                        hiddenTexts += RecordingText.forms(of: part)
+                        addHidden(RecordingText.forms(of: part))
                     }
                 }
                 // Longest first, every time: a shorter secret replaced first
                 // would break up a longer one that holds it ("Ada" in "Ada Lovelace").
-                hiddenTexts.sort { $0.count > $1.count }
             }
         }
         // Keys pressed one by one add up to text in a field.
@@ -556,12 +571,14 @@ public final class StepLog {
             }
             keyRuns[w, default: ""] += ch
             if let run = keyRuns[w], RecordingText.redactsLater(run) {
-                hiddenTexts += RecordingText.forms(of: run)
-                hiddenTexts.sort { $0.count > $1.count }
+                runForms[w] = RecordingText.forms(of: run)
+                sortedCache = nil
             }
         } else if Self.endsKeyRun.contains(s.tool) || (s.tool == "press_key" && !s.typesCharacter) {
             // Something that changes the input or where it goes; reads don't.
             keyRuns[w] = nil
+            // The run is over: its whole text stays hidden, once.
+            if let forms = runForms.removeValue(forKey: w) { addHidden(forms) }
         }
         if s.textHidden && redactAll { hidValues = true }
         s.original = [:]
