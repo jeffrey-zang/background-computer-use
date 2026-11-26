@@ -385,6 +385,8 @@ public final class Hub {
             self.ticks += 1
             self.changed()
             self.routeAudio()
+            // Beeps are watched for while some agent has a display.
+            if self.engines.contains(where: { $0.display.isRunning }) { BeepWatch.shared.ensureRunning() } else { BeepWatch.shared.stop() }
             AgentDisplay.tend()
             if AgentDisplay.someoneWaiting {
                 // Another agent needs a display: one with no windows goes
@@ -452,6 +454,7 @@ public final class Hub {
         if group.wait(timeout: .now() + 4) == .timedOut { Log.info("shutdown: gave up waiting for windows to be released") }
         for e in all { e.finishShutdown() }
         AgentDisplay.reapSpares(all: true)
+        BeepWatch.shared.stop()
     }
 
     /// The menu bar's pause and stop act on every session, a host app's too.
