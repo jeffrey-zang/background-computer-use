@@ -589,6 +589,23 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(c.target?.label, "(hidden)")
     }
 
+    func testTypedTextAndAKeyRunTakeTheLongerMatch() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "confidential", "element": 3]); log.end(t, result: "ok", isError: false)
+        for c in "con" { let k = log.begin(tool: "press_key", args: ["key": String(c), "window_id": 1]); log.setFocus(secure: false); log.end(k, result: "Pressed.", isError: false) }
+        let tab = log.begin(tool: "press_key", args: ["key": "tab", "window_id": 1]); log.end(tab, result: "Pressed.", isError: false)
+        let st = log.begin(tool: "status", args: [:]); log.end(st, result: "1: \"confidential\"", isError: false)
+        XCTAssertFalse(st.result.contains("fidential"), st.result)
+    }
+
+    func testOptionKeysAreHiddenWhateverTheyMade() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        for c in "asd" { let k = log.begin(tool: "press_key", args: ["key": String(c), "modifiers": ["option"], "window_id": 1]); log.setFocus(secure: false); log.end(k, result: "Pressed.", isError: false) }
+        let st = log.begin(tool: "status", args: [:]); log.end(st, result: "1: \"åß∂\"", isError: false)
+        XCTAssertFalse(st.result.contains("åß∂"), st.result)
+        XCTAssertTrue(st.result.hasPrefix("1: "), "ordinary text isn't taken for it")
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

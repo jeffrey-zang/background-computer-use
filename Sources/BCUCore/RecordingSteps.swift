@@ -406,20 +406,35 @@ public final class StepLog {
     /// `text` with any start of a key run (3+ characters) taken out: found
     /// by where the run's first characters occur and how far each match
     /// goes, so a long run costs no more than the text it's looked for in.
+    /// A key run's stand-in for a character it can't know (option makes
+    /// one that depends on the layout): matches any character outside ASCII.
+    static let anyCharacter: Character = "\u{FFFD}"
+
+    /// `text` with, at each place, the longest of: a whole hidden text, or
+    /// any start (3+ characters) of a key run, taken out. One pass over
+    /// both, so neither can break up a longer match of the other ("con"
+    /// typed key by key inside "confidential" typed as text).
     private func redactRunStarts(_ text: String) -> String {
         let runs = (Array(keyRuns.values) + pastRuns).map(Array.init).filter { $0.count >= 3 }
-        guard !runs.isEmpty else { return text }
+        let whole = hiddenTexts.map(Array.init).filter { !$0.isEmpty }
+        guard !runs.isEmpty || !whole.isEmpty else { return text }
+        // The stand-in matches what option makes: a character outside ASCII.
+        func same(_ a: Character, _ b: Character) -> Bool { b == Self.anyCharacter ? !a.isASCII : a == b }
         var chars = Array(text)
         var i = 0
-        while i + 3 <= chars.count {
-            // The longest match of any run here (one can start another: "secret", "secretsuffix").
+        while i < chars.count {
             var best = 0
-            for run in runs where chars[i] == run[0] && chars[i + 1] == run[1] && chars[i + 2] == run[2] {
-                var k = 3
-                while k < run.count, i + k < chars.count, chars[i + k] == run[k] { k += 1 }
-                best = max(best, k)
+            for w in whole where w.count > best && i + w.count <= chars.count && chars[i] == w[0] {
+                if Array(chars[i..<(i + w.count)]) == w { best = w.count }
             }
-            if best >= 3 {
+            if i + 3 <= chars.count {
+                for run in runs where same(chars[i], run[0]) && same(chars[i + 1], run[1]) && same(chars[i + 2], run[2]) {
+                    var k = 3
+                    while k < run.count, i + k < chars.count, same(chars[i + k], run[k]) { k += 1 }
+                    best = max(best, k)
+                }
+            }
+            if best > 0 {
                 chars.replaceSubrange(i..<(i + best), with: Array("(hidden)"))
                 i += 8
             } else {
@@ -603,6 +618,11 @@ public final class StepLog {
             var ch = key
             if shifted, let c = key.first {
                 ch = KeyMap.shifted.first { $0.value == c }.map { String($0.key) } ?? key.uppercased()
+            }
+            // Option makes a character the layout decides (option+s is ß):
+            // a stand-in that matches whatever it was.
+            if s.originalModifiers.contains(where: { KeyMap.modifierNames["\($0)".trimmingCharacters(in: .whitespaces).lowercased()] == .maskAlternate }) {
+                ch = String(Self.anyCharacter)
             }
             keyRuns[w, default: ""] += ch
             if let run = keyRuns[w], RecordingText.redactsLater(run) {

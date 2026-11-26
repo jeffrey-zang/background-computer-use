@@ -73,11 +73,15 @@ public enum RecordingOverlay {
         // With all typed text hidden, the fields it went into are covered
         // from then on (a password field shows only dots anyway).
         if redactAll {
+            // Each area once, however many hidden steps went into it.
+            var areas: [CGRect] = []
             for s in flat where s.t <= t && s.hidesText(redactAll: true) {
                 // The window it went into, where that window is in this frame
                 // (the field can scroll, the window can move), else where it was.
                 let area = s.coverWindow.flatMap { covers[$0] } ?? s.cover ?? s.target.flatMap { $0.secure ? nil : $0.frame }
-                guard let area else { continue }
+                if let area, !areas.contains(area) { areas.append(area) }
+            }
+            for area in areas {
                 let r = flip(mapping.rect(area).insetBy(dx: -2 * u, dy: -2 * u))
                 ctx.setFillColor(CGColor(gray: 0.55, alpha: 1))
                 ctx.addPath(CGPath(roundedRect: r, cornerWidth: 5 * u, cornerHeight: 5 * u, transform: nil)); ctx.fillPath()
