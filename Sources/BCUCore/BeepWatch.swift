@@ -132,6 +132,11 @@ public final class BeepWatch {
         let pending = { (b: Beep) in self.unread(b.seq, at: b.at) }
         let others = recent.filter { !pending($0) && $0.at >= cutoff }.suffix(256)
         recent = (recent.filter(pending) + others).sorted { $0.seq < $1.seq }
+        // Whose beep each one is matters only while it can still be read.
+        let live = Set(recent.map(\.seq))
+        assigned = assigned.filter { live.contains($0.key) }
+        ownerOf = ownerOf.filter { live.contains($0.key) }
+        provisional = provisional.filter { live.contains($0.key) }
     }
 
     /// Under `lock`. Input of a call still under way: its beeps haven't
@@ -145,6 +150,22 @@ public final class BeepWatch {
     /// arrival for a call under way).
     private var readUpTo: [String: Int] = [:]
     private var ownerOf: [Int: String] = [:]
+    /// The input a held-back beep fitted on arrival.
+    private var provisional: [Int: Step] = [:]
+
+    /// For tests: entries kept about whose beep each one is.
+    var ownershipCount: Int { lock.lock(); defer { lock.unlock() }; return assigned.count + ownerOf.count + provisional.count }
+
+    /// A session that's gone: nothing more is kept for it.
+    public func forget(_ owner: String) {
+        lock.lock(); defer { lock.unlock() }
+        readUpTo[owner] = nil
+        calls[owner] = nil
+        // Its unread beeps are no one's now: pruned like any other.
+        assigned = assigned.filter { $0.value.owner != owner }
+        ownerOf = ownerOf.filter { $0.value != owner }
+        provisional = provisional.filter { $0.value.owner != owner }
+    }
 
     /// Under `lock`. A beep its session hasn't read yet: kept past the
     /// minute and the cap (up to 10 minutes, for a session that went away).
@@ -174,7 +195,12 @@ public final class BeepWatch {
     private func assignOnArrival(_ b: Beep) {
         guard let step = Self.agents([b], steps: steps, owner: nil).first?.step else { return }
         ownerOf[b.seq] = step.owner
-        if let c = calls[step.owner], c <= b.at, step.call < c { return }
+        if let c = calls[step.owner], c <= b.at, step.call < c {
+            // Settled when that call looks; this input is kept for it in
+            // case the list has been pruned by then (a long batch).
+            provisional[b.seq] = step
+            return
+        }
         assigned[b.seq] = step
     }
 
@@ -270,8 +296,7 @@ public final class BeepWatch {
             steps = steps.filter { $0.end >= cutoff }.suffix(200)
         }
         // The last 200, and any for a call still under way (it hasn't looked).
-        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 || pendingStep($0.value) || $0.key > readUpTo[$0.value.owner, default: 0] } }
-        if ownerOf.count > 400 { ownerOf = ownerOf.filter { $0.key > nextSeq - 200 || $0.key > readUpTo[$0.value, default: 0] } }
+
     }
 
     /// Which input each beep was put down to, once some session has: later
@@ -288,7 +313,7 @@ public final class BeepWatch {
             let step: Step
             if let s = assigned[b.seq] {
                 step = s
-            } else if let s = Self.agents([b], steps: steps, owner: nil, tail: tail).first?.step {
+            } else if let s = Self.agents([b], steps: steps, owner: nil, tail: tail).first?.step ?? provisional[b.seq] {
                 assigned[b.seq] = s
                 step = s
             } else { continue }

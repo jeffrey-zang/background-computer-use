@@ -438,7 +438,7 @@ public final class Hub {
         usedBy = Self.prunedUsers(usedBy, gone: gone, attached: attached)
         order.removeAll { gone.contains($0) }
         lock.unlock()
-        for id in gone { Log.info("session \(Self.short(id)) ended") }
+        for id in gone { Log.info("session \(Self.short(id)) ended"); BeepWatch.shared.forget(id) }
         if !gone.isEmpty { changed() }
     }
 

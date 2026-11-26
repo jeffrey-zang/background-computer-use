@@ -210,6 +210,35 @@ final class BeepWatchTests: XCTestCase {
         w.endCall("a")
     }
 
+    /// A beep held back on arrival keeps the input it fitted, for when its
+    /// call looks after the list has been pruned.
+    func testAHeldBackBeepKeepsItsInput() {
+        let w = BeepWatch()
+        let t0 = Date()
+        let first = t0.addingTimeInterval(-1)
+        w.record(BeepWatch.Step(start: first, end: t0.addingTimeInterval(-0.9), key: "escape", pids: [62902], owner: "a", call: first))
+        let start = w.lastSeq
+        w.beginCall("a", at: t0.addingTimeInterval(-0.85))
+        w.inject((t0.addingTimeInterval(-0.8), 62902, "TextEdit", 4096))
+        w.forgetSteps()
+        let found = w.attribute(w.beeps(after: start), owner: "a")
+        XCTAssertEqual(found.first?.step.key, "escape")
+        w.endCall("a")
+    }
+
+    /// Who a beep is for is kept only while the beep itself is: a session
+    /// that never reads its last beep leaves nothing behind once it's gone.
+    func testOwnershipGoesWithTheBeep() {
+        let w = BeepWatch()
+        let t0 = Date()
+        w.record(step(t0, -0.1, 0.2, owner: "gone"))
+        w.inject((t0, 62902, "TextEdit", 4096))
+        w.forget("gone")
+        for _ in 0..<300 { w.inject((Date(), 1, "Finder", 16)) }
+        XCTAssertFalse(w.beeps(after: 0).contains { $0.app == "TextEdit" })
+        XCTAssertEqual(w.ownershipCount, 0)
+    }
+
     /// Completed input is pruned on the begin/finish path too.
     func testFinishPrunes() {
         let w = BeepWatch()
