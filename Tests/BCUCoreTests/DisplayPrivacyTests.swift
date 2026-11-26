@@ -34,6 +34,15 @@ final class DisplayPrivacyTests: XCTestCase {
                                                 value: "x", idleMs: 9000, appIsFront: false, withUser: true))
     }
 
+    /// A window the session gave up (released, closed, or handed back by
+    /// the menu bar's Stop) is the user's again: their edits aren't reported.
+    func testWindowsNoLongerTheSessionsAreExcluded() {
+        XCTAssertTrue(Engine.interferenceExcluded(handedOff: nil, userInControl: false))
+        XCTAssertTrue(Engine.interferenceExcluded(handedOff: true, userInControl: false))
+        XCTAssertTrue(Engine.interferenceExcluded(handedOff: false, userInControl: true))
+        XCTAssertFalse(Engine.interferenceExcluded(handedOff: false, userInControl: false))
+    }
+
     /// Text a page shows, timers and progress bars change by themselves.
     func testValueChangesOutsideInputControlsAreNotReported() {
         for role in ["AXStaticText", "AXProgressIndicator", "AXWebArea", "AXGroup"] {

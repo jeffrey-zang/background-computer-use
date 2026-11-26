@@ -190,14 +190,22 @@ public final class Engine {
         recorder = SessionRecorder(sessionID: sessionID, label: label, display: display)
         frontMark = focusGuard.frontMark
         interference.idleMs = { [weak self] in self?.msSinceLastCall ?? 0 }
-        interference.withUser = { [weak self] id in
+        interference.excluded = { [weak self] id in
             guard let self else { return true }
-            return self.userInControl || (self.windows.window(id)?.handedOff ?? false)
+            return Self.interferenceExcluded(handedOff: self.windows.window(id)?.handedOff, userInControl: self.userInControl)
         }
         interference.onChange = { [weak self] c in
             // The guard log is every session's: no field values in it.
             self?.focusGuard.record("interference: window \(c.window) (\(c.app)): \(c.shared), while the agent wasn't acting")
         }
+    }
+
+    /// Changes in window `id` aren't reported when it's no longer this
+    /// session's (`handedOff` nil: released, closed, given back to the
+    /// user by Stop) or the user has it (handed off, or driving the display).
+    static func interferenceExcluded(handedOff: Bool?, userInControl: Bool) -> Bool {
+        guard let handedOff else { return true }
+        return handedOff || userInControl
     }
 
     /// What changed in this session's windows without BCU since the last
@@ -326,6 +334,7 @@ public final class Engine {
                     notes.append((try? self.windows.release(w.id, keepOpen: false)) ?? "window \(w.id): failed")
                 }
             }
+            self.interference.sync(self.windows.windows)
             self.snapshots.removeAll()
             self.log("The agent went away without closing its windows: " + notes.joined(separator: "; "))
             self.tearDownIfIdle(idleMs: 0)
@@ -459,6 +468,7 @@ public final class Engine {
     public func stopAll(byUser: Bool = false) {
         queue.async {
             let results = self.windows.releaseAll()
+            self.interference.sync(self.windows.windows)
             self.snapshots.removeAll()
             self.log("Stopped by you: " + (results.isEmpty ? "no windows open" : results.joined(separator: "; ")))
             if byUser { NotificationCenter.default.post(name: Self.stoppedByUserNotification, object: self) }

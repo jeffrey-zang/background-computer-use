@@ -128,9 +128,10 @@ final class InterferenceWatch {
     private var observers: [pid_t: AXObserver] = [:]
     private var watched: [CGWindowID: (pid: pid_t, app: String)] = [:]
     /// Asked on each notification (main thread): how long the session has
-    /// been idle, and whether a window is with the user now.
+    /// been idle, and whether a window's changes are left out (it's with the
+    /// user, or not the session's any more).
     var idleMs: () -> Double = { .infinity }
-    var withUser: (CGWindowID) -> Bool = { _ in false }
+    var excluded: (CGWindowID) -> Bool = { _ in true }
     /// Each change as it's noticed (main thread), for the guard report.
     var onChange: ((Change) -> Void)?
 
@@ -186,7 +187,7 @@ final class InterferenceWatch {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier == entry.pid
         guard let what = Self.describe(notification: notification, role: role, subrole: AX.string(element, "AXSubrole"),
                                        title: AX.string(element, "AXTitle") ?? AX.string(element, "AXDescription"),
-                                       value: value, idleMs: idle, appIsFront: front, withUser: withUser(id)) else { return }
+                                       value: value, idleMs: idle, appIsFront: front, withUser: excluded(id)) else { return }
         let shared = Self.describe(notification: notification, role: role, subrole: AX.string(element, "AXSubrole"),
                                    title: AX.string(element, "AXTitle") ?? AX.string(element, "AXDescription"),
                                    value: nil, idleMs: idle, appIsFront: front, withUser: false) ?? what
