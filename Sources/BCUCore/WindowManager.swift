@@ -1837,9 +1837,17 @@ public final class WindowManager {
         }
         guard Self.menuPressMayHaveRun(pressed) else {
             scope?.exit()
-            Log.info("tabs: Move Tab to New Window (\(route)) in \(w.appName) failed (\(pressed.rawValue)); the tab stays")
-            return .failed
+            // A stale element or a busy app: tried again on a later look
+            // (the tab stays new), a few times; anything else is final.
+            Self.sharedLock.lock()
+            let attempts = Self.pressFailures[w.id, default: 0] + 1
+            Self.pressFailures[w.id] = attempts
+            Self.sharedLock.unlock()
+            let retry = Self.retryAfterFailedPress(pressed, attempts: attempts)
+            Log.info("tabs: Move Tab to New Window (\(route)) in \(w.appName) failed (\(pressed.rawValue)); \(retry ? "trying again" : "the tab stays")")
+            return retry ? .later : .failed
         }
+        Self.sharedLock.lock(); Self.pressFailures[w.id] = nil; Self.sharedLock.unlock()
         var made: CGWindowID?
         let deadline = nowMs() + 2000
         // The new standard window showing the moved tab: the browser shows
@@ -1882,7 +1890,13 @@ public final class WindowManager {
         // In the browser now, or since the move began.
         let userInNow = userIn || BCUFrontProcessPID() == w.pid
         if let scope {
-            if userInNow { scope.exit() } else { scope.handOff(to: made) }
+            if userInNow {
+                // Came to the browser during the move: the scope was entered
+                // with nowhere of theirs to give key back to.
+                if !userIn, let userKey, userKey != made { scope.handOff(to: userKey) } else { scope.exit() }
+            } else {
+                scope.handOff(to: made)
+            }
         } else if let back = Self.keyAfterTabMenuMove(userIn: userInNow, userKey: userKey, made: made),
                   AX.focusedWindowID(w.pid) != back {
             // Not in the browser: the new window (the user's) gets key, as
@@ -1906,7 +1920,26 @@ public final class WindowManager {
     private static var lateHandouts: [pid_t: (before: Set<CGWindowID>, untilMs: Double, title: String)] = [:]
     /// The agent window each pending handout's tab came out of.
     private static var lateHandoutSource: [pid_t: CGWindowID] = [:]
+    /// Move presses in a row that failed, per agent window.
+    private static var pressFailures: [CGWindowID: Int] = [:]
+
+    /// Whether a failed press is worth another try: a stale element or an
+    /// app that failed to answer, three times at most.
+    static func retryAfterFailedPress(_ result: AXError, attempts: Int) -> Bool {
+        (result == .invalidUIElement || result == .failure) && attempts < 3
+    }
+
+    /// A tab moved out of this agent window hasn't landed in its own window
+    /// yet: a read of the window now may still show it.
+    static func handoutPending(from id: CGWindowID) -> Bool {
+        sharedLock.lock(); defer { sharedLock.unlock() }
+        guard let pid = lateHandoutSource.first(where: { $0.value == id })?.key, let until = lateHandouts[pid]?.untilMs else { return false }
+        return nowMs() < until
+    }
     static let lateHandoutMs = 10_000.0
+    /// How long after a step a window it caused can still come up
+    /// (`Attribution`'s window for new windows).
+    static let stepEffectsMs = 10_000.0
 
     /// Whether a window is the late one a handout made: new since the
     /// handout, a standard window, in time, and not a window some session
@@ -2027,7 +2060,9 @@ public final class WindowManager {
             guard let subrole = ax.flatMap({ AX.string($0, "AXSubrole") }) else { unread.insert(info.id); continue }
             let standard = subrole == "AXStandardWindow"
             let title = ax.flatMap { AX.string($0, "AXTitle") }
-            let stepSince = (focusGuard.lastActionMs(info.pid) ?? -.infinity) >= late[info.pid]!.untilMs - Self.lateHandoutMs
+            // A step since the handout, or one just before whose effects can
+            // still come (a popup an earlier click asked for): the title decides.
+            let stepSince = (focusGuard.lastActionMs(info.pid) ?? -.infinity) >= late[info.pid]!.untilMs - Self.lateHandoutMs - Self.stepEffectsMs
             // Its title decides it and couldn't be read: left alone until a
             // later look can tell, not attributed as the agent's meanwhile.
             if Self.lateHandoutNeedsTitle(stepSince: stepSince, title: title),

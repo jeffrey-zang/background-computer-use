@@ -270,4 +270,24 @@ final class StrayTabTests: XCTestCase {
         XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "Sign in - Google Chrome - Work", tabTitle: "Sign in", browser: "Google Chrome"))
         XCTAssertTrue(WindowManager.windowShowsTab(windowTitle: "A - B - Google Chrome", tabTitle: "A - B", browser: "Google Chrome"))
     }
+
+    /// A stale menu item or a busy app is tried again a few times; an
+    /// unsupported action is final.
+    func testAFailedPressIsRetriedOnlyWhenItMayBeTransient() {
+        XCTAssertTrue(WindowManager.retryAfterFailedPress(.invalidUIElement, attempts: 1))
+        XCTAssertTrue(WindowManager.retryAfterFailedPress(.failure, attempts: 2))
+        XCTAssertFalse(WindowManager.retryAfterFailedPress(.failure, attempts: 3))
+        XCTAssertFalse(WindowManager.retryAfterFailedPress(.actionUnsupported, attempts: 1))
+    }
+
+    /// While a move is pending, reads of its source window aren't trusted.
+    func testReadsOfTheSourceAreStaleWhileAMoveIsPending() {
+        let pid: pid_t = 99_103
+        let until = nowMs() + 5000
+        WindowManager.setLateHandoutForTesting(pid: pid, before: [], untilMs: until, source: 990_300)
+        XCTAssertTrue(WindowManager.handoutPending(from: 990_300))
+        XCTAssertFalse(WindowManager.handoutPending(from: 990_301))
+        XCTAssertTrue(WindowManager.claimLateHandout(pid: pid, untilMs: until, id: 990_302))
+        XCTAssertFalse(WindowManager.handoutPending(from: 990_300))
+    }
 }

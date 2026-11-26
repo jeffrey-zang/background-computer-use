@@ -1519,6 +1519,9 @@ public final class Engine {
     /// last read it. Its element numbers, and the selected page, may be
     /// that tab's now.
     private func checkReadAfterHandout(_ w: AgentWindow) throws {
+        if WindowManager.handoutPending(from: w.id) {
+            throw ToolError("a tab another app opened in window \(w.id) is being moved to a window of the user's, so what you last read of this window may be that tab's: call get_window_state window_id=\(w.id) in a moment, then act")
+        }
         if Self.staleAfterTabMovedOut(movedMs: WindowManager.tabMovedOutMs(w.id), readMs: snapshotMs[w.id]) {
             throw ToolError("a tab another app opened in window \(w.id) was moved to a window of the user's since you last read it, so its element numbers and selected page are out of date: call get_window_state window_id=\(w.id), then act")
         }
