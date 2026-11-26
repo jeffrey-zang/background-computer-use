@@ -1835,7 +1835,10 @@ public final class Engine {
         do {
             let err = try keyed(w, cause: cause) { check, _ -> AXError in
                 try check()
-                return AX.perform(item, "AXPress")
+                let before = "\(AX.string(item, "AXTitle") ?? "?") enabled=\(AX.bool(item, "AXEnabled").map(String.init) ?? "?")"
+                let e = AX.perform(item, "AXPress")
+                Log.info("audio: \(cause) in window \(w.id): item read \(before) before the press, \(AX.string(item, "AXTitle") ?? "?") enabled=\(AX.bool(item, "AXEnabled").map(String.init) ?? "?") after (\(AX.errorName(e)))")
+                return e
             }
             if err == .success { return true }
             Log.info("audio: \(cause) in window \(w.id) of \(w.appName) failed (\(AX.errorName(err)))")
