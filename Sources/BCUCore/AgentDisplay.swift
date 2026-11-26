@@ -482,6 +482,7 @@ public final class AgentDisplay {
     static func remove(_ id: CGDirectDisplayID, disable: (CGDirectDisplayID) -> Void, release: () -> Void) {
         disable(id)
         release()
+        DisplayOwners.release(id)
     }
 
     /// Spare displays there are (for the status line and tests).
@@ -615,6 +616,7 @@ public final class AgentDisplay {
         }
         display = vd
         displayID = vd.displayID
+        DisplayOwners.claim(displayID)
         register()
     }
 
@@ -883,11 +885,33 @@ public final class AgentDisplay {
         let strays = strayIDs
         strayFirstSeen = strayFirstSeen.filter { strays.contains($0.key) }
         for id in strays where strayFirstSeen[id] == nil { strayFirstSeen[id] = now }
-        WindowManager.rescue(fromStrays: strays.filter { now - (strayFirstSeen[$0] ?? now) >= 5000 }.map { CGDisplayBounds($0) })
+        let settled = strays.filter { now - (strayFirstSeen[$0] ?? now) >= 5000 }
+        WindowManager.rescue(fromStrays: orphaned(settled).map { CGDisplayBounds($0) })
     }
 
     /// When each stray display was first seen (main thread).
     private static var strayFirstSeen: [CGDirectDisplayID: Double] = [:]
+
+    /// Strays whose windows are left where they are, by the engine that has
+    /// each one (main thread), so that's said once.
+    private static var strayOwnersNoted: [CGDirectDisplayID: pid_t] = [:]
+
+    /// The strays a crashed copy left. One another engine has open and
+    /// running (a second copy, a test engine) is fenced and stepped around
+    /// like any stray, but its windows are that engine's: moving them to
+    /// the user's screen has its guard move them straight back, over and
+    /// over (#95).
+    static func orphaned(_ strays: [CGDirectDisplayID]) -> [CGDirectDisplayID] {
+        strayOwnersNoted = strayOwnersNoted.filter { strays.contains($0.key) }
+        return strays.filter { id in
+            guard let owner = DisplayOwners.liveOwner(of: id) else { return true }
+            if strayOwnersNoted[id] != owner.pid {
+                strayOwnersNoted[id] = owner.pid
+                Log.info("display \(id) at \(CGDisplayBounds(id).short) is another engine's (pid \(owner.pid)); its windows stay with it")
+            }
+            return false
+        }
+    }
 
     /// No user display to sit beside the last time this looked.
     private var unplaced = false
