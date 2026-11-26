@@ -2167,9 +2167,10 @@ public final class Engine {
     }
 
     /// This session's caught windows of `pid` (a dialog the watchdog
-    /// caught on the user's screen is one, see `PageDialog.windows`).
+    /// caught on the user's screen is one, see `PageDialog.windows`), but
+    /// none handed off to the user.
     private func caughtWindows(of pid: pid_t) -> Set<CGWindowID> {
-        Set(windows.windows.filter { $0.pid == pid && $0.kind == .caught }.map(\.id))
+        PageDialog.caughtIDs(windows.windows, pid: pid)
     }
 
     /// A step in a watched browser (see `PageDialog.watches`) that left a

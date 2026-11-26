@@ -76,15 +76,38 @@ enum PageDialog {
     /// title line. An in-tab dialog carries the message as its value.
     static func message(_ dialog: AXUIElement) -> String {
         var texts = WindowManager.texts(in: dialog)
-        if let v = AX.string(dialog, "AXValue"), !v.isEmpty, !texts.contains(v) { texts.append(v) }
+        if let v = AX.string(dialog, "AXValue"), !v.isEmpty { texts.append(v) }
         return message(texts: texts)
     }
 
+    /// Each text is cut to `textLimit` characters, as the window's static
+    /// texts are (`WindowManager.texts`), and the whole to `messageLimit`: a
+    /// page's message can be any length, and it goes into every state header,
+    /// step note and log line while the dialog waits.
+    static let textLimit = 160
+    static let messageLimit = 320
+
     static func message(texts: [String]) -> String {
-        let kept = texts.map { $0.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces) }
+        let kept = texts.map { text -> String in
+            let line = text.prefix(textLimit * 2).replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+            return String(line.prefix(textLimit)).trimmingCharacters(in: .whitespaces)
+        }
             .filter { !$0.isEmpty && $0 != "JavaScript" }
         var seen = Set<String>()
-        return kept.filter { seen.insert($0).inserted }.joined(separator: " ")
+        let unique = kept.filter { seen.insert($0).inserted }
+        // A text that starts another one (a static text's cut copy of the
+        // dialog's value) is said once, by the other.
+        let said = unique.enumerated().filter { i, t in
+            !unique.enumerated().contains { j, other in j != i && other.count > t.count && other.hasPrefix(t) }
+        }.map(\.element).joined(separator: " ")
+        return said.count > messageLimit ? String(said.prefix(messageLimit - 1)) + "…" : said
+    }
+
+    /// The session's caught windows of `pid` a page dialog can be among:
+    /// not one handed off to the user or on their screen (a dialog handed
+    /// to them is theirs to answer, not part of another window's state).
+    static func caughtIDs(_ windows: [AgentWindow], pid: pid_t) -> Set<CGWindowID> {
+        Set(windows.filter { $0.pid == pid && $0.kind == .caught && !$0.handedOff && !$0.withUser }.map(\.id))
     }
 
     static func buttons(_ dialog: AXUIElement) -> [String] {

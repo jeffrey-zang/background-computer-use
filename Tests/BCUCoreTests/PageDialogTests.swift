@@ -65,4 +65,33 @@ final class PageDialogTests: XCTestCase {
         XCTAssertTrue(PageDialog.watchedTools.isSuperset(of: ["click", "type_text", "press_key", "press_menu_item"]))
         XCTAssertFalse(PageDialog.watchedTools.contains("get_window_state"))
     }
+
+    /// A page's message can be any length: each text is cut as the window's
+    /// static texts are, a static text's cut copy of the value is said once,
+    /// and the whole is bounded.
+    func testALongMessageIsBoundedAndSaidOnce() {
+        let long = String(repeating: "spam ", count: 100_000)
+        let staticCopy = String(long.prefix(160))
+        let said = PageDialog.message(texts: ["JavaScript", staticCopy, long])
+        XCTAssertLessThanOrEqual(said.count, PageDialog.messageLimit)
+        XCTAssertEqual(said, staticCopy.trimmingCharacters(in: .whitespaces))
+        let many = (0..<10).map { "Line \($0) " + String(repeating: "x", count: 200) }
+        let all = PageDialog.message(texts: many)
+        XCTAssertEqual(all.count, PageDialog.messageLimit)
+        XCTAssertTrue(all.hasSuffix("…"))
+    }
+
+    /// A caught dialog handed off to the user, or one they took onto their
+    /// screen, isn't part of another window's state: its buttons would get
+    /// numbers there and could be answered without take_back.
+    func testHandedOffCaughtDialogsArentLookedAt() {
+        let mine = AgentWindow(id: 10, pid: 77, appName: "Safari", bundleID: "com.apple.Safari", kind: .caught)
+        let handed = AgentWindow(id: 11, pid: 77, appName: "Safari", bundleID: "com.apple.Safari", kind: .caught)
+        handed.handedOff = true
+        let withUser = AgentWindow(id: 12, pid: 77, appName: "Safari", bundleID: "com.apple.Safari", kind: .caught)
+        withUser.withUser = true
+        let opened = AgentWindow(id: 13, pid: 77, appName: "Safari", bundleID: "com.apple.Safari", kind: .opened)
+        let otherApp = AgentWindow(id: 14, pid: 78, appName: "Safari", bundleID: "com.apple.Safari", kind: .caught)
+        XCTAssertEqual(PageDialog.caughtIDs([mine, handed, withUser, opened, otherApp], pid: 77), [10])
+    }
 }
