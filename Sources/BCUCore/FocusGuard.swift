@@ -201,6 +201,8 @@ public final class FocusGuard {
     private var spaceChangedMs = -Double.infinity
     /// Where the user's last mouse button went down.
     private var lastMouseDownPoint = CGPoint.zero
+    /// It was the left button, without control.
+    private var lastDownPlainLeft = false
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
@@ -782,9 +784,16 @@ public final class FocusGuard {
     /// in another app's window) may still open something in one of them: a
     /// link in the user's chat app opens in the browser an agent works in.
     /// Look for it there (`lookLate`), as for an app put back on a click.
+    ///
+    /// Armed once the click is complete (the button came up where it went
+    /// down: a press held on a link or a drag opens nothing), for the apps
+    /// an agent is acting on and those agents have windows in: a step can
+    /// begin in one before the browser gets to the link, and then the gate
+    /// keeps it back too.
     private func lookLateForKept(at p: CGPoint) {
         let acting = gate.acting
-        guard !acting.isEmpty else { return }
+        let apps = acting.union(WindowManager.agentPids())
+        guard !apps.isEmpty else { return }
         guard let on = lookedOwner(at: p) else { return }
         // Not for a click that's being held: it may never be the user's
         // next input to land, and the earlier ones go first.
@@ -798,7 +807,7 @@ public final class FocusGuard {
             }
             self.lock.lock(); let c = self.lastClick; self.lock.unlock()
             guard c.point == p else { return }
-            for pid in acting where pid != on && pid != self.userFront {
+            for pid in apps where pid != on && pid != self.userFront {
                 self.lock.lock(); self.keptOnClick[pid] = c.ms; self.lock.unlock()
                 self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true, clickedIn: on)
             }
@@ -1687,7 +1696,10 @@ public final class FocusGuard {
             // every event on the Mac. Also before a step begins: a step that
             // begins within the lift is kept back from the click on.
             let on = lookedOwner(at: event.location)
-            lock.lock(); lastMouseDownPoint = event.location; lock.unlock()
+            lock.lock()
+            lastMouseDownPoint = event.location
+            lastDownPlainLeft = type == .leftMouseDown && !event.flags.contains(.maskControl)
+            lock.unlock()
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
             // Only a plain left click on a Dock icon brings its app forward
             // (a right or control click opens its menu).
@@ -1696,9 +1708,13 @@ public final class FocusGuard {
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             // A drag can end somewhere else (a file on a Dock icon): what's
             // let go on decides, so everyone goes through, as for any drop.
-            lock.lock(); let from = lastMouseDownPoint; lock.unlock()
+            lock.lock(); let from = lastMouseDownPoint; let plain = lastDownPlainLeft; lock.unlock()
             let p = event.location
-            gate.pointer(down: false, ms: Self.clickLiftMs, dragEnded: hypot(p.x - from.x, p.y - from.y) > 4)
+            let dragged = hypot(p.x - from.x, p.y - from.y) > 4
+            gate.pointer(down: false, ms: Self.clickLiftMs, dragEnded: dragged)
+            // A completed plain left click (a right or control click asks for
+            // a menu) may have opened a link in an app the gate kept back.
+            if type == .leftMouseUp && plain && !dragged { lookLateForKept(at: from) }
         case .keyDown:
             let code = event.getIntegerValueField(.keyboardEventKeycode)
             let opens = code == 36 || code == 76 || !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty
@@ -1765,8 +1781,6 @@ public final class FocusGuard {
             openGate(for: type, event)
             lock.lock(); lastUserMouseDownMs = nowMs(); let holdAll = !holdTokens.isEmpty || draining; let anySwap = !swapping.isEmpty; lock.unlock()
             noteClick(at: event.location)
-            // Only a plain left click opens a link; a right or control click asks for a menu.
-            if type == .leftMouseDown && !event.flags.contains(.maskControl) { lookLateForKept(at: event.location) }
             if AgentDisplay.fenced(at: event.location) != nil {
                 Log.info("guard: dropped a click on an agent display at \(Int(event.location.x)),\(Int(event.location.y))")
                 return nil
