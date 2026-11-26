@@ -227,6 +227,8 @@ final class SelfActivationTests: XCTestCase {
         XCTAssertEqual(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (3)", 11: "New"]), 11)
         XCTAssertEqual(LateLook.keptOpened(element: .link, before: before, now: [10: "Example"]), 10)
         XCTAssertNil(LateLook.keptOpened(element: .link, before: nil, now: [10: "Example"]))
+        // Not before the guard has had time to catch a window an agent's step opened.
+        XCTAssertNil(LateLook.keptOpened(element: .unknown, before: before, now: [10: "Inbox (3)", 11: "Popup"], newWindowsCount: false))
     }
 
     func testACmdTabStaysUnlessTheSwitcherWasUp() {

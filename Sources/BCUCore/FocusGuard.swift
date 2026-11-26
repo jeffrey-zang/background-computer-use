@@ -189,6 +189,9 @@ public final class FocusGuard {
     }
     /// The user's cmd+Tab switcher is up: command still held after cmd+Tab.
     private var switcherUp = false
+    /// The app the gate took the last click to be in (`lookedOwner`), nil
+    /// if it let everyone through.
+    private var gateClickOn: pid_t?
     private let clickQueue = DispatchQueue(label: "bcu.guard.click", qos: .userInteractive)
     /// When an agent's step on each app last ended (see `Bounce`).
     private var lastActedMs: [pid_t: Double] = [:]
@@ -685,7 +688,12 @@ public final class FocusGuard {
                 let mine = Dictionary(WindowList.of(pid: pid, onScreenOnly: true)
                     .filter { $0.layer == 0 && !Self.onAgentDisplay($0.id) }.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
                 let front = BCUFrontProcessPID() == pid
-                let opened = kept ? LateLook.keptOpened(element: now.element, before: now.windows, now: mine) : LateLook.opened(before: now.windows, now: mine)
+                // A new window counts only once the guard has had time to
+                // move one an agent's step opened off the user's screen
+                // (`NewWindow.fromUserScreen` waits `guardLagMs` after a click).
+                let settled = nowMs() - click.ms >= NewWindow.guardLagMs + 150
+                let opened = kept ? LateLook.keptOpened(element: now.element, before: now.windows, now: mine, newWindowsCount: settled)
+                                  : LateLook.opened(before: now.windows, now: mine)
                 let facts = LateLook.Facts(front: front, inputSince: inputSince, opened: opened)
                 guard let window = LateLook.bringForward(facts) else {
                     if front || inputSince { return }
@@ -1646,6 +1654,7 @@ public final class FocusGuard {
             // begins within the lift is kept back from the click on.
             let on = lookedOwner(at: event.location)
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
+            lock.lock(); gateClickOn = on; lock.unlock()
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             gate.pointer(down: false, ms: Self.clickLiftMs)
         case .keyDown:
@@ -2000,6 +2009,7 @@ public final class FocusGuard {
                 guard current else { return }
                 let (target, element) = Self.whatWasClicked(at: p, listed: fallback)
                 self.lock.lock()
+                let gateOn = self.gateClickOn
                 if self.lastClick.ms == ms {
                     // (settleClick may have given up waiting and gone by the
                     // window list; what comes after goes by this.)
@@ -2007,7 +2017,25 @@ public final class FocusGuard {
                     self.lastClick.element = element
                 }
                 self.lock.unlock()
+                self.finishDockSwitch(target, gateOn: gateOn, clickMs: ms)
             }
+        }
+    }
+
+    /// The gate kept the apps an agent is acting on back for a click it took
+    /// to be in another app's window, from a look at the screen up to 400 ms
+    /// old, but accessibility says it was on one of their Dock icons (the
+    /// Dock came up over that spot since the look): the user asked for that
+    /// app. Bring it forward, as the Dock would have.
+    private func finishDockSwitch(_ target: ClickTarget, gateOn: pid_t?, clickMs: Double) {
+        guard case .dock(let app?) = target, app > 0, let gateOn, gateOn != app, gate.acting.contains(app) else { return }
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(80)) {
+            self.lock.lock(); let same = self.lastClick.ms == clickMs; self.lock.unlock()
+            guard same, BCUFrontProcessPID() != app else { return }
+            self.noteUserSwitch()
+            _ = BCUSetFrontProcess(app, 0, 0x200)
+            let name = NSRunningApplication(processIdentifier: app)?.localizedName ?? "pid \(app)"
+            self.record("your click was on \(name)'s Dock icon, which the gate had kept back; brought \(name) forward")
         }
     }
 

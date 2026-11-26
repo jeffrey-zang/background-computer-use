@@ -286,9 +286,11 @@ enum LateLook {
     /// opened a page in it (a new window, or a window showing another
     /// title); anything else only if a new window came up. A title that
     /// changes by itself (an unread count) isn't the click's.
-    static func keptOpened(element: ClickElement?, before: [CGWindowID: String]?, now: [CGWindowID: String]) -> CGWindowID? {
+    /// `newWindowsCount`: false until the guard has had time to move a
+    /// window an agent's step opened off the user's screen.
+    static func keptOpened(element: ClickElement?, before: [CGWindowID: String]?, now: [CGWindowID: String], newWindowsCount: Bool = true) -> CGWindowID? {
         if element == .link { return opened(before: before, now: now) }
-        guard let before else { return nil }
+        guard let before, newWindowsCount else { return nil }
         return now.keys.sorted().first { before[$0] == nil }
     }
 }
