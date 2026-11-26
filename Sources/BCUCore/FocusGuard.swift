@@ -195,6 +195,8 @@ public final class FocusGuard {
     /// The app the gate took the last click to be in (`lookedOwner`), nil
     /// if it let everyone through.
     private var gateClickOn: pid_t?
+    /// The apps an agent was acting on at that click (the gate kept them back for it).
+    private var gateClickActing: Set<pid_t> = []
     /// When the gate last kept each app back for a click in another app's window.
     private var keptOnClick: [pid_t: Double] = [:]
     /// When macOS last said the active Space changed (or a display came or went).
@@ -700,7 +702,9 @@ public final class FocusGuard {
             var wasKept = keptAtClick
             while nowMs() - click.ms < LateLook.forMs {
                 sleepMs(LateLook.everyMs)
-                if kept && !wasKept && self.gate.keptBack.contains(pid) {
+                // Kept back and acted on: the gate keeps an idle agent app off
+                // the list too once a click's lift is over, which says nothing.
+                if kept && !wasKept && self.gate.keptBack.contains(pid) && self.gate.acting.contains(pid) {
                     wasKept = true
                     // From now on a window it opens may be the click's (`linkClickKeptBack`).
                     self.lock.lock(); if self.lastClick.ms == click.ms { self.keptOnClick[pid] = click.ms }; self.lock.unlock()
@@ -826,7 +830,7 @@ public final class FocusGuard {
             guard c.point == p else { return }
             for pid in apps where pid != on && pid != self.userFront {
                 // Kept back at the click already: an agent was acting on it.
-                let keptNow = keptBack.contains(pid)
+                let keptNow = keptBack.contains(pid) && acting.contains(pid)
                 if keptNow { self.lock.lock(); self.keptOnClick[pid] = c.ms; self.lock.unlock() }
                 self.lookLate(at: pid, click: c, putBackMs: c.ms, kept: true, clickedIn: on, keptAtClick: keptNow)
             }
@@ -1725,7 +1729,8 @@ public final class FocusGuard {
             // Only a plain left click on a Dock icon brings its app forward
             // (a right or control click opens its menu, command shows it in Finder).
             let activates = type == .leftMouseDown && event.flags.intersection([.maskControl, .maskCommand]).isEmpty
-            lock.lock(); gateClickOn = activates ? on : nil; lock.unlock()
+            let actingNow = gate.acting
+            lock.lock(); gateClickOn = activates ? on : nil; gateClickActing = actingNow; lock.unlock()
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             // A drag can end somewhere else (a file on a Dock icon): what's
             // let go on decides, so everyone goes through, as for any drop.
@@ -2096,7 +2101,7 @@ public final class FocusGuard {
                 guard current else { return }
                 let (target, element) = Self.whatWasClicked(at: p, listed: fallback)
                 self.lock.lock()
-                let gateOn = self.gateClickOn
+                let gateOn = self.gateClickOn, keptAtClick = self.gateClickActing
                 if self.lastClick.ms == ms {
                     // (settleClick may have given up waiting and gone by the
                     // window list; what comes after goes by this.)
@@ -2104,7 +2109,7 @@ public final class FocusGuard {
                     self.lastClick.element = element
                 }
                 self.lock.unlock()
-                self.finishKeptSwitch(target, gateOn: gateOn, clickMs: ms)
+                self.finishKeptSwitch(target, gateOn: gateOn, keptAtClick: keptAtClick, clickMs: ms)
             }
         }
     }
@@ -2118,13 +2123,14 @@ public final class FocusGuard {
     /// window over it, or the app raising its own over the spot, reads the
     /// same. A click on a window exposed since the look that the gate kept
     /// back works the next time, from a fresh look.)
-    private func finishKeptSwitch(_ target: ClickTarget, gateOn: pid_t?, clickMs: Double) {
+    private func finishKeptSwitch(_ target: ClickTarget, gateOn: pid_t?, keptAtClick: Set<pid_t>, clickMs: Double) {
         let app: pid_t
         switch target {
         case .dock(let p?) where p > 0: app = p
         default: return
         }
-        guard let gateOn, gateOn != app, gate.acting.contains(app) else { return }
+        // Kept back for that click (acted on then), whatever it is by now.
+        guard let gateOn, gateOn != app, keptAtClick.contains(app) else { return }
         DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(80)) {
             // Only once the click is complete, not dragged (a Dock icon
             // dragged to another place in the Dock), within a second.
