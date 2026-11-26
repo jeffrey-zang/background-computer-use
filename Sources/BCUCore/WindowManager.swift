@@ -2080,8 +2080,22 @@ public final class WindowManager {
     func registerCaught(_ w: AgentWindow) -> Bool {
         Self.claimLock.lock(); defer { Self.claimLock.unlock() }
         guard !Self.isKept(w.id) else { return false }
+        // Nor while a handout in that app is pending and the window is new
+        // since it began: it may be the moved tab's (the sweep's look at the
+        // reservations can predate it). Left for a later sweep to tell.
+        Self.sharedLock.lock()
+        let pending = Self.lateHandouts[w.pid]
+        Self.sharedLock.unlock()
+        guard !Self.mayBeLateHandout(id: w.id, pendingBefore: pending?.before) else { return false }
         register(w)
         return true
+    }
+
+    /// Whether a window could be a pending handout's: one is pending in its
+    /// app, and the window wasn't there when it began.
+    static func mayBeLateHandout(id: CGWindowID, pendingBefore: Set<CGWindowID>?) -> Bool {
+        guard let pendingBefore else { return false }
+        return !pendingBefore.contains(id)
     }
 
     /// After a late move's window came: the user's window to give key back
@@ -2181,7 +2195,10 @@ public final class WindowManager {
                     let appLock = Engine.inputLock(pid)
                     appLock.lock()
                     focusGuard.beginSwap(pid)
-                    if !Self.giveKey(pid: pid, to: back) {
+                    // Looked at again with the lock: the user may have moved
+                    // on (another window, another app) while it waited.
+                    if Self.keyAfterLateMove(userIn: BCUFrontProcessPID() == pid, userKey: back, keyNow: AX.focusedWindowID(pid), made: id) == back,
+                       !Self.giveKey(pid: pid, to: back) {
                         Log.info("tabs: couldn't confirm key on window \(back) after a late move")
                     }
                     focusGuard.endSwap(pid)

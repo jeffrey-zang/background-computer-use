@@ -324,4 +324,12 @@ final class StrayTabTests: XCTestCase {
         XCTAssertTrue(WindowManager.lateHandoutUnretired(99_105))
         XCTAssertFalse(WindowManager.lateHandoutUnretired(99_106))
     }
+
+    /// While a handout is pending in an app, a window new since it began
+    /// isn't caught as the agent's: it may be the moved tab's.
+    func testAWindowNewSinceAPendingHandoutIsntCaught() {
+        XCTAssertTrue(WindowManager.mayBeLateHandout(id: 7, pendingBefore: [1, 2]))
+        XCTAssertFalse(WindowManager.mayBeLateHandout(id: 2, pendingBefore: [1, 2]))
+        XCTAssertFalse(WindowManager.mayBeLateHandout(id: 7, pendingBefore: nil))
+    }
 }
