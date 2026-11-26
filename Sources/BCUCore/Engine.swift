@@ -1826,7 +1826,9 @@ public final class Engine {
         case true?:
             // Only where no user takes the app back: see captureAudio.
             guard agentsOnly else { return " Your tab stays muted (the user also has \(w.appName) windows), so nothing from it is recorded." }
-            guard unmuteTab(w, while: muting) else { return "" }
+            guard unmuteTab(w, while: muting) else {
+                return " Your tab couldn't be unmuted, so it stays muted and nothing from it is recorded: call this again to retry."
+            }
             // The toggle it named may read otherwise now ("Mute This Tab"):
             // what it reads while the sound plays is what giving the app back
             // compares with. Only a claim still there: the user may have
@@ -2061,7 +2063,9 @@ public final class Engine {
     /// open is over, with the user's input no longer held for it.
     private func openWindow(_ args: Args) throws -> ToolResult {
         var (result, w) = try openNewWindow(args)
-        if let muted = muteTab(w) { result.text += "\n[sound] " + muted }
+        // Only a window made for the agent: one of the user's that a cold
+        // launch handed over (borrowed) keeps its tab as the user left it.
+        if w.kind == .opened, let muted = muteTab(w) { result.text += "\n[sound] " + muted }
         return result
     }
 
