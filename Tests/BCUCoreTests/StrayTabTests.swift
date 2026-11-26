@@ -189,4 +189,20 @@ final class StrayTabTests: XCTestCase {
         XCTAssertFalse(WindowManager.openedByPage(known: [true, false, false], at: 1))
         XCTAssertFalse(WindowManager.openedByPage(known: [true], at: 3))
     }
+
+    /// The context-menu route has no key scope: key goes back to the
+    /// window the user was typing in before their held keys are replayed.
+    func testKeyAfterTheTabsMenuMovedIt() {
+        XCTAssertEqual(WindowManager.keyAfterTabMenuMove(userIn: true, userKey: 7, made: 9), 7)
+        XCTAssertNil(WindowManager.keyAfterTabMenuMove(userIn: true, userKey: nil, made: 9))
+        XCTAssertEqual(WindowManager.keyAfterTabMenuMove(userIn: false, userKey: nil, made: 9), 9)
+    }
+
+    /// A hard AXShowMenu error showed no menu: nothing open then is this tab's.
+    func testOnlyAShowMenuThatMayHaveRunIsUsed() {
+        XCTAssertTrue(WindowManager.showMenuMayHaveRun(.success))
+        XCTAssertTrue(WindowManager.showMenuMayHaveRun(.cannotComplete))
+        XCTAssertFalse(WindowManager.showMenuMayHaveRun(.actionUnsupported))
+        XCTAssertFalse(WindowManager.showMenuMayHaveRun(.invalidUIElement))
+    }
 }

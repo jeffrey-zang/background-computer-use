@@ -1769,6 +1769,9 @@ public final class WindowManager {
         var swapping = true
         defer { if swapping { focusGuard.endSwap(w.pid) } }
         let userIn = BCUFrontProcessPID() == w.pid
+        // The user's window in the browser, when they're in it: key goes
+        // back there before their held keys are replayed.
+        let userKey = userIn ? focusGuard.userWindow(of: w.pid) : nil
         let before = Set(WindowList.of(pid: w.pid).map(\.id))
         let inWindow = AX.window(pid: w.pid, id: w.id).flatMap(Self.tabs(of:))?.contains { CFEqual($0, tab) } ?? false
         lock.lock(); let current = registry[w.id]; lock.unlock()
@@ -1852,12 +1855,13 @@ public final class WindowManager {
         }
         if let scope {
             if userIn { scope.exit() } else { scope.handOff(to: made) }
-        } else if !userIn && AX.focusedWindowID(w.pid) != made {
-            // The browser counts the window that last had key as its
-            // current one, and opens the next link from another app there:
-            // the user's new window, not the agent's.
-            _ = KeyScope.postRecords(pid: w.pid, from: AX.focusedWindowID(w.pid), to: made, settle: 5)
-            KeyScope.awaitKey(pid: w.pid, target: made, budgetMs: 250)
+        } else if let back = Self.keyAfterTabMenuMove(userIn: userIn, userKey: userKey, made: made), AX.focusedWindowID(w.pid) != back {
+            // Not in the browser: the new window (the user's) gets key, as
+            // the browser counts the window that last had key as its current
+            // one and opens the next link from another app there. In it: the
+            // window they were typing in, before their held keys go there.
+            _ = KeyScope.postRecords(pid: w.pid, from: AX.focusedWindowID(w.pid), to: back, settle: 5)
+            KeyScope.awaitKey(pid: w.pid, target: back, budgetMs: 250)
         }
         focusGuard.endSwap(w.pid); swapping = false
         let placed = settleOnUserScreen(pid: w.pid, id: made)
@@ -1988,12 +1992,16 @@ public final class WindowManager {
     /// the item returned.
     static func moveViaTabMenu(pid: pid_t, tab: AXUIElement) -> AXError? {
         guard AX.actions(tab).contains("AXShowMenu") else { return nil }
+        let app = AX.app(pid)
+        // A menu already open (another tab's, the user's) isn't this tab's:
+        // its move item would move that tab.
+        guard openMenu(in: app) == nil else { return nil }
         // The browser runs the menu's tracking loop inside the call, so it
         // doesn't answer until the menu closes: don't wait for it.
         AXUIElementSetMessagingTimeout(tab, 0.1)
-        _ = AX.perform(tab, "AXShowMenu")
+        let shown = AX.perform(tab, "AXShowMenu")
         AXUIElementSetMessagingTimeout(tab, 1.5)
-        let app = AX.app(pid)
+        guard showMenuMayHaveRun(shown) else { return nil }
         var menu: AXUIElement?
         let by = nowMs() + 1000
         while menu == nil && nowMs() < by {
@@ -2045,6 +2053,22 @@ public final class WindowManager {
     }
 
     enum TabMenuMove: Equatable { case item(Int), submenu(Int) }
+
+    /// AXShowMenu came back as success, or timed out because the browser
+    /// is running the menu (what Chromium does): anything else showed nothing.
+    static func showMenuMayHaveRun(_ result: AXError) -> Bool {
+        result == .success || result == .cannotComplete
+    }
+
+    /// Which window gets key after the tab's context menu moved it out
+    /// (no key scope on that route): the user's window they were in, when
+    /// they're in the browser and have one; the new window when they're
+    /// not in the browser; nil (leave it) when they're in the browser with
+    /// no window of their own, where the new window is theirs and the
+    /// browser has made it key.
+    static func keyAfterTabMenuMove(userIn: Bool, userKey: CGWindowID?, made: CGWindowID) -> CGWindowID? {
+        userIn ? userKey : made
+    }
 
     /// Which item of a tab's context menu moves it to a new window:
     /// "Move Tab to New Window" when the browser has no other window, else
