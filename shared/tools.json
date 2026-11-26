@@ -536,7 +536,7 @@
   },
   {
     "name": "guard_report",
-    "description": "Focus-guard events: anything that touched the user's focus, cursor or screen, with the action that caused it.",
+    "description": "Focus-guard events: anything that touched the user's focus, cursor or screen, with the action that caused it, and changes to your windows that BCU didn't make (another tool acting in them through accessibility).",
     "inputSchema": {
       "type": "object",
       "properties": {}

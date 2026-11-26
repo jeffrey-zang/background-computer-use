@@ -74,13 +74,18 @@ enum Shot {
 
     private static func setup(_ displayID: CGDirectDisplayID, rect: CGRect?, including: [CGWindowID]?, excluding: Set<CGWindowID>,
                               content given: SCShareableContent? = nil) -> (SCContentFilter, SCStreamConfiguration)? {
-        guard let content = given ?? content(), let display = content.displays.first(where: { $0.displayID == displayID }) ?? scDisplay(displayID) else { return nil }
+        guard var content = given ?? content(), let display = content.displays.first(where: { $0.displayID == displayID }) ?? scDisplay(displayID) else { return nil }
+        // A cover that just went up isn't in an older list, and has to be left out.
+        if including == nil, given == nil, !PrivacyCover.ids.isSubset(of: Set(content.windows.map(\.windowID))),
+           let fresh = Self.content(maxAgeMs: 0) { content = fresh }
         let filter: SCContentFilter
         if let including {
             let wanted = Set(including)
             filter = SCContentFilter(display: display, including: content.windows.filter { wanted.contains($0.windowID) && !excluding.contains($0.windowID) })
         } else {
-            filter = SCContentFilter(display: display, excludingWindows: content.windows.filter { excluding.contains($0.windowID) })
+            // Never the cover over an agent display: BCU's own view of it is the windows under it.
+            let leaveOut = excluding.union(PrivacyCover.ids)
+            filter = SCContentFilter(display: display, excludingWindows: content.windows.filter { leaveOut.contains($0.windowID) })
         }
         let config = SCStreamConfiguration()
         let scale = CGFloat(filter.pointPixelScale)

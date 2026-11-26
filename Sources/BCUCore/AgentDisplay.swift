@@ -31,6 +31,8 @@ public final class AgentDisplay {
     public private(set) var slot = 0
 
     private var display: BCUVirtualDisplay?
+    /// Keeps the display's windows out of other apps' screenshots of it (see `PrivacyCover`).
+    public let cover = PrivacyCover()
 
     // MARK: All agent displays
 
@@ -696,6 +698,7 @@ public final class AgentDisplay {
     /// Not on the main thread (see `open`), once the display is online.
     public func finishStart() {
         place(mode: retinaModeNeeded())
+        cover.show(on: displayID)
         Log.info("agent display \(slot + 1) (\(displayID)) at \(bounds.short)\(reused ? " (kept from an earlier session)" : ""); user displays \(userBounds.short)")
     }
 
@@ -705,6 +708,7 @@ public final class AgentDisplay {
     public func stop(remove: Bool = false) {
         defer { unreserve() }
         guard let vd = display else { return }
+        cover.hide()
         display = nil
         let id = displayID
         displayID = 0
@@ -859,7 +863,10 @@ public final class AgentDisplay {
     /// Main thread: macOS finished rearranging the displays.
     fileprivate static func displaysChanged() {
         registryLock.lock(); fencedCache.atMs = -1; strayCache.atMs = -1; registryLock.unlock()
-        for d in running { d.reconfigured() }
+        for d in running {
+            d.reconfigured()
+            d.cover.follow()
+        }
     }
 
     /// Main thread, every second. A display macOS wouldn't place (the

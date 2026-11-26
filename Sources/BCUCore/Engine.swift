@@ -49,6 +49,8 @@ public final class Engine {
     let audioClaims = AudioClaims()
     /// Keeps what the display showed, for the history viewer.
     let recorder: SessionRecorder
+    /// Changes to this session's windows that BCU didn't make (see `InterferenceWatch`).
+    let interference = InterferenceWatch()
 
     /// A frame of the live preview (the whole display), for the history.
     public func recordPreview(_ image: CGImage) { recorder.previewFrame(image) }
@@ -187,6 +189,20 @@ public final class Engine {
         audio = SessionAudio(name: "\(safe)-\(sessionID.prefix(8))")
         recorder = SessionRecorder(sessionID: sessionID, label: label, display: display)
         frontMark = focusGuard.frontMark
+        interference.idleMs = { [weak self] in self?.msSinceLastCall ?? 0 }
+        interference.withUser = { [weak self] id in
+            guard let self else { return true }
+            return self.userInControl || (self.windows.window(id)?.handedOff ?? false)
+        }
+        interference.onChange = { [weak self] c in
+            self?.focusGuard.record("interference: window \(c.window) (\(c.app)): \(c.what), while the agent wasn't acting")
+        }
+    }
+
+    /// What changed in this session's windows without BCU since the last
+    /// call said, for the agent's result.
+    private func takeInterference() -> String? {
+        InterferenceWatch.report(interference.take()).map { "\n[interference] " + $0 }
     }
 
     /// Create the session's display if it doesn't exist yet. Any thread.
@@ -579,6 +595,7 @@ public final class Engine {
                 stateLock.unlock()
                 changed()
                 recorder.captureSoon()
+                interference.sync(windows.windows)
             }
             let readOnly = Self.readOnlyTools
             if let refusal = Self.refusal(tool: tool, userInControl: userInControl, paused: paused, notes: takeUserNotes) {
@@ -607,6 +624,7 @@ public final class Engine {
                     result.text += "\n[focus guard] \(focusNote)"
                 }
                 if let note = takeLeaveNotes() { result.text += note }
+                if let note = takeInterference() { result.text += note }
                 if let note = takeUserNotes() { result.text += note }
                 if tool != "status" && tool != "guard_report" {
                     log("\(tool) (\(Int(nowMs() - startMs)) ms): \(result.text.split(separator: "\n").first.map(String.init) ?? "")")
@@ -618,6 +636,7 @@ public final class Engine {
                     focusGuard.record("\(tool): \(focusNote)")
                     text += "\n[focus guard] \(focusNote)"
                 }
+                if let note = takeInterference() { text += note }
                 if let note = takeUserNotes() { text += note }
                 log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
                 return .error(text)

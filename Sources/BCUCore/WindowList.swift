@@ -41,6 +41,9 @@ public enum WindowList {
               let pid = d[kCGWindowOwnerPID as String] as? pid_t,
               let boundsDict = d[kCGWindowBounds as String] as? NSDictionary,
               let bounds = CGRect(dictionaryRepresentation: boundsDict) else { return nil }
+        // BCU's cover over an agent display isn't a window anything should
+        // act on, wait for or count (see `PrivacyCover`).
+        if PrivacyCover.isCover(id) { return nil }
         return WindowInfo(
             id: id,
             pid: pid,
