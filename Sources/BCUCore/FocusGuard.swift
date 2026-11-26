@@ -1628,10 +1628,11 @@ public final class FocusGuard {
     private func openGate(for type: CGEventType, _ event: CGEvent) {
         switch type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            // Where it went matters only while an agent is acting on an app.
-            // From the last look at the screen (every 250 ms): asking the
-            // window server here could hold up every event on the Mac.
-            let on = gate.acting.isEmpty ? nil : lookedOwner(at: event.location)
+            // From the last look at the screen (every 150 ms while agents
+            // have windows): asking the window server here could hold up
+            // every event on the Mac. Also before a step begins: a step that
+            // begins within the lift is kept back from the click on.
+            let on = lookedOwner(at: event.location)
             gate.pointer(down: true, ms: Self.clickLiftMs, on: on)
         case .leftMouseUp, .rightMouseUp, .otherMouseUp:
             gate.pointer(down: false, ms: Self.clickLiftMs)
@@ -2009,15 +2010,15 @@ public final class FocusGuard {
     }
 
     /// The windows on the user's screens in order, every 150 ms while
-    /// agents act on an app, for where a click went (`lookedOwner`). Its
-    /// own loop: the look above asks about each window, and on a Mac with
-    /// many windows open takes a second or more.
+    /// agents have windows or act on an app, for where a click went
+    /// (`lookedOwner`). Its own loop: the look above asks about each
+    /// window, and on a Mac with many windows open takes a second or more.
     private func watchScreenOrder() {
         while true {
-            let acting = !gate.acting.isEmpty || !activeTaints.isEmpty
-            let order = acting ? Self.screenWindows(WindowList.all(onScreenOnly: true)) : nil
+            let busy = !WindowManager.agentPids().isEmpty || !activeTaints.isEmpty
+            let order = busy ? Self.screenWindows(WindowList.all(onScreenOnly: true)) : nil
             lock.lock(); screenOrder = order; screenOrderMs = order == nil ? -.infinity : nowMs(); lock.unlock()
-            usleep(acting ? 150_000 : 250_000)
+            usleep(busy ? 150_000 : 250_000)
         }
     }
 
