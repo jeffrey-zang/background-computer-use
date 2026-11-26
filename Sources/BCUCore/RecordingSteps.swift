@@ -666,6 +666,10 @@ public final class StepLog {
             hidValues = true
         }
         s.original = [:]
+        // A batch ends with a read of the window (its `state`): left out too.
+        if s.tool == "batch", hidValues, let cut = result.range(of: "\n\n") {
+            result = String(result[..<cut.lowerBound]) + "\n\n" + Self.readLeftOut
+        }
         if s.tool == "batch" {
             result = RecordingText.redact(result, secrets: s.steps.compactMap(\.secret))
             // A step's line may quote part of what it typed (typing that
