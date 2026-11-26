@@ -1676,8 +1676,13 @@ public final class WindowManager {
         AX.perform(item.element, "AXPress")
         var made: CGWindowID?
         let deadline = nowMs() + 2000
+        // The new standard window: the browser shows other new windows a
+        // moment while the tab moves.
         while made == nil && nowMs() < deadline {
-            made = WindowList.of(pid: w.pid).first { $0.layer == 0 && !before.contains($0.id) }?.id
+            made = AX.windows(w.pid).first { ax in
+                guard let id = AX.windowID(ax), !before.contains(id) else { return false }
+                return AX.string(ax, "AXSubrole") == "AXStandardWindow"
+            }.flatMap(AX.windowID)
             if made == nil { sleepMs(10) }
         }
         guard let made else {
@@ -1690,13 +1695,22 @@ public final class WindowManager {
         // Key goes to the new window (the user's), so the browser's last
         // window is theirs; or back to theirs if they're in the browser.
         if userIn { scope.exit() } else { scope.handOff(to: made) }
+        // The browser shows the window where its last one was, then puts it
+        // next to the agent's a moment later: moved until it has stayed on
+        // the user's screen for half a second (2.5 s at most).
         var placed = false
-        for _ in 0..<50 where !placed {
-            if let ax = AX.window(pid: w.pid, id: made), let bounds = WindowList.info(made)?.bounds {
-                placed = Self.putOnUserScreen(ax, bounds: bounds)
+        var onUserSince: Double?
+        let placeBy = nowMs() + 2500
+        while nowMs() < placeBy {
+            guard let bounds = WindowList.info(made)?.bounds else { sleepMs(30); continue }
+            if AgentDisplay.containing(CGPoint(x: bounds.midX, y: bounds.midY)) == nil && display.touchesUser(bounds) {
+                if onUserSince == nil { onUserSince = nowMs() }
+                if nowMs() - onUserSince! >= 500 { placed = true; break }
             } else {
-                sleepMs(20)
+                onUserSince = nil
+                if let ax = AX.window(pid: w.pid, id: made) { _ = Self.putOnUserScreen(ax, bounds: bounds) }
             }
+            sleepMs(30)
         }
         if userIn { focusGuard.scheduleReclaim(w.pid) }
         focusGuard.record("another app opened a tab in your agent's \(w.appName) window; it's in a window of yours on your screen now")
