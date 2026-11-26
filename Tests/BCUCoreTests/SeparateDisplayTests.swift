@@ -130,4 +130,11 @@ final class SeparateDisplayTests: XCTestCase {
         XCTAssertEqual(AgentDisplay.separation(place(bounds: CGRect(x: 800, y: 400, width: 1600, height: 1000))), .overlaps(user))
         XCTAssertEqual(AgentDisplay.Separation.main.text, "macOS made it the main display")
     }
+
+    /// Windows that are gone are forgotten even while the sweep leaves
+    /// windows alone (#98 review): past their grace, and only those.
+    func testGoneWindowsAreForgottenPastTheirGrace() {
+        let gone = WindowManager.vanished([1: 0, 2: 0, 3: 900], now: 1000, graceMs: 500, exists: { $0 == 2 })
+        XCTAssertEqual(gone, [1])
+    }
 }
