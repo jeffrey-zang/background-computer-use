@@ -226,7 +226,10 @@ public enum RecordingText {
     /// goes on with its frame or flags) replaced: under hide_typing, once
     /// something was typed, a field can hold an edited or partial copy of it.
     static func hideValues(_ text: String) -> String {
-        text.replacingOccurrences(of: #"value="[^\n]*?"(?= @\(| \[|$)"#, with: "value=(hidden)", options: .regularExpression)
+        // Up to the frame that ends every element line (`" @(x,y wxh)`), the
+        // last on the line: a value can hold quotes and brackets itself.
+        text.replacingOccurrences(of: #"value="[^\n]*"(?= @\(-?\d+,-?\d+ \d+x\d+\))|value="[^\n]*"$"#, with: "value=(hidden)",
+                                  options: [.regularExpression])
     }
 
     /// The exact form a hidden value is replaced with.
@@ -502,9 +505,11 @@ public final class StepLog {
         s.end = clock()
         s.isError = isError
         let given = result
-        // Text hidden in an earlier step, wherever it shows up again.
-        var result = RecordingText.redact(result, secrets: hiddenTexts)
-        if hidValues { result = RecordingText.hideValues(result) }
+        // Field values first, on the result as given (a secret replaced
+        // first could break up the `value="` it looks for), then text hidden
+        // in an earlier step, wherever it shows up again.
+        var result = hidValues ? RecordingText.hideValues(result) : result
+        result = RecordingText.redact(result, secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : s.tool == "press_key" ? "key" : "value"
             if s.args[key] is String, let secret = s.original[key] ?? s.args[key] as? String {

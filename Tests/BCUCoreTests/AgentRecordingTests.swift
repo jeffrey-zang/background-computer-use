@@ -519,6 +519,20 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(k.args["key"] as? String, "(hidden, 1 characters)")
     }
 
+    func testFieldValuesAreHiddenWholeAndFirst() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let a = log.begin(tool: "type_text", args: ["text": "value", "element": 2]); log.end(a, result: "ok", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[3] TextArea value=\"\"Title\" [private notes\" @(0,0 10x10) [settable]", isError: false)
+        XCTAssertFalse(r.result.contains("private") || r.result.contains("Title"), r.result)
+        XCTAssertTrue(r.result.contains("@(0,0 10x10) [settable]"), r.result)
+    }
+
+    func testTheStartResultNamesItsFolder() {
+        XCTAssertEqual(Engine.recordingDir(fromStart: "Recording your display at up to 12 fps. … actions.json into /tmp/x/agent-recordings/20261126-1."),
+                       "/tmp/x/agent-recordings/20261126-1")
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))

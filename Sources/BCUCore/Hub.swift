@@ -50,7 +50,8 @@ public final class Hub {
     /// (its parent's, or its subagent's) and so went to that session: its
     /// `stop_recording`, which names no window, goes there too.
     /// With the recording's folder: a route only holds while that recording does.
-    private var recordingAt: [String: (owner: String, dir: String)] = [:]
+    /// The owner session itself (it keeps its engine if it comes back under another id).
+    private var recordingAt: [String: (owner: Engine, dir: String)] = [:]
     /// A session whose agent went away keeps its windows this long, in case
     /// the agent's connection comes back (its `bcu mcp` restarting).
     public static let orphanGraceMs: Double = 30_000
@@ -295,7 +296,7 @@ public final class Hub {
         if tool == "stop_recording" {
             lock.lock()
             let route = recordingAt.removeValue(forKey: id)
-            let at = route.flatMap { byID[$0.owner] }
+            let at = route?.owner
             lock.unlock()
             // Only to the recording it started: the owner may have stopped
             // that one and started another since.
@@ -312,8 +313,9 @@ public final class Hub {
             if let (ownerID, owner) = relative(of: id, owning: windowID) {
                 lock.lock(); usedBy[ownerID, default: []].insert(id); lock.unlock()
                 let result = owner.call(tool: tool, args: args)
-                if tool == "start_recording" && !result.isError, let dir = owner.recordingDir {
-                    lock.lock(); recordingAt[id] = (ownerID, dir); lock.unlock()
+                // The folder this very call made (the owner could start another right after).
+                if tool == "start_recording" && !result.isError, let dir = Engine.recordingDir(fromStart: result.text) {
+                    lock.lock(); recordingAt[id] = (owner, dir); lock.unlock()
                 }
                 return result
             }

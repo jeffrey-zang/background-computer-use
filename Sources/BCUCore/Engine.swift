@@ -3141,6 +3141,14 @@ public final class Engine {
                                  frame: frame.offsetBy(dx: -b.minX, dy: -b.minY), secure: Self.isSecureField(field)))
     }
 
+    /// The folder a start_recording result names (it ends "… into <folder>.").
+    static func recordingDir(fromStart text: String) -> String? {
+        guard let r = text.range(of: " into /", options: .backwards) else { return nil }
+        var dir = String(text[text.index(after: r.lowerBound)...].dropFirst(5))
+        if dir.hasSuffix(".") { dir.removeLast() }
+        return dir.isEmpty ? nil : dir
+    }
+
     static func isSecureField(_ el: AXUIElement?) -> Bool {
         guard let el else { return false }
         return AX.string(el, "AXRole") == "AXSecureTextField" || AX.string(el, "AXSubrole") == "AXSecureTextField"
