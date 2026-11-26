@@ -373,6 +373,24 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(r.result.contains("confidential"), r.result)
     }
 
+    func testAcceptedValueIsTakenFromTheResultAsGiven() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let a = log.begin(tool: "type_text", args: ["text": "Ada", "element": 3]); log.end(a, result: "ok", isError: false)
+        let b = log.begin(tool: "type_text", args: ["text": "Ada Lovelace", "element": 3])
+        log.end(b, result: "Inserted; the field changed it and now reads \"Ada Love\".", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:]); log.end(r, result: "value=\"Ada Love\"", isError: false)
+        XCTAssertFalse(r.result.contains("Love"), r.result)
+    }
+
+    func testPiecesTypedIntoSeparateFieldsAreHidden() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "private-left\tprivate-right"]); log.setFocus(secure: false)
+        log.end(t, result: "Typed 26 characters.", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[1] TextField value=\"private-left\"\n[2] TextField value=\"private-right\"", isError: false)
+        XCTAssertFalse(r.result.contains("private"), r.result)
+    }
+
     func testShiftSpellingsCountAsTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": ["⇧"]]))
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "A", "modifiers": [" Shift "]]))

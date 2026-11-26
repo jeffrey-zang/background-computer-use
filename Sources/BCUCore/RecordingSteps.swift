@@ -281,6 +281,9 @@ public enum RecordingText {
     static func forms(of secret: String) -> [String] {
         let oneLine = secret.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
         var out = [secret, oneLine]
+        // A Tab or Return typed as a key moves on: each piece can land in a field of its own.
+        let pieces = secret.components(separatedBy: CharacterSet(charactersIn: "\t\n\r")).map { $0.trimmingCharacters(in: .whitespaces) }
+        if pieces.count > 1 { out += pieces.flatMap { forms(of: $0) } }
         // 160 for a value, 100 for a name in a read, 80 for a target's label.
         // A read keeps that many characters, then "…".
         for n in [160, 100, 80] where oneLine.count > n { out.append(String(oneLine.prefix(n))) }
@@ -410,6 +413,7 @@ public final class StepLog {
         guard s.end == nil else { return }
         s.end = clock()
         s.isError = isError
+        let given = result
         // Text hidden in an earlier step, wherever it shows up again.
         var result = RecordingText.redact(result, secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
@@ -417,7 +421,7 @@ public final class StepLog {
             if s.args[key] is String, let secret = s.original[key] ?? s.args[key] as? String {
                 // What the field took can differ from what was asked (a mask,
                 // a length limit): the result quotes it, and a later read shows it.
-                let accepted = RecordingText.quotedSpans(result).filter { RecordingText.redactsLater($0) && !$0.contains("(hidden)") }
+                let accepted = RecordingText.quotedSpans(given).filter { RecordingText.redactsLater($0) }
                 result = RecordingText.hideQuoted(RecordingText.redact(result, secrets: [secret]))
                 for a in accepted { hiddenTexts += RecordingText.forms(of: a) }
                 s.args[key] = "(hidden, \(secret.count) characters)"

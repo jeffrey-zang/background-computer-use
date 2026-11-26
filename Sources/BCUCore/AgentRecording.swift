@@ -376,13 +376,20 @@ public final class AgentRecording {
         }
         /// The last captured picture again, at `ms`, with what's going on then.
         func copyOfLast(at ms: Int64) throws {
-            guard let raw = prevRaw, ms > lastMs, let pool = ad.pixelBufferPool else { return }
+            guard ms > lastMs, let pool = ad.pixelBufferPool else { return }
             var buffer: CVPixelBuffer?
             CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
             guard let buffer else { return }
             CVPixelBufferLockBaseAddress(buffer, [])
             if let ctx = context(buffer) {
-                ctx.draw(raw, in: CGRect(origin: .zero, size: size))
+                // Before the first capture: a plain background, not a later
+                // picture (which could show what a step after then typed).
+                if let raw = prevRaw {
+                    ctx.draw(raw, in: CGRect(origin: .zero, size: size))
+                } else {
+                    ctx.setFillColor(CGColor(red: 0.11, green: 0.11, blue: 0.12, alpha: 1))
+                    ctx.fill(CGRect(origin: .zero, size: size))
+                }
                 RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: mapping(ms),
                                       label: label, redactAll: steps.redactAll)
             }
@@ -398,8 +405,6 @@ public final class AgentRecording {
             CVPixelBufferLockBaseAddress(px, [])
             let raw = context(px)?.makeImage()
             CVPixelBufferUnlockBaseAddress(px, [])
-            // Steps before the first capture are drawn on it.
-            if prevRaw == nil { prevRaw = raw }
             while let e = extra.first, e < ms { extra.removeFirst(); try copyOfLast(at: e) }
             guard ms > lastMs else { continue }
             CVPixelBufferLockBaseAddress(px, [])
