@@ -172,8 +172,11 @@ public final class WindowManager {
                 // A release that waits for its app to answer comes along too.
                 let pending = other.pendingRelease(w.id)
                 other.unregister(w.id)
+                // The pending release first: once the window is registered
+                // here, a handoff on this session can call it off, and
+                // nothing may put it back after that.
+                if let keepOpen = pending { lock.lock(); releaseWhenAnswering[w.id] = keepOpen; lock.unlock() }
                 register(w)
-                if let keepOpen = pending { deferRelease(w.id, keepOpen: keepOpen) }
             }
             // And what became of releases the agent still has to hear about.
             let notes = other.takeReleaseNotes()
