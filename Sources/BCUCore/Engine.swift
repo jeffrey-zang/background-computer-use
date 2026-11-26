@@ -636,7 +636,8 @@ public final class Engine {
                     focusGuard.record("\(tool): \(focusNote)")
                     text += "\n[focus guard] \(focusNote)"
                 }
-                if input { noteInputStep(start: stepStart, window: (try? Args(args).windowID("window_id")) ?? nil, tool: tool, args: args) }
+                // A failed call counts only for the input it did send (listed
+                // as it was sent): it may have failed before sending any.
                 if let beeps = beepNote(tool: tool, current: stepStart) { text += "\n[beep] " + beeps }
                 if let note = takeUserNotes() { text += note }
                 log("\(tool) failed after \(Int(nowMs() - startMs)) ms: \(error)", error: true)
@@ -1927,11 +1928,20 @@ public final class Engine {
             }
         }
         defer { endFreeze() }
+        // Opening can send the app a shortcut (File > New's): input, for its
+        // beeps. Listed once the app's input lock is this call's, right
+        // before the app is asked (not while waiting for another's open).
+        var openSent: (() -> Void)?
+        let pidForOpen = target.running?.processIdentifier
+        let ask: () throws -> Void = { [self] in
+            try beforeAsk?()
+            if openSent == nil, let pid = pidForOpen { openSent = sending(to: [pid]) }
+        }
         func open() throws -> WindowManager.OpenResult {
             while true {
                 do {
                     return try windows.open(app: app, placement: WindowManager.Placement(name: args.string("placement")), trigger: args.string("trigger"),
-                                            hold: hold, beforeAsk: beforeAsk,
+                                            hold: hold, beforeAsk: ask,
                                             keyBack: { DispatchQueue.global(qos: .userInteractive).async { endFreeze() } })
                 } catch is YieldToUser {
                     Log.info("open: \(label) left opening a \(target.name) window for later: the user started typing there")
@@ -1942,12 +1952,9 @@ public final class Engine {
                 }
             }
         }
-        // Opening can send the app a shortcut (File > New's): input, for
-        // the app's beeps.
-        let sendingOpen = target.running.map { sending(to: [$0.processIdentifier]) }
         let result: WindowManager.OpenResult
-        do { result = try open() } catch { sendingOpen?(); throw error }
-        sendingOpen?()
+        do { result = try open() } catch { openSent?(); throw error }
+        openSent?()
         let w = result.window
         touched.insert(w.pid)
         let frame = WindowList.info(w.id)?.bounds ?? .zero

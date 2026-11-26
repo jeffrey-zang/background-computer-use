@@ -102,11 +102,7 @@ public final class BeepWatch {
             recent.append(b)
             assignOnArrival(b)
         }
-        // A minute is plenty: steps take seconds at most.
-        let cutoff = Date().addingTimeInterval(-60)
-        if recent.count > 64 || recent.first.map({ $0.at < cutoff }) == true {
-            recent = recent.filter { $0.at >= cutoff }.suffix(64)
-        }
+        pruneRecent()
     }
 
     /// The beeps after `seq` (each reported once).
@@ -125,6 +121,17 @@ public final class BeepWatch {
         recent.append(beep)
         nextSeq += 1
         assignOnArrival(beep)
+        pruneRecent()
+    }
+
+    /// Under `lock`. A minute, but a beep put down to a session whose call
+    /// is still under way (a long batch) is kept until that call has looked.
+    private func pruneRecent() {
+        let cutoff = Date().addingTimeInterval(-60)
+        guard recent.count > 256 || recent.first.map({ $0.at < cutoff }) == true else { return }
+        let pending = { (b: Beep) in self.assigned[b.seq].map { self.calls[$0.owner] != nil } == true }
+        let others = recent.filter { !pending($0) && $0.at >= cutoff }.suffix(256)
+        recent = (recent.filter(pending) + others).sorted { $0.seq < $1.seq }
     }
 
     /// Calls under way, by session: when each began.

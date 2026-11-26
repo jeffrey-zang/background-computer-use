@@ -139,6 +139,22 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertEqual(found.first?.step.call, next)
     }
 
+    /// A beep put down to a call still under way is kept however many
+    /// other requests come in meanwhile, until that call has looked.
+    func testAPendingBeepOutlivesPruning() {
+        let w = BeepWatch()
+        let t0 = Date()
+        w.beginCall("a", at: t0.addingTimeInterval(-1))
+        w.record(BeepWatch.Step(start: t0.addingTimeInterval(-0.1), end: t0.addingTimeInterval(0.2), key: "escape", pids: [62902], owner: "a", call: t0.addingTimeInterval(-1)))
+        let start = w.lastSeq
+        w.inject((t0, 62902, "TextEdit", 4096))
+        for _ in 0..<300 { w.inject((Date(), 1, "Finder", 16)) }   // unrelated requests: pruned to 256
+        XCTAssertEqual(w.attribute(w.beeps(after: start), owner: "a").count, 1)
+        w.endCall("a")
+        w.inject((Date(), 1, "Finder", 16))
+        XCTAssertFalse(w.beeps(after: start).contains { $0.app == "TextEdit" })
+    }
+
     /// Completed input is pruned on the begin/finish path too.
     func testFinishPrunes() {
         let w = BeepWatch()
