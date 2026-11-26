@@ -254,6 +254,9 @@ public final class FocusGuard {
     /// Replaying held events; anything new queues behind them to keep order.
     private var draining = false
     private var restoring = false
+    /// The app came forward again while a restore was under way (that one
+    /// returns at once): look again once it's done.
+    private var restoreMissed = false
     private var tap: CFMachPort?
     private var lastEscapeLogMs = 0.0
     private var lastTapDisabledLogMs = 0.0
@@ -300,6 +303,7 @@ public final class FocusGuard {
         installTap()
         Thread.detachNewThread { [weak self] in self?.watchAttention() }
         Thread.detachNewThread { [weak self] in self?.watchUserScreen() }
+        Thread.detachNewThread { [weak self] in self?.watchScreenOrder() }
         gate.targets = { [weak self] in self?.gateTargets() ?? FrontGate.Targets() }
         gate.tapWorking = { [weak self] in
             guard let self, let tap = self.tap, CGEvent.tapIsEnabled(tap: tap) else { return false }
@@ -1507,7 +1511,7 @@ public final class FocusGuard {
     /// so the user's app is back in front as fast as WindowServer allows.
     func restoreUserFront(from agent: pid_t, reason: String, immediate: Bool = false, again: Bool = false) {
         lock.lock()
-        if restoring { lock.unlock(); return }
+        if restoring { restoreMissed = true; lock.unlock(); return }
         restoring = true
         let pid = userFrontPid
         let window = userFrontWindow ?? 0
@@ -1547,11 +1551,17 @@ public final class FocusGuard {
             self.lock.lock()
             self.holding = false
             self.restoring = false
+            let missed = self.restoreMissed
+            self.restoreMissed = false
             self.lock.unlock()
             // The app may have taken the front again meanwhile (Chromium often
-            // does it twice), when a restore was already under way.
+            // does it twice), when a restore was already under way. A second
+            // restore looks again only if the app came forward while it ran:
+            // otherwise a browser that took the front back during a restore's
+            // second go stayed in front until the user switched away
+            // themselves, 1 to 3.6 s later (issue #87).
             let front = BCUFrontProcessPID()
-            if !again && pid != 0 && front != 0 && front != pid && front != getpid() && self.agentCaused(front) {
+            if Self.restoresAgain(again: again, missed: missed) && pid != 0 && front != 0 && front != pid && front != getpid() && self.agentCaused(front) {
                 self.restoreUserFront(from: front, reason: "\(reason), again", immediate: true, again: true)
                 return
             }
@@ -1559,6 +1569,13 @@ public final class FocusGuard {
             if n > 0 { self.record("held \(n) of your key events during a focus change (\(reason)) and replayed them into your app") }
         }
     }
+
+    /// Whether a restore that just ended looks at the front again: the first
+    /// always (an app often takes it twice), a later one only when the app
+    /// came forward while it ran. Each look is one more restore only while
+    /// the app keeps coming forward, and `agentCaused` stops it as soon as
+    /// that's no longer the agent's doing (a second after the last restore).
+    static func restoresAgain(again: Bool, missed: Bool) -> Bool { !again || missed }
 
     /// How long an app takes to see that it's active again once it's in front.
     static let activationSettleMs = 30.0
@@ -1983,11 +2000,22 @@ public final class FocusGuard {
     private func watchUserScreen() {
         while true {
             let busy = !WindowManager.agentPids().isEmpty || !activeTaints.isEmpty
-            let all = busy ? WindowList.all(onScreenOnly: true) : nil
-            let look = all.map(Self.userScreenWindows)
-            let order = all.map(Self.screenWindows)
-            lock.lock(); screenLook = look; screenOrder = order; screenOrderMs = nowMs(); lock.unlock()
+            let look = busy ? Self.userScreenWindows() : nil
+            lock.lock(); screenLook = look; lock.unlock()
             usleep(250_000)
+        }
+    }
+
+    /// The windows on the user's screens in order, every 150 ms while
+    /// agents act on an app, for where a click went (`lookedOwner`). Its
+    /// own loop: the look above asks about each window, and on a Mac with
+    /// many windows open takes a second or more.
+    private func watchScreenOrder() {
+        while true {
+            let acting = !gate.acting.isEmpty || !activeTaints.isEmpty
+            let order = acting ? Self.screenWindows(WindowList.all(onScreenOnly: true)) : nil
+            lock.lock(); screenOrder = order; screenOrderMs = order == nil ? -.infinity : nowMs(); lock.unlock()
+            usleep(acting ? 150_000 : 250_000)
         }
     }
 

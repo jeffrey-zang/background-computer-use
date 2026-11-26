@@ -215,3 +215,15 @@ final class SelfActivationTests: XCTestCase {
         XCTAssertFalse(Attribution.revert(left(.none), pid: agent))
     }
 }
+
+/// A restore that's under way when the app comes forward again doesn't
+/// drop it: the browser stayed in front for 3.6 s.
+final class RestoreAgainTests: XCTestCase {
+    func testAFirstRestoreAlwaysLooksAgain() {
+        XCTAssertTrue(FocusGuard.restoresAgain(again: false, missed: false))
+    }
+    func testALaterRestoreLooksAgainOnlyIfTheAppCameForwardMeanwhile() {
+        XCTAssertFalse(FocusGuard.restoresAgain(again: true, missed: false))
+        XCTAssertTrue(FocusGuard.restoresAgain(again: true, missed: true))
+    }
+}
