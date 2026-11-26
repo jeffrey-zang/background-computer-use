@@ -725,7 +725,7 @@ public final class AgentDisplay {
         let before = Self.noteUserWindows()
         Self.remove(id, disable: { _ = BCUDisableDisplay($0) }, release: vd.invalidate)
         Log.info("agent display \(slot + 1) (\(id)) removed")
-        // The ones after it move up the staircase.
+        // The ones after it are checked: macOS may have moved them.
         for d in Self.running { d.reconfigured() }
         Self.startWatchingUserWindows(before)
     }
@@ -749,28 +749,61 @@ public final class AgentDisplay {
     }
 
     /// Where this display goes: at the bottom-right corner of the agent
-    /// display before it, or of the user's displays for the first (see `corner`).
-    /// Stray displays sitting on the staircase are stepped over. nil when
-    /// there's nowhere to put it (no user display at all).
+    /// display before it, or of the user's displays for the first (see
+    /// `corner`), unless another display is in the way (see `spot`). nil
+    /// when there's nowhere to put it (no user display at all).
     private func anchor() -> CGPoint? {
-        var corner: CGPoint
+        let layout = Self.layout(excluding: displayID)
+        let preferred: CGPoint
         if let before = Self.running.filter({ $0.slot < slot && $0 !== self }).last {
             let b = CGDisplayBounds(before.displayID)
-            corner = CGPoint(x: b.maxX, y: b.maxY)
+            preferred = CGPoint(x: b.maxX, y: b.maxY)
         } else {
-            guard let c = Self.corner(of: userDisplayIDs().map { CGDisplayBounds($0) }) else { return nil }
-            corner = c
+            guard let c = Self.corner(of: layout.user) else { return nil }
+            preferred = c
         }
-        Self.registryLock.lock()
-        let spare = Self.spares.map(\.id)
-        Self.registryLock.unlock()
-        var strays = (spare + Self.strayIDs).filter { $0 != displayID }.map { CGDisplayBounds($0) }
-        while let i = strays.firstIndex(where: { $0.origin == corner }) {
-            corner = CGPoint(x: strays[i].maxX, y: strays[i].maxY)
-            strays.remove(at: i)
-        }
-        return corner
+        return Self.spot(size: CGSize(width: width, height: height), preferred: preferred, user: layout.user, others: layout.others)
     }
+
+    /// The displays around agent display `id`: the user's own (`user`, the
+    /// ones it's placed by), and every other online display (`others`: the
+    /// user's, BCU's other displays and spares, strays, and other apps'
+    /// virtual displays), which it must not cover.
+    private static func layout(excluding id: CGDirectDisplayID) -> (user: [CGRect], others: [CGRect]) {
+        let user = anchorDisplayIDs().map { CGDisplayBounds($0) }
+        let others = onlineDisplayIDs().filter { $0 != id && CGDisplayMirrorsDisplay($0) == 0 }.map { CGDisplayBounds($0) }.filter { !$0.isEmpty }
+        return (user, others)
+    }
+
+    /// The user's displays agent displays are placed by: `userDisplayIDs`
+    /// without other apps' virtual displays (another computer-use agent's,
+    /// say, #110). Those are no more the user's than ours are, and their
+    /// app moves them about: placed by one, agent displays chase it, macOS
+    /// moves it to keep the layout joined up, and the two never settle.
+    /// (They're still the user's everywhere else: the cursor isn't fenced
+    /// off them, and windows on them are left alone.) When every display
+    /// is virtual (a Mac with only DisplayLink screens, say), all of them.
+    static func anchorDisplayIDs() -> [CGDirectDisplayID] {
+        anchorDisplays(userDisplayIDs(), isVirtual: isVirtualDisplay)
+    }
+
+    static func anchorDisplays(_ ids: [CGDirectDisplayID], isVirtual: (CGDirectDisplayID) -> Bool) -> [CGDirectDisplayID] {
+        let real = ids.filter { !isVirtual($0) }
+        return real.isEmpty ? ids : real
+    }
+
+    /// A display made with macOS's virtual display API, by any app.
+    static var isVirtualDisplay: (CGDirectDisplayID) -> Bool = { id in
+        guard let info = coreDisplayInfo, let dict = info(id)?.takeRetainedValue() as? [String: Any] else { return false }
+        return (dict["kCGDisplayIsVirtualDevice"] as? NSNumber)?.boolValue ?? false
+    }
+
+    private typealias DisplayInfo = @convention(c) (CGDirectDisplayID) -> Unmanaged<CFDictionary>?
+    private static let coreDisplayInfo: DisplayInfo? = {
+        guard let lib = dlopen("/System/Library/Frameworks/CoreDisplay.framework/CoreDisplay", RTLD_LAZY),
+              let sym = dlsym(lib, "CoreDisplay_DisplayCreateInfoDictionary") else { return nil }
+        return unsafeBitCast(sym, to: DisplayInfo.self)
+    }()
 
     /// The bottom-right corner of the rightmost of `displays` (the lowest,
     /// of those that end as far right). Not the corner of their bounding
@@ -783,8 +816,75 @@ public final class AgentDisplay {
         return CGPoint(x: right.maxX, y: right.maxY)
     }
 
+    /// Whether an agent display at `rect` is fine where it is: it covers no
+    /// other display, and meets the user's only at a corner (along an
+    /// edge, the cursor would wander onto it). Whatever macOS did to get it
+    /// there, it stays: moving it again moves the displays around it, and
+    /// another app's display placed by the same rule moves back (#110).
+    static func acceptable(_ rect: CGRect, user: [CGRect], others: [CGRect]) -> Bool {
+        guard !rect.isEmpty else { return false }
+        if others.contains(where: { overlapArea(rect, $0) > 0 }) { return false }
+        return !user.contains { sharesEdge(rect, $0) }
+    }
+
+    /// The first free place for an agent display of `size`: `preferred`
+    /// (its place in the staircase) if that's `acceptable`, else the
+    /// nearest bottom-right corner of another display that is. Taking a
+    /// free place, it pushes no other display aside: an app's display
+    /// already at the staircase's corner stays there, and this one goes
+    /// past it. With nothing free, `preferred` (macOS sorts it out).
+    static func spot(size: CGSize, preferred: CGPoint, user: [CGRect], others: [CGRect]) -> CGPoint {
+        func fits(_ p: CGPoint) -> Bool { acceptable(CGRect(origin: p, size: size), user: user, others: others) }
+        if fits(preferred) { return preferred }
+        let corners = (user + others).filter { !$0.isEmpty }.map { CGPoint(x: $0.maxX, y: $0.maxY) }
+        func distance(_ p: CGPoint) -> CGFloat { hypot(p.x - preferred.x, p.y - preferred.y) }
+        let sorted = corners.sorted { (distance($0), $0.x, $0.y) < (distance($1), $1.x, $1.y) }
+        return sorted.first(where: fits) ?? preferred
+    }
+
+    static func overlapArea(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let i = a.intersection(b)
+        return i.isNull ? 0 : i.width * i.height
+    }
+
+    /// `a` and `b` touch along an edge (not just at a corner).
+    static func sharesEdge(_ a: CGRect, _ b: CGRect) -> Bool {
+        let xOverlap = min(a.maxX, b.maxX) - max(a.minX, b.minX)
+        let yOverlap = min(a.maxY, b.maxY) - max(a.minY, b.minY)
+        let side = (a.maxX == b.minX || a.minX == b.maxX) && yOverlap > 0
+        let topOrBottom = (a.maxY == b.minY || a.minY == b.maxY) && xOverlap > 0
+        return side || topOrBottom
+    }
+
+    /// The user's displays (see `anchorDisplayIDs`), as one rect.
     private func computeUserBounds() -> CGRect {
-        userDisplayIDs().reduce(CGRect.null) { $0.union(CGDisplayBounds($1)) }
+        Self.anchorDisplayIDs().reduce(CGRect.null) { $0.union(CGDisplayBounds($1)) }
+    }
+
+    /// Re-placements a display is allowed: `limit` in any `windowMs`, then
+    /// none for `pauseMs`. However the displays around it move, an agent
+    /// display moves a bounded number of times (#110: an app that put its
+    /// own display back each time had BCU's move about once a second).
+    struct MoveBudget {
+        var limit = 4
+        var windowMs = 10_000.0
+        var pauseMs = 30_000.0
+        private(set) var moves: [Double] = []
+        private(set) var pausedUntilMs = 0.0
+
+        /// Whether a move now is allowed; if so, it's counted.
+        mutating func take(nowMs: Double) -> Bool {
+            if nowMs < pausedUntilMs { return false }
+            moves = moves.filter { nowMs - $0 < windowMs }
+            if moves.count >= limit {
+                pausedUntilMs = nowMs + pauseMs
+                moves = []
+                return false
+            }
+            moves.append(nowMs)
+            return true
+        }
+
     }
 
     /// The 2x mode at our point size, if the display isn't in it. macOS
@@ -944,7 +1044,16 @@ public final class AgentDisplay {
     /// gets the same answer, and each ask rearranges every display.
     private var adjusted: (wanted: CGPoint, got: CGPoint)?
     private var lastPlaceError: CGError = .success
+    /// How often it may still move (see `MoveBudget`).
+    private var budget = MoveBudget()
+    /// Out of moves for now, and that's been logged.
+    private var holding = false
 
+    /// Main thread: the displays changed, or a second went by (`tend`).
+    /// The display stays where it is while that's `acceptable`, however
+    /// the others moved: it goes back to its place in the staircase only
+    /// when the user's own displays change, and elsewhere only when macOS
+    /// left it on top of another display or along the user's.
     fileprivate func reconfigured() {
         // A display still coming online is placed when it arrives.
         guard isRunning, !bounds.isEmpty else { return }
@@ -961,20 +1070,60 @@ public final class AgentDisplay {
         let accepted = adjusted.map { $0.wanted == wanted && $0.got == b.origin } ?? false
         // Mirrored since it was placed (see `unmirror`).
         let mirrored = CGDisplayIsInMirrorSet(displayID) != 0
-        if unplaced || mirrored || user != userBounds || (b.origin != wanted && !accepted) {
-            let was = unplaced
-            unplaced = false
-            place()
-            if bounds.origin == wanted {
-                adjusted = nil
-                Log.info("agent display \(slot + 1) re-placed at \(bounds.short)")
-            } else if lastPlaceError == .success {
-                if adjusted.map({ $0.wanted != wanted || $0.got != bounds.origin }) ?? true {
-                    Log.info("agent display \(slot + 1) asked for \(Int(wanted.x)),\(Int(wanted.y)); macOS put it at \(bounds.short)")
-                }
-                adjusted = (wanted, bounds.origin)
-            } else if !was { unplaced = true }
+        let layout = Self.layout(excluding: displayID)
+        let move = Self.needsPlacing(b, wanted: wanted, userChanged: user != userBounds, user: layout.user, others: layout.others)
+        guard unplaced || mirrored || (move && !accepted) else {
+            userBounds = user
+            if b != bounds {
+                bounds = b
+                onChange?()
+            }
+            return
         }
+        if !mirrored && !budget.take(nowMs: nowMs()) {
+            if !holding {
+                holding = true
+                Log.info("agent display \(slot + 1) moved \(budget.limit) times in \(Int(budget.windowMs / 1000)) s; it stays at \(b.short) for \(Int(budget.pauseMs / 1000)) s (displays: \(Self.layoutSummary))")
+            }
+            if b != bounds {
+                bounds = b
+                onChange?()
+            }
+            return
+        }
+        holding = false
+        let was = unplaced
+        unplaced = false
+        place()
+        if bounds.origin == wanted {
+            adjusted = nil
+            Log.info("agent display \(slot + 1) re-placed at \(bounds.short)")
+        } else if lastPlaceError == .success {
+            if adjusted.map({ $0.wanted != wanted || $0.got != bounds.origin }) ?? true {
+                Log.info("agent display \(slot + 1) asked for \(Int(wanted.x)),\(Int(wanted.y)); macOS put it at \(bounds.short)")
+            }
+            adjusted = (wanted, bounds.origin)
+        } else if !was { unplaced = true }
+    }
+
+    /// Whether an agent display at `rect` should be put somewhere else:
+    /// back at `wanted` (its place in the staircase) when the user's own
+    /// displays changed, or anywhere better when it isn't `acceptable`.
+    /// Not because another display moved, or because it isn't at `wanted`:
+    /// a display that moves for that moves the others, and one that's
+    /// placed the same way (after the last display that isn't its app's)
+    /// moves again in turn, forever (#110).
+    static func needsPlacing(_ rect: CGRect, wanted: CGPoint, userChanged: Bool, user: [CGRect], others: [CGRect]) -> Bool {
+        if userChanged && rect.origin != wanted { return true }
+        return !acceptable(rect, user: user, others: others)
+    }
+
+    /// Every online display and where it is, for the log.
+    static var layoutSummary: String {
+        onlineDisplayIDs().map { id in
+            let b = CGDisplayBounds(id)
+            return "\(id)[\(String(CGDisplayVendorNumber(id), radix: 16))]@\(Int(b.minX)),\(Int(b.minY))"
+        }.joined(separator: " ")
     }
 
     /// True when most of `rect` is on the agent display.
