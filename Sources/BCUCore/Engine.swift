@@ -54,6 +54,8 @@ public final class Engine {
     /// Windows being handed back right now (moved to the user's screen before
     /// they're let go): a window-only recording stops filming them first.
     private var releasing: Set<CGWindowID> = []
+    /// All of them (quitting).
+    private var releasingAll = false
     /// `windows.release`, with the window no longer the recording's to film from the start.
     private func releaseFilmed(_ id: CGWindowID, keepOpen: Bool) throws -> String {
         stateLock.lock(); releasing.insert(id); stateLock.unlock()
@@ -370,6 +372,8 @@ public final class Engine {
     public func releaseForShutdown(_ group: DispatchGroup) {
         group.enter()
         queue.async {
+            // Not filmed while they go back (the recording ends after this).
+            self.stateLock.lock(); self.releasingAll = true; self.stateLock.unlock()
             let results = self.windows.releaseAll(discard: true)
             if !results.isEmpty { Log.info("quitting: " + results.joined(separator: "; ")) }
             group.leave()
@@ -3199,7 +3203,7 @@ public final class Engine {
                                      // Not one handed to the user, or that they have now.
                                      owns: { [weak self] id in
                                          guard let self else { return false }
-                                         stateLock.lock(); let going = releasing.contains(id); stateLock.unlock()
+                                         stateLock.lock(); let going = releasingAll || releasing.contains(id); stateLock.unlock()
                                          return !going && (windows.window(id).map { !$0.handedOff && !$0.withUser } ?? false)
                                      },
                                      onWindowFrame: { [weak self] in self?.recorder.windowShot($0, $1) },

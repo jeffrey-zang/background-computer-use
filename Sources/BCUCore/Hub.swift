@@ -330,9 +330,13 @@ public final class Hub {
                 }
                 lock.lock(); usedBy[ownerID, default: []].insert(id); lock.unlock()
                 // Listed in the caller's own recording, if it's making one.
-                let result = caller.recordingDir == nil || tool == "start_recording" || tool == "stop_recording"
+                // Or in the one it started on another relative's session.
+                lock.lock(); let route = recordingAt[id]; lock.unlock()
+                let routed = route.flatMap { Self.routeHolds(dir: $0.dir, current: $0.owner.recordingDir) && $0.owner !== owner ? $0.owner : nil }
+                let logger = caller.recordingDir != nil ? caller : routed
+                let result = logger == nil || tool == "start_recording" || tool == "stop_recording"
                     ? owner.call(tool: tool, args: args)
-                    : caller.logCall(tool, args) { owner.call(tool: tool, args: args) }
+                    : logger!.logCall(tool, args) { owner.call(tool: tool, args: args) }
                 // The folder this very call made (the owner could start another right after).
                 if tool == "start_recording" && !result.isError, let dir = Engine.recordingDir(fromStart: result.text) {
                     lock.lock(); recordingAt[id] = (owner, dir); lock.unlock()

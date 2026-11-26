@@ -774,6 +774,14 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertFalse(b.result.contains("s3cret-value"), b.result)
     }
 
+    func testAForeignBatchOfKeysLeavesItsResultOut() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let b = log.begin(tool: "batch", args: ["actions": [["tool": "press_key", "key": "4"], ["tool": "press_key", "key": "2"]]], tracked: false, foreign: true)
+        log.end(b, result: "1. press_key: Pressed 4.\n2. press_key: Pressed 2.", isError: false)
+        log.redactAgain()
+        XCTAssertEqual(b.result, StepLog.foreignLeftOut)
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

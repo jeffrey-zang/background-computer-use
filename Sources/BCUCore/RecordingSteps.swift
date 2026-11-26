@@ -69,6 +69,8 @@ public final class RecordedStep {
     var field: AXUIElement?
     /// Its text holds a Tab: it can reach more than one field.
     public internal(set) var multiField = false
+    /// Run by another session and typed something there: its result is left out.
+    var foreignTyping = false
     /// Its window_id, for keeping key runs per window.
     var window: UInt32?
     var originalModifiers: [String] = []
@@ -514,6 +516,8 @@ public final class StepLog {
     public var all: [RecordedStep] { lock.lock(); defer { lock.unlock() }; return steps }
     public var count: Int { lock.lock(); defer { lock.unlock() }; return steps.count }
 
+    static let foreignLeftOut = "(result left out: it typed in another session's window)"
+
     /// A tool call starts (or, inside a batch that's being recorded, one of its steps).
     /// `tracked`: what the session finds out while it runs (its target, where
     /// it lands) goes to it. A call answered off the session's queue
@@ -525,12 +529,16 @@ public final class StepLog {
     /// hidden, whatever the mode.
     public func begin(tool: String, args: JSONObject, inBatch: Bool = false, tracked: Bool = true, foreign: Bool = false) -> RecordedStep {
         lock.lock(); defer { lock.unlock() }
+        var foreignTyping = false
         if foreign {
-            let calls = [args] + ((args["actions"] as? [Any]) ?? []).compactMap { $0 as? JSONObject }.map { ($0["args"] as? JSONObject) ?? $0 }
-            for c in calls {
+            let calls = [(tool, args)] + ((args["actions"] as? [Any]) ?? []).compactMap { $0 as? JSONObject }
+                .map { (($0["tool"] as? String) ?? "", ($0["args"] as? JSONObject) ?? $0) }
+            for (t, c) in calls {
                 for key in ["text", "value"] { if let v = c[key] as? String, RecordingText.redactsLater(v) { addHidden(RecordingText.forms(of: v)) } }
+                if t == "type_text" || t == "set_value" || (t == "press_key" && RecordedStep.typesACharacter(c)) { foreignTyping = true }
             }
         }
+        defer { if foreignTyping { (open.last ?? steps.last)?.foreignTyping = true } }
         var a = args
         a["_session"] = nil
         a["_recording_dir"] = nil
@@ -656,7 +664,10 @@ public final class StepLog {
         // Under hide_typing, once something was typed, a read is left out
         // whole: a window can echo typed text in more ways (titles, labels,
         // layouts) than can be matched.
-        var result = hidValues && Self.reads.contains(s.tool) ? Self.readLeftOut
+        // What a call run by another session returns after typing there can
+        // echo it in more ways than its arguments show (keys one by one).
+        var result = s.foreignTyping ? Self.foreignLeftOut
+            : hidValues && Self.reads.contains(s.tool) ? Self.readLeftOut
             : (hidValues || hideFieldValues ? RecordingText.hideTitles(RecordingText.hideValues(result)) : result)
         result = RecordingText.redact(redactRunStarts(result), secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
