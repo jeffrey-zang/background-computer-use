@@ -193,6 +193,11 @@ public final class WindowManager {
         persist()
     }
 
+    func cancelDeferredRelease(_ id: CGWindowID) {
+        lock.lock(); releaseWhenAnswering[id] = nil; lock.unlock()
+        persist()
+    }
+
     func noteRelease(_ note: String) {
         lock.lock(); releaseNotes.append(note); lock.unlock()
     }
@@ -1568,6 +1573,9 @@ public final class WindowManager {
     public func handoff(_ id: CGWindowID, reason: String) throws {
         guard let w = window(id), AX.window(pid: w.pid, id: id) != nil else { throw ToolError("window \(id) isn't one of yours") }
         focusGuard.unpark(w.pid, window: id, reason: "window handed to the user")
+        // A release still waiting for the app is called off: once the user
+        // is done the agent goes on with the window, and releases it anew.
+        cancelDeferredRelease(id)
         w.handedOff = true
         w.handoffReason = reason
         w.withUser = false

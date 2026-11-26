@@ -161,4 +161,17 @@ final class DeferredReleaseTests: XCTestCase {
         XCTAssertEqual(b.takeReleaseNotes(), ["Window 8 didn't close"])
         XCTAssertEqual(a.takeReleaseNotes(), [])
     }
+
+    /// Handing a window off calls off its waiting release: after take_back
+    /// the agent goes on with it rather than the sweep closing it.
+    func testHandoffCallsOffTheWaitingRelease() {
+        let m = WindowManager(display: AgentDisplay(), focusGuard: FocusGuard(), sessionKey: "deferred-h-\(UUID().uuidString)")
+        let id: CGWindowID = 4_000_000_009
+        m.register(AgentWindow(id: id, pid: 1, appName: "Dia", bundleID: nil, kind: .opened))
+        defer { m.unregister(id) }
+        m.deferRelease(id, keepOpen: false)
+        m.cancelDeferredRelease(id)
+        XCTAssertNil(m.pendingRelease(id))
+        XCTAssertNotNil(m.window(id), "the window stays the agent's")
+    }
 }
