@@ -356,6 +356,14 @@ final class StrayTabTests: XCTestCase {
         XCTAssertEqual(AudioClaims.pressWhenSettled(lock: { _ in false }, unlock: {}, pending: { false }, deadlineMs: nowMs() + 20) { .success }, .cannotComplete)
     }
 
+    /// A handout whose window hasn't come closes the tab's menu if it's
+    /// still up, before the user's keys go free; the menu bar route leaves
+    /// none.
+    func testAPendingHandoutClosesTheTabsMenu() {
+        XCTAssertTrue(WindowManager.cancelMenuWhenPending(viaTabMenu: true))
+        XCTAssertFalse(WindowManager.cancelMenuWhenPending(viaTabMenu: false))
+    }
+
     /// A move whose window came late: claiming it marks the agent's window
     /// as changed then, so a read taken while it was pending isn't fresh.
     func testALateMoveMarksTheSourceWindowWhenItLands() {

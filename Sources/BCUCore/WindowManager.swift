@@ -1050,8 +1050,13 @@ public final class WindowManager {
         noteBefore(pid: w.pid, window: id)
         focusGuard.beginAction(pid: w.pid, cause: "releasing a window")
         defer { focusGuard.endAction(pid: w.pid) }
+        // Who owns it changes under the app's input lock, which a tab
+        // handout holds from its check that the window is the agent's
+        // through its press: never returned to the user between the two.
+        let appLock = Engine.inputLock(w.pid)
         switch w.kind {
         case .borrowed:
+            appLock.lock(); defer { appLock.unlock() }
             if let f = w.originalFrame {
                 AX.setPosition(ax, f.origin)
                 AX.setSize(ax, f.size)
@@ -1064,6 +1069,7 @@ public final class WindowManager {
                 // Kept open for the user to see: on their screen, since
                 // nothing brings it off this display later (and a spare
                 // display with a window on it is never removed).
+                appLock.lock(); defer { appLock.unlock() }
                 // Under the lock a sweep's catch places with: not moved back
                 // to this display by one that registered it a moment ago.
                 Self.claimLock.lock()
@@ -1736,6 +1742,11 @@ public final class WindowManager {
     /// Whether a menu press may have moved the tab: it succeeded, or the app
     /// was slow to say so (the action can still run). A hard error (the item
     /// gone, the app refusing it) moved nothing, so no window is waited for.
+    /// Whether a handout whose window hasn't come yet closes a menu still
+    /// open in the app: on the tab-menu route (the menu bar's item leaves
+    /// none open).
+    static func cancelMenuWhenPending(viaTabMenu: Bool) -> Bool { viaTabMenu }
+
     static func menuPressMayHaveRun(_ result: AXError) -> Bool {
         result == .success || result == .cannotComplete
     }
@@ -1884,6 +1895,13 @@ public final class WindowManager {
             if made == nil { sleepMs(10) }
         }
         guard let made else {
+            // The tab's menu still up (a press that timed out without
+            // moving the tab): closed before the user's keys go free, or
+            // it would take them. Only that route's: it opened one only
+            // when none was open, and their input has been held since.
+            if Self.cancelMenuWhenPending(viaTabMenu: scope == nil), let menu = Self.openMenu(in: AX.app(w.pid)) {
+                _ = AX.perform(menu, "AXCancel")
+            }
             scope?.exit()
             // It may still come: whichever new standard window the browser
             // shows next is the user's tab, not a window the agent's step
