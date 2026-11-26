@@ -1654,8 +1654,10 @@ public final class WindowManager {
     /// window and selected (a step that waited for the lock may have gone
     /// back to the agent's tab, and the move takes whichever is selected),
     /// and still no agent step to explain it.
-    static func strayStillSelected(selected: Bool?, inWindow: Bool, lastActionMs: Double?, sinceMs: Double, userDriving: Bool) -> Bool {
-        inWindow && selected == true
+    /// And the window is still the agent's: not handed off to the user
+    /// (nor on their screen) since the check began.
+    static func strayStillSelected(agentsWindow: Bool, selected: Bool?, inWindow: Bool, lastActionMs: Double?, sinceMs: Double, userDriving: Bool) -> Bool {
+        agentsWindow && inWindow && selected == true
             && strayTab(newSelected: true, lastActionMs: lastActionMs, sinceMs: sinceMs, userDriving: userDriving)
     }
 
@@ -1689,10 +1691,12 @@ public final class WindowManager {
             return .later
         }
         let inWindow = AX.window(pid: w.pid, id: w.id).flatMap(Self.tabs(of:))?.contains { CFEqual($0, tab) } ?? false
-        guard Self.strayStillSelected(selected: AX.bool(tab, "AXValue"), inWindow: inWindow,
+        lock.lock(); let current = registry[w.id]; lock.unlock()
+        let agentsWindow = current.map { !$0.handedOff && !$0.withUser } ?? false
+        guard Self.strayStillSelected(agentsWindow: agentsWindow, selected: AX.bool(tab, "AXValue"), inWindow: inWindow,
                                       lastActionMs: focusGuard.lastActionMs(w.pid), sinceMs: sinceMs, userDriving: userArranging) else {
             scope.exit()
-            Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, or a step came first; left it")
+            Log.info("tabs: the tab another app opened in the agent's \(w.appName) window \(w.id) isn't selected any more, a step came first, or the window went to the user; left it")
             return .later
         }
         AX.perform(item.element, "AXPress")
@@ -1709,7 +1713,11 @@ public final class WindowManager {
         }
         guard let made else {
             scope.exit()
-            Log.info("tabs: Move Tab to New Window made no window in \(w.appName)")
+            // It may still come: whichever new standard window the browser
+            // shows next is the user's tab, not a window the agent's step
+            // opened (see `claimLateHandouts`).
+            Self.sharedLock.lock(); Self.lateHandouts[w.pid] = (before, nowMs() + Self.lateHandoutMs); Self.sharedLock.unlock()
+            Log.info("tabs: Move Tab to New Window made no window in \(w.appName) yet; the next new one is the user's")
             return .failed
         }
         // The user's from now on: never caught as the agent's, never closed with its windows.
@@ -1740,6 +1748,42 @@ public final class WindowManager {
         return .handedOut
     }
 
+    /// A Move Tab to New Window whose window hadn't come when the handout
+    /// stopped waiting: the app's windows before it, and until when a new
+    /// standard window of the app is taken for it.
+    private static var lateHandouts: [pid_t: (before: Set<CGWindowID>, untilMs: Double)] = [:]
+    static let lateHandoutMs = 10_000.0
+
+    /// Whether a window is the late one a handout made: new since the
+    /// handout, a standard window, in time, and not a window some session
+    /// has (an open's catcher, mid-open, takes the app's next window first).
+    static func isLateHandout(id: CGWindowID, standard: Bool, registered: Bool, opening: Bool,
+                              pending: (before: Set<CGWindowID>, untilMs: Double)?, nowMs: Double) -> Bool {
+        guard let pending, nowMs < pending.untilMs, !pending.before.contains(id) else { return false }
+        return standard && !registered && !opening
+    }
+
+    /// Mark a handout's late window the user's (`keep`) before the sweep
+    /// judges new windows: otherwise it's taken for one the agent's step
+    /// opened, caught, and closed with the agent's windows.
+    private func claimLateHandouts(_ onScreen: [WindowInfo]) {
+        Self.sharedLock.lock()
+        Self.lateHandouts = Self.lateHandouts.filter { nowMs() < $0.value.untilMs }
+        let late = Self.lateHandouts
+        Self.sharedLock.unlock()
+        guard !late.isEmpty else { return }
+        for info in onScreen where info.layer == 0 && late[info.pid] != nil && !Self.isKept(info.id) {
+            guard !late[info.pid]!.before.contains(info.id) else { continue }
+            let standard = AX.window(pid: info.pid, id: info.id).flatMap { AX.string($0, "AXSubrole") } == "AXStandardWindow"
+            guard Self.isLateHandout(id: info.id, standard: standard, registered: Self.isRegistered(info.id), opening: Self.isOpening(info.pid),
+                                     pending: late[info.pid], nowMs: nowMs()) else { continue }
+            Self.keep(info.id)
+            Self.sharedLock.lock(); Self.lateHandouts[info.pid] = nil; Self.sharedLock.unlock()
+            focusGuard.record("another app opened a tab in your agent's \(info.owner) window; it's in a window of yours now")
+            Log.info("tabs: window \(info.id) of \(info.owner) came late from Move Tab to New Window; it's the user's")
+        }
+    }
+
     /// The enabled menu bar item with this title, in any top-level menu.
     static func menuItem(pid: pid_t, titled title: String) -> MenuItemRef? {
         guard let bar = AX.element(AX.app(pid), "AXMenuBar") else { return nil }
@@ -1766,6 +1810,8 @@ public final class WindowManager {
         checkTabs(agent)
 
         let onScreen = WindowList.all(onScreenOnly: true)
+        // Before new windows are judged: a moved tab's late window is the user's.
+        claimLateHandouts(onScreen)
 
         // Reverse catch: apps place new windows next to their last window, so
         // after the agent used an app, a window the USER opens in it can land on

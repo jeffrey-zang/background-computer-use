@@ -38,11 +38,11 @@ final class StrayTabTests: XCTestCase {
     /// have gone back to the agent's own tab, and Move Tab to New Window
     /// takes whichever is selected.
     func testTheTabIsHandedOutOnlyIfStillSelectedWithNoStepSince() {
-        XCTAssertTrue(WindowManager.strayStillSelected(selected: true, inWindow: true, lastActionMs: nil, sinceMs: seen, userDriving: false))
-        XCTAssertFalse(WindowManager.strayStillSelected(selected: false, inWindow: true, lastActionMs: nil, sinceMs: seen, userDriving: false))
-        XCTAssertFalse(WindowManager.strayStillSelected(selected: nil, inWindow: true, lastActionMs: nil, sinceMs: seen, userDriving: false))
-        XCTAssertFalse(WindowManager.strayStillSelected(selected: true, inWindow: false, lastActionMs: nil, sinceMs: seen, userDriving: false))
-        XCTAssertFalse(WindowManager.strayStillSelected(selected: true, inWindow: true, lastActionMs: seen + 50, sinceMs: seen, userDriving: false))
+        XCTAssertTrue(WindowManager.strayStillSelected(agentsWindow: true, selected: true, inWindow: true, lastActionMs: nil, sinceMs: seen, userDriving: false))
+        XCTAssertFalse(WindowManager.strayStillSelected(agentsWindow: true, selected: false, inWindow: true, lastActionMs: nil, sinceMs: seen, userDriving: false))
+        XCTAssertFalse(WindowManager.strayStillSelected(agentsWindow: true, selected: nil, inWindow: true, lastActionMs: nil, sinceMs: seen, userDriving: false))
+        XCTAssertFalse(WindowManager.strayStillSelected(agentsWindow: true, selected: true, inWindow: false, lastActionMs: nil, sinceMs: seen, userDriving: false))
+        XCTAssertFalse(WindowManager.strayStillSelected(agentsWindow: true, selected: true, inWindow: true, lastActionMs: seen + 50, sinceMs: seen, userDriving: false))
     }
 
     /// The handout itself is upkeep, not a step: when it has to wait (focus
@@ -59,5 +59,27 @@ final class StrayTabTests: XCTestCase {
         XCTAssertNotNil(guardian.lastActionMs(pid))
         guardian.endAction(pid: pid)
         XCTAssertNotNil(guardian.lastActionMs(pid))
+    }
+
+    /// Handed off to the user while the check waited for the lock: the
+    /// user may be in that window now, and its tab is theirs to keep.
+    func testAWindowHandedToTheUserMeanwhileIsLeftAlone() {
+        XCTAssertFalse(WindowManager.strayStillSelected(agentsWindow: false, selected: true, inWindow: true, lastActionMs: nil, sinceMs: seen, userDriving: false))
+    }
+
+    /// The moved tab's window came after the handout stopped waiting: the
+    /// next new standard window of the browser is it, not one an agent's
+    /// step opened, so it's the user's and never closed with the agent's.
+    func testALateWindowFromMoveTabIsTheUsers() {
+        let pending = (before: Set<CGWindowID>([1, 2]), untilMs: seen + 10_000)
+        XCTAssertTrue(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: false, pending: pending, nowMs: seen))
+        // One that was there before, a popup, too late, or none pending.
+        XCTAssertFalse(WindowManager.isLateHandout(id: 2, standard: true, registered: false, opening: false, pending: pending, nowMs: seen))
+        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: false, registered: false, opening: false, pending: pending, nowMs: seen))
+        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: false, pending: pending, nowMs: seen + 10_001))
+        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: false, pending: nil, nowMs: seen))
+        // A session's window, or one opening now: its catcher's.
+        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: true, opening: false, pending: pending, nowMs: seen))
+        XCTAssertFalse(WindowManager.isLateHandout(id: 3, standard: true, registered: false, opening: true, pending: pending, nowMs: seen))
     }
 }
