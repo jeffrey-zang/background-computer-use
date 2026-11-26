@@ -598,6 +598,8 @@ public final class Engine {
             let stepStart = Date()
             callStart = stepStart
             callSent = false
+            BeepWatch.shared.beginCall(sessionID, at: stepStart)
+            defer { BeepWatch.shared.endCall(sessionID) }
             callKey = tool == "press_key" ? ((args["modifiers"] as? [String] ?? []) + [args["key"] as? String ?? "the key"]).joined(separator: "+") : nil
             if input { BeepWatch.shared.ensureRunning() }
             waitNotes = []
@@ -1940,7 +1942,12 @@ public final class Engine {
                 }
             }
         }
-        let result = try open()
+        // Opening can send the app a shortcut (File > New's): input, for
+        // the app's beeps.
+        let sendingOpen = target.running.map { sending(to: [$0.processIdentifier]) }
+        let result: WindowManager.OpenResult
+        do { result = try open() } catch { sendingOpen?(); throw error }
+        sendingOpen?()
         let w = result.window
         touched.insert(w.pid)
         let frame = WindowList.info(w.id)?.bounds ?? .zero

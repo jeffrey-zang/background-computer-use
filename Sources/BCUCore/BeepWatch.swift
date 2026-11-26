@@ -100,10 +100,7 @@ public final class BeepWatch {
             guard let b = Self.parse(line: Data(line), seq: nextSeq) else { continue }
             nextSeq += 1
             recent.append(b)
-            // Put down to its input now, while that input is listed: the
-            // call it belongs to may run on (a long batch) past the list's
-            // 60 s before it looks.
-            if let step = Self.agents([b], steps: steps, owner: nil).first?.step { assigned[b.seq] = step }
+            assignOnArrival(b)
         }
         // A minute is plenty: steps take seconds at most.
         let cutoff = Date().addingTimeInterval(-60)
@@ -127,7 +124,31 @@ public final class BeepWatch {
         let beep = Beep(at: b.at, pid: b.pid, app: b.app, action: b.action, seq: nextSeq)
         recent.append(beep)
         nextSeq += 1
-        if let step = Self.agents([beep], steps: steps, owner: nil).first?.step { assigned[beep.seq] = step }
+        assignOnArrival(beep)
+    }
+
+    /// Calls under way, by session: when each began.
+    private var calls: [String: Date] = [:]
+
+    public func beginCall(_ owner: String, at start: Date) {
+        lock.lock(); calls[owner] = start; lock.unlock()
+    }
+
+    public func endCall(_ owner: String) {
+        lock.lock(); calls[owner] = nil; lock.unlock()
+    }
+
+    /// Under `lock`. Put a beep down to its input as it arrives, while that
+    /// input is listed: the call it belongs to may run on (a long batch)
+    /// past the list's 60 s before it looks. Not when the input it fits is
+    /// from an earlier call of a session whose next call began before the
+    /// beep: that call may not have listed its own input yet (an
+    /// open_window's shortcut, an accessibility press). It's worked out
+    /// when that call looks.
+    private func assignOnArrival(_ b: Beep) {
+        guard let step = Self.agents([b], steps: steps, owner: nil).first?.step else { return }
+        if let c = calls[step.owner], c <= b.at, step.call < c { return }
+        assigned[b.seq] = step
     }
 
     /// Test hook: drop every listed input, as `prune` does once it's old.

@@ -121,6 +121,24 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertEqual(found.first?.step.key, "escape")
     }
 
+    /// A beep that arrives while the session's next call is under way, and
+    /// fits only the tail of its last call's input, isn't settled on
+    /// arrival: the call under way may list its own input still.
+    func testABeepDuringTheNextCallWaitsForItsInput() {
+        let w = BeepWatch()
+        let t0 = Date()
+        w.record(step(t0, 0, 0.2, key: "escape", owner: "a", call: t0))
+        let next = t0.addingTimeInterval(0.5)
+        w.beginCall("a", at: next)
+        let start = w.lastSeq
+        w.inject((t0.addingTimeInterval(0.7), 62902, "TextEdit", 4096))
+        // The call lists its input (an open_window's shortcut) late, then looks.
+        w.record(step(t0, 0.6, 0.8, key: nil, owner: "a", call: next))
+        w.endCall("a")
+        let found = w.attribute(w.beeps(after: start), owner: "a")
+        XCTAssertEqual(found.first?.step.call, next)
+    }
+
     /// Completed input is pruned on the begin/finish path too.
     func testFinishPrunes() {
         let w = BeepWatch()
