@@ -1577,7 +1577,7 @@ public final class Engine {
     }
 
     /// Releases finished after a hung app answered that stopped at a dialog.
-    private func takeReleaseNotes() -> String? {
+    func takeReleaseNotes() -> String? {
         let notes = windows.takeReleaseNotes()
         return notes.isEmpty ? nil : "\n[released window] " + notes.joined(separator: " ")
     }

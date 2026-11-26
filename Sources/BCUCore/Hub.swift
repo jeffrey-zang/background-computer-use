@@ -292,7 +292,23 @@ public final class Hub {
             }
             caller = takeOver(windowID, for: caller, id: id)
         }
-        return caller.call(tool: tool, args: args)
+        var result = caller.call(tool: tool, args: args)
+        // What became of a release this agent asked for in a relative's
+        // window (one whose own agent has gone), told here rather than left
+        // with nobody to read it.
+        lock.lock()
+        let owners = Self.relativesToTell(id, usedBy: usedBy, attached: attached).compactMap { byID[$0] }
+        lock.unlock()
+        for owner in owners where owner !== caller {
+            if let note = owner.takeReleaseNotes() { result.text += note }
+        }
+        return result
+    }
+
+    /// Sessions whose windows `id` has worked in (see `usedBy`) and whose own
+    /// agent isn't connected: their release notes go to `id`.
+    static func relativesToTell(_ id: String, usedBy: [String: Set<String>], attached: [String: Int]) -> [String] {
+        usedBy.filter { $0.value.contains(id) && ($0.key != id) && (attached[$0.key] ?? 0) == 0 }.map(\.key).sorted()
     }
 
     /// An agent whose `bcu mcp` was restarted (its client does that after a

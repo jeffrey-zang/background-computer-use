@@ -174,4 +174,13 @@ final class DeferredReleaseTests: XCTestCase {
         XCTAssertNil(m.pendingRelease(id))
         XCTAssertNotNil(m.window(id), "the window stays the agent's")
     }
+
+    /// A parent that released its gone subagent's window hears what became
+    /// of it on its own calls; a subagent still connected hears it itself.
+    func testARelativesNoteGoesToTheAgentThatUsedItsWindow() {
+        let usedBy: [String: Set<String>] = ["sub": ["parent"], "sub2": ["parent"], "other": ["someone"]]
+        XCTAssertEqual(Hub.relativesToTell("parent", usedBy: usedBy, attached: ["parent": 1]), ["sub", "sub2"])
+        XCTAssertEqual(Hub.relativesToTell("parent", usedBy: usedBy, attached: ["parent": 1, "sub": 1]), ["sub2"])
+        XCTAssertEqual(Hub.relativesToTell("someone-else", usedBy: usedBy, attached: [:]), [])
+    }
 }
