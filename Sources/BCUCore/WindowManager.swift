@@ -550,7 +550,8 @@ public final class WindowManager {
             if axWindows.count == 1 && front == pid {
                 throw ToolError("\(name) didn't open a new window, and the user is using it now, so its window wasn't borrowed. Retry later.")
             }
-            guard Self.mayBorrowStartupWindow(startupWindows: axWindows.count, pid: pid, front: front),
+            let opensWindows = BrowserAutomation.isScriptableChromium(url) || Self.newWindowMenuItem(pid: pid) != nil
+            guard Self.mayBorrowStartupWindow(startupWindows: axWindows.count, pid: pid, front: front, opensWindows: opensWindows),
                   let id = AX.windowID(axWindows[0]), WindowList.info(id) != nil else { throw error }
             let aw = try borrow(id)
             let title = AX.string(axWindows[0], "AXTitle") ?? ""
@@ -593,9 +594,13 @@ public final class WindowManager {
     /// Whether a cold launch that got no new window borrows the app's
     /// startup window instead: only an app's only one, and not while the
     /// user is in the app (they may have gone to it while the open waited
-    /// its turn), as `borrow_window` asks.
-    static func mayBorrowStartupWindow(startupWindows: Int, pid: pid_t, front: pid_t) -> Bool {
-        startupWindows == 1 && front != pid
+    /// its turn), as `borrow_window` asks. Never in an app that can open
+    /// more windows (`opensWindows`: a browser, anything with a New Window
+    /// item): its startup window is the user's (Chrome's restored session),
+    /// and the new one only failed this time. The agent would be working in
+    /// their window, and other apps' links would land in it.
+    static func mayBorrowStartupWindow(startupWindows: Int, pid: pid_t, front: pid_t, opensWindows: Bool) -> Bool {
+        startupWindows == 1 && front != pid && !opensWindows
     }
 
     /// Open a new window of a running app and put it on the agent display.
@@ -1549,6 +1554,169 @@ public final class WindowManager {
         return kept ? .giveToUser : .judge
     }
 
+    // MARK: Tabs other apps open in the agent's browser windows
+
+    // A browser opens a link from another app (Codex, `open`, Mail) as a
+    // tab in its current window. When the user has no window of their own
+    // in it, that's the agent's: the tab lands on the agent display, where
+    // the user can't see it, in a window the agent is working in (#101).
+    // Each check compares this session's Chromium windows' tabs with the
+    // last check's, and a new selected tab no agent step explains goes to
+    // the user in a window of its own on their screen.
+
+    /// This session's Chromium windows' tabs, as last checked.
+    private var knownTabs: [CGWindowID: [AXUIElement]] = [:]
+    private var tabsCheckedMs = -Double.infinity
+    private var checkingTabs = false
+    private static let tabQueue = DispatchQueue(label: "bcu.stray-tabs", qos: .utility)
+    private static var chromium: [pid_t: Bool] = [:]
+    /// A step's own new tab (a link that opens one, cmd+T) shows up while
+    /// it runs or just after.
+    static let stepTabGraceMs = 1500.0
+
+    /// Whether a check found a tab that another app opened in an agent's
+    /// window: a new one, selected (a browser selects the tab it opens a link
+    /// from another app in), with no agent step in the browser just now that
+    /// would explain it, and not while the user drives the agent display.
+    static func strayTab(newSelected: Bool, lastActionMs: Double?, nowMs: Double, userDriving: Bool) -> Bool {
+        guard newSelected, !userDriving else { return false }
+        if let lastActionMs, nowMs - lastActionMs < stepTabGraceMs { return false }
+        return true
+    }
+
+    /// A browser window's tabs, from its tab strip (nil: none found).
+    static func tabs(of window: AXUIElement) -> [AXUIElement]? {
+        var level = [window]
+        for _ in 0..<10 where !level.isEmpty {
+            var next: [AXUIElement] = []
+            for el in level {
+                let role = AX.string(el, "AXRole")
+                if role == "AXTabGroup" {
+                    let tabs = AX.children(el).filter { AX.string($0, "AXSubrole") == "AXTabButton" }
+                    if !tabs.isEmpty { return tabs }
+                }
+                if role != "AXWebArea" { next += AX.children(el) }
+            }
+            level = next
+        }
+        return nil
+    }
+
+    private static func isChromium(_ pid: pid_t) -> Bool {
+        sharedLock.lock()
+        if let known = chromium[pid] { sharedLock.unlock(); return known }
+        sharedLock.unlock()
+        let found = NSRunningApplication(processIdentifier: pid)?.bundleURL.map(BrowserAutomation.isScriptableChromium) ?? false
+        sharedLock.lock(); chromium[pid] = found; sharedLock.unlock()
+        return found
+    }
+
+    /// Off the sweep's thread, at most every 300 ms: accessibility can be
+    /// slow to answer, and the sweep keeps windows off the user's screen.
+    private func checkTabs(_ agent: [CGWindowID: AgentWindow]) {
+        lock.lock()
+        guard !checkingTabs, nowMs() - tabsCheckedMs >= 300 else { lock.unlock(); return }
+        checkingTabs = true
+        lock.unlock()
+        Self.tabQueue.async { [weak self] in
+            guard let self else { return }
+            var seen: [CGWindowID: [AXUIElement]] = [:]
+            for w in agent.values where !w.handedOff && Self.isChromium(w.pid) {
+                guard let ax = AX.window(pid: w.pid, id: w.id), let tabs = Self.tabs(of: ax) else { continue }
+                lock.lock(); let before = knownTabs[w.id]; lock.unlock()
+                seen[w.id] = tabs
+                guard let before else { continue }
+                let newSelected = tabs.contains { t in AX.bool(t, "AXValue") == true && !before.contains { CFEqual($0, t) } }
+                guard Self.strayTab(newSelected: newSelected, lastActionMs: focusGuard.lastActionMs(w.pid),
+                                    nowMs: nowMs(), userDriving: userArranging) else { continue }
+                switch handOutSelectedTab(w) {
+                case .handedOut: seen[w.id] = Self.tabs(of: ax) ?? tabs
+                case .later: seen[w.id] = before
+                case .failed: break
+                }
+            }
+            lock.lock()
+            knownTabs = seen
+            tabsCheckedMs = nowMs()
+            checkingTabs = false
+            lock.unlock()
+        }
+    }
+
+    enum HandOut { case handedOut, later, failed }
+
+    /// Give the user the selected tab of the agent's window, in a window of
+    /// its own on their screen: the browser's Tab > Move Tab to New Window,
+    /// with the agent's window key, then the new window goes to the user's
+    /// screen and stays theirs.
+    private func handOutSelectedTab(_ w: AgentWindow) -> HandOut {
+        guard let item = Self.menuItem(pid: w.pid, titled: "Move Tab to New Window") else {
+            Log.info("tabs: another app opened a tab in the agent's \(w.appName) window \(w.id), and \(w.appName) has no Move Tab to New Window item; it stays")
+            return .failed
+        }
+        // Not while a session is opening a window: its catcher would take
+        // the new window for the one it asked for.
+        guard Self.openLock.try() else { return .later }
+        defer { Self.openLock.unlock() }
+        let appLock = Engine.inputLock(w.pid)
+        appLock.lock()
+        defer { appLock.unlock() }
+        // While it runs, the sweeps leave the app's new windows alone.
+        Self.sharedLock.lock(); Self.openingAnywhere.insert(w.pid); Self.sharedLock.unlock()
+        defer { Self.sharedLock.lock(); Self.openingAnywhere.remove(w.pid); Self.sharedLock.unlock() }
+        focusGuard.beginAction(pid: w.pid, cause: "handing the user a tab another app opened in the agent's window")
+        defer { focusGuard.endAction(pid: w.pid) }
+        focusGuard.beginSwap(w.pid)
+        defer { focusGuard.endSwap(w.pid) }
+        let userIn = BCUFrontProcessPID() == w.pid
+        let before = Set(WindowList.of(pid: w.pid).map(\.id))
+        guard let scope = try? KeyScope.enter(pid: w.pid, window: w.id, giveBackTo: userIn ? focusGuard.userWindow(of: w.pid) : nil) else {
+            return .later
+        }
+        AX.perform(item.element, "AXPress")
+        var made: CGWindowID?
+        let deadline = nowMs() + 2000
+        while made == nil && nowMs() < deadline {
+            made = WindowList.of(pid: w.pid).first { $0.layer == 0 && !before.contains($0.id) }?.id
+            if made == nil { sleepMs(10) }
+        }
+        guard let made else {
+            scope.exit()
+            Log.info("tabs: Move Tab to New Window made no window in \(w.appName)")
+            return .failed
+        }
+        // The user's from now on: never caught as the agent's, never closed with its windows.
+        Self.keep(made)
+        // Key goes to the new window (the user's), so the browser's last
+        // window is theirs; or back to theirs if they're in the browser.
+        if userIn { scope.exit() } else { scope.handOff(to: made) }
+        var placed = false
+        for _ in 0..<50 where !placed {
+            if let ax = AX.window(pid: w.pid, id: made), let bounds = WindowList.info(made)?.bounds {
+                placed = Self.putOnUserScreen(ax, bounds: bounds)
+            } else {
+                sleepMs(20)
+            }
+        }
+        if userIn { focusGuard.scheduleReclaim(w.pid) }
+        focusGuard.record("another app opened a tab in your agent's \(w.appName) window; it's in a window of yours on your screen now")
+        Log.info("tabs: moved a tab another app opened in the agent's \(w.appName) window \(w.id) to window \(made)\(placed ? " on the user's screen" : " (couldn't move it to the user's screen)")")
+        return .handedOut
+    }
+
+    /// The enabled menu bar item with this title, in any top-level menu.
+    static func menuItem(pid: pid_t, titled title: String) -> MenuItemRef? {
+        guard let bar = AX.element(AX.app(pid), "AXMenuBar") else { return nil }
+        for top in AX.children(bar) {
+            for menu in AX.children(top) {
+                for item in AX.children(menu) where AX.string(item, "AXTitle") == title && AX.bool(item, "AXEnabled") != false {
+                    return MenuItemRef(element: item, title: title)
+                }
+            }
+        }
+        return nil
+    }
+
     /// Keep agent windows off the user's displays and catch new windows an
     /// agent action spawned there (dialogs, popups, extra windows).
     private func sweep() {
@@ -1559,6 +1727,7 @@ public final class WindowManager {
         lock.unlock()
         defer { lock.lock(); sweeping = false; lock.unlock() }
         guard display.isRunning else { return }
+        checkTabs(agent)
 
         let onScreen = WindowList.all(onScreenOnly: true)
 

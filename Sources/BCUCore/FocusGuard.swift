@@ -456,6 +456,14 @@ public final class FocusGuard {
         lock.unlock()
     }
 
+    /// When an agent last acted on `pid`, from any session: now while an
+    /// action runs, else when the last one ended. Nil: never.
+    func lastActionMs(_ pid: pid_t) -> Double? {
+        lock.lock(); defer { lock.unlock() }
+        if (taints[pid]?.count ?? 0) > 0 { return nowMs() }
+        return lastActedMs[pid]
+    }
+
     public func isTainted(_ pid: pid_t) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let t = taints[pid] else { return false }

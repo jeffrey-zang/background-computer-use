@@ -55,10 +55,16 @@ final class AppNameMatchTests: XCTestCase {
     }
 
     func testALaunchBorrowsTheStartupWindowOnlyWhenTheUserIsntInTheApp() {
-        XCTAssertTrue(WindowManager.mayBorrowStartupWindow(startupWindows: 1, pid: 50, front: 60))
+        XCTAssertTrue(WindowManager.mayBorrowStartupWindow(startupWindows: 1, pid: 50, front: 60, opensWindows: false))
         // The user went to the app while the open waited its turn.
-        XCTAssertFalse(WindowManager.mayBorrowStartupWindow(startupWindows: 1, pid: 50, front: 50))
-        XCTAssertFalse(WindowManager.mayBorrowStartupWindow(startupWindows: 2, pid: 50, front: 60))
-        XCTAssertFalse(WindowManager.mayBorrowStartupWindow(startupWindows: 0, pid: 50, front: 60))
+        XCTAssertFalse(WindowManager.mayBorrowStartupWindow(startupWindows: 1, pid: 50, front: 50, opensWindows: false))
+        XCTAssertFalse(WindowManager.mayBorrowStartupWindow(startupWindows: 2, pid: 50, front: 60, opensWindows: false))
+        XCTAssertFalse(WindowManager.mayBorrowStartupWindow(startupWindows: 0, pid: 50, front: 60, opensWindows: false))
+    }
+
+    /// #101: Chrome's restored window is the user's; a failed new window
+    /// doesn't make it the agent's.
+    func testALaunchNeverBorrowsTheStartupWindowOfAnAppThatOpensWindows() {
+        XCTAssertFalse(WindowManager.mayBorrowStartupWindow(startupWindows: 1, pid: 50, front: 60, opensWindows: true))
     }
 }
