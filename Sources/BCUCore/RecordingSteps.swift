@@ -64,6 +64,8 @@ public final class RecordedStep {
     /// A press_key of one character (no modifier but shift), from its
     /// arguments as given (the stored ones can be redacted).
     var typesCharacter = false
+    /// Its text holds a Tab: it can reach more than one field.
+    public internal(set) var multiField = false
     /// Its window_id, for keeping key runs per window.
     var window: UInt32?
     var originalModifiers: [String] = []
@@ -525,6 +527,7 @@ public final class StepLog {
             s.typesCharacter = character
             s.window = window
             s.originalModifiers = modifiers
+            s.multiField = (original["text"] ?? "").contains("\t")
             parent.steps.append(s)
             open.append(s)
             return s
@@ -537,6 +540,7 @@ public final class StepLog {
         s.typesCharacter = character
         s.window = window
         s.originalModifiers = modifiers
+        s.multiField = (original["text"] ?? "").contains("\t")
         steps.append(s)
         if tracked { open.append(s) }
         return s
@@ -577,7 +581,8 @@ public final class StepLog {
     /// Windows hidden typing went into, to follow in the video.
     public func coverWindows() -> Set<CGWindowID> {
         lock.lock(); defer { lock.unlock() }
-        guard redactAll else { return [] }
+        // Without hide_typing, only hidden typing that could fill more than one field covers its window.
+        guard redactAll else { return Set(Self.flatten(steps).filter { $0.multiField && $0.textHidden }.compactMap(\.coverWindow)) }
         // Running ones too: the window can move while the typing goes on.
         return Set(Self.flatten(steps).filter { $0.textHidden || ($0.end == nil && $0.hidesText(redactAll: true)) }.compactMap(\.coverWindow))
     }

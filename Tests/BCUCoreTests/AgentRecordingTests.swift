@@ -660,6 +660,17 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertGreaterThan(data[135 * image.bytesPerRow + 290 * 4 + 1], 100)
     }
 
+    func testTabbedSecretTypingCoversTheWindowWithoutHideTyping() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let s = log.begin(tool: "type_text", args: ["text": "name\tpassword", "element": 1])
+        log.setTarget(StepTarget(element: 1, role: "AXTextField", label: "User", frame: CGRect(x: 10, y: 10, width: 50, height: 20), secure: false))
+        log.setCover(CGRect(x: 0, y: 0, width: 400, height: 300), window: 7)
+        log.setFocusSecure()
+        log.end(s, result: "Typed.", isError: false)
+        XCTAssertTrue(s.multiField)
+        XCTAssertEqual(log.coverWindows(), [7])
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))

@@ -83,7 +83,8 @@ public enum RecordingOverlay {
                     // (the field can scroll, the window can move), else where it was.
                     area = s.coverWindow.flatMap { covers[$0] } ?? s.cover ?? s.target?.frame
                 } else if !redactAll, s.textHidden || s.target?.secure == true || s.focusSecure {
-                    area = s.target?.frame
+                    // Typing with a Tab can have filled more fields: its window.
+                    area = s.multiField ? (s.coverWindow.flatMap { covers[$0] } ?? s.cover ?? s.target?.frame) : s.target?.frame
                 }
                 if let area, !areas.contains(area) { areas.append(area) }
             }

@@ -293,6 +293,19 @@ public final class Hub {
             lock.lock(); parentOf[id] = parent; lock.unlock()
         }
         var caller = engine(for: id, client: client, label: label, host: host)
+        // One recording at a time per agent, routed or not: a start while one
+        // it began in another session's window is still under way is refused.
+        if tool == "start_recording" {
+            lock.lock()
+            let route = recordingAt[id]
+            lock.unlock()
+            if let route {
+                if Self.routeHolds(dir: route.dir, current: route.owner.recordingDir) {
+                    return .error("a recording you started is already under way (into \(route.dir)). Call stop_recording first.")
+                }
+                lock.lock(); recordingAt[id] = nil; lock.unlock()
+            }
+        }
         if tool == "stop_recording" {
             lock.lock()
             let route = recordingAt.removeValue(forKey: id)
