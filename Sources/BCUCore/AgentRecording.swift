@@ -295,7 +295,7 @@ public final class AgentRecording {
         Self.prune(keeping: dir)
         let flat = StepLog.flatten(all)
         return Output(dir: dir, video: video, markdown: md, json: js, audio: audioOut, durationMs: durationMs, frames: maps.count,
-                      size: size, toolCalls: all.count, failed: flat.filter(\.isError).count, notes: notes)
+                      size: size, toolCalls: all.count, failed: all.filter(\.isError).count, notes: notes)
     }
 
     /// Reads `raw` back frame by frame, draws the steps over each and writes `out`.
@@ -315,26 +315,29 @@ public final class AgentRecording {
         inp.expectsMediaDataInRealTime = false
         inp.mediaTimeScale = 1000
         w.movieTimeScale = 1000
-        let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: inp, sourcePixelBufferAttributes: nil)
+        let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: inp, sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: Int(size.width),
+            kCVPixelBufferHeightKey as String: Int(size.height),
+        ])
         w.add(inp)
         guard reader.startReading(), w.startWriting() else { throw ToolError("couldn't render the video: \(reader.error ?? w.error.map { $0 as Error } ?? ToolError("?"))") }
         w.startSession(atSourceTime: .zero)
         let flat = StepLog.flatten(all)
+        // Frames are drawn at the captured times and, from the last frame
+        // captured before, at each `renderTimes`: a step that came and went
+        // between two captures still gets its caption and marks.
+        var extra = RecordingOverlay.renderTimes(flat).map { Int64($0.rounded()) }[...]
         var mi = 0
         var last: CMTime = .zero
-        while let sample = output.copyNextSampleBuffer() {
-            guard let px = CMSampleBufferGetImageBuffer(sample) else { continue }
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            let ms = Int64((pts.seconds * 1000).rounded())
-            while mi + 1 < maps.count && maps[mi + 1].t <= ms { mi += 1 }
-            CVPixelBufferLockBaseAddress(px, [])
-            if let ctx = CGContext(data: CVPixelBufferGetBaseAddress(px), width: CVPixelBufferGetWidth(px), height: CVPixelBufferGetHeight(px),
-                                   bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(px), space: CGColorSpaceCreateDeviceRGB(),
-                                   bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue) {
-                RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: maps[mi].map,
-                                      label: label, redactAll: steps.redactAll)
-            }
-            CVPixelBufferUnlockBaseAddress(px, [])
+        var lastMs: Int64 = -1
+        var prevRaw: CGImage?
+        func context(_ px: CVPixelBuffer) -> CGContext? {
+            CGContext(data: CVPixelBufferGetBaseAddress(px), width: CVPixelBufferGetWidth(px), height: CVPixelBufferGetHeight(px),
+                      bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(px), space: CGColorSpaceCreateDeviceRGB(),
+                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+        }
+        func waitForWriter() throws {
             // A writer that failed (a full disk, the encoder) never gets
             // ready again: stop instead of waiting for it.
             while !inp.isReadyForMoreMediaData {
@@ -344,8 +347,46 @@ public final class AgentRecording {
                 }
                 usleep(2000)
             }
-            if ad.append(px, withPresentationTime: pts) { last = pts }
         }
+        func mapping(_ ms: Int64) -> FrameMapping {
+            while mi + 1 < maps.count && maps[mi + 1].t <= ms { mi += 1 }
+            return maps[mi].map
+        }
+        /// The last captured picture again, at `ms`, with what's going on then.
+        func copyOfLast(at ms: Int64) throws {
+            guard let raw = prevRaw, ms > lastMs, let pool = ad.pixelBufferPool else { return }
+            var buffer: CVPixelBuffer?
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+            guard let buffer else { return }
+            CVPixelBufferLockBaseAddress(buffer, [])
+            if let ctx = context(buffer) {
+                ctx.draw(raw, in: CGRect(origin: .zero, size: size))
+                RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: mapping(ms),
+                                      label: label, redactAll: steps.redactAll)
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, [])
+            try waitForWriter()
+            let at = CMTime(value: ms, timescale: 1000)
+            if ad.append(buffer, withPresentationTime: at) { last = at; lastMs = ms }
+        }
+        while let sample = output.copyNextSampleBuffer() {
+            guard let px = CMSampleBufferGetImageBuffer(sample) else { continue }
+            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            let ms = Int64((pts.seconds * 1000).rounded())
+            while let e = extra.first, e < ms { extra.removeFirst(); try copyOfLast(at: e) }
+            guard ms > lastMs else { continue }
+            CVPixelBufferLockBaseAddress(px, [])
+            if let ctx = context(px) {
+                prevRaw = ctx.makeImage()
+                RecordingOverlay.draw(in: ctx, size: size, t: Double(ms), flat: flat, total: all.count, mapping: mapping(ms),
+                                      label: label, redactAll: steps.redactAll)
+            }
+            CVPixelBufferUnlockBaseAddress(px, [])
+            try waitForWriter()
+            if ad.append(px, withPresentationTime: pts) { last = pts; lastMs = ms }
+        }
+        // Steps after the last frame: on copies of it.
+        for e in extra where e > lastMs { try copyOfLast(at: e) }
         inp.markAsFinished()
         // The last frame stays up a moment, so the last step can be read.
         let endAt = max(CMTime(value: Int64(endMs.rounded()), timescale: 1000), last + CMTime(value: 1500, timescale: 1000))

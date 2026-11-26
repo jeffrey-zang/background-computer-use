@@ -704,6 +704,15 @@ public final class Engine {
             if runDepth == 0 { typingWaitedMs = 0 }
         }
         defer {
+            // A Tab in typed text moves on to the next field, which may be a
+            // password field: if that's where focus ended up, the recording
+            // hides all of it.
+            if tool == "type_text", (args.string("text") ?? "").contains("\t"), let rec = recordingSteps,
+               let id = windowID, let w = windows.window(id), passwordFieldFocused(w) {
+                rec.setFocusSecure()
+            }
+        }
+        defer {
             if Self.batchable.contains(tool), tool != "wait", let id = windowID {
                 lastActionMs[id] = nowMs()
             }
@@ -2370,10 +2379,7 @@ public final class Engine {
         if target == nil, let rec = recordingSteps {
             let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
             let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
-            // A window that isn't key may not say what has focus in it: any
-            // password field of its last read that says it's focused counts.
-            let focusedSecure = snapshots[w.id]?.nodes.values.contains { $0.secure && AX.bool($0.element, "AXFocused") == true } ?? false
-            if Self.isSecureField(mine) || Self.isSecureField(appFocus) || focusedSecure { rec.setFocusSecure() }
+            if Self.isSecureField(mine) || passwordFieldFocused(w) { rec.setFocusSecure() }
         }
 
         // An open or save panel takes keys in its own process, without the
@@ -3055,6 +3061,14 @@ public final class Engine {
         }
         guard err == .success else { throw ToolError("pressing \(path.joined(separator: " > ")) failed: \(AX.errorName(err))") }
         return ToolResult(text: "Chose \(path.joined(separator: " > ")).")
+    }
+
+    /// The app's focused element is a password field, or one of the window's
+    /// last read says it's focused (a window that isn't key may not say what
+    /// has focus in it).
+    private func passwordFieldFocused(_ w: AgentWindow) -> Bool {
+        if Self.isSecureField(AX.element(AX.app(w.pid), "AXFocusedUIElement")) { return true }
+        return snapshots[w.id]?.nodes.values.contains { $0.secure && AX.bool($0.element, "AXFocused") == true } ?? false
     }
 
     static func isSecureField(_ el: AXUIElement?) -> Bool {

@@ -24,10 +24,30 @@ public enum RecordingOverlay {
     static let markMs = 1600.0
     static let rippleMs = 700.0
 
-    /// The step whose caption shows at `t`: the last one (batch steps
-    /// included) to have started by then.
+    /// The least time a step's caption shows: steps that follow one another
+    /// faster than that (or between two frames) each still get read.
+    static let captionHoldMs = 800.0
+
+    /// When each step's caption comes up: when it starts, or once the one
+    /// before it has had `captionHoldMs`, whichever is later.
+    public static func captionTimes(_ flat: [RecordedStep]) -> [Double] {
+        var out: [Double] = []
+        for s in flat { out.append(max(s.t, (out.last ?? -.infinity) + captionHoldMs)) }
+        return out
+    }
+
+    /// The step whose caption shows at `t` (see `captionTimes`).
     public static func captionStep(_ flat: [RecordedStep], at t: Double) -> RecordedStep? {
-        flat.last { $0.t <= t }
+        let times = captionTimes(flat)
+        guard let i = times.lastIndex(where: { $0 <= t }) else { return nil }
+        return flat[i]
+    }
+
+    /// Times a frame has to be drawn at, besides the captured ones, so every
+    /// step's caption and marks are in the video: when each caption comes up
+    /// and when each step starts.
+    public static func renderTimes(_ flat: [RecordedStep]) -> [Double] {
+        Array(Set(captionTimes(flat) + flat.map(\.t))).sorted()
     }
 
     /// Steps whose marks (box, ripple, keycaps, arrows) show at `t`.
@@ -49,6 +69,19 @@ public enum RecordingOverlay {
         func flipP(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x, y: H - p.y) }
         let blue = CGColor(red: 0.16, green: 0.52, blue: 1, alpha: 1)
         let red = CGColor(red: 0.93, green: 0.2, blue: 0.2, alpha: 1)
+
+        // With all typed text hidden, the fields it went into are covered
+        // from then on (a password field shows only dots anyway).
+        if redactAll {
+            for s in flat where s.t <= t && s.hidesText(redactAll: true) {
+                guard let target = s.target, !target.secure else { continue }
+                let r = flip(mapping.rect(target.frame).insetBy(dx: -2 * u, dy: -2 * u))
+                ctx.setFillColor(CGColor(gray: 0.55, alpha: 1))
+                ctx.addPath(CGPath(roundedRect: r, cornerWidth: 5 * u, cornerHeight: 5 * u, transform: nil)); ctx.fillPath()
+                let l = line("hidden", font(min(18 * u, r.height * 0.6), bold: true), CGColor(gray: 1, alpha: 1))
+                drawLine(ctx, l, x: r.minX + 8 * u, baseline: r.midY - r.height * 0.18)
+            }
+        }
 
         // Marks first, under the caption bar.
         for s in marking(flat, at: t) {
@@ -271,7 +304,9 @@ public enum ActionList {
             "width": Int(info.size.width), "height": Int(info.size.height),
             "typed_text_hidden": info.redactAll,
             "tool_calls": steps.count,
-            "failed": all.filter(\.isError).count,
+            // Tool calls that failed; a batch that stopped on a step is one.
+            "failed": steps.filter(\.isError).count,
+            "failed_actions": all.filter { $0.isError && $0.tool != "batch" }.count,
             "coordinates": "Points on the agent display, top-left origin" + (info.windowID != nil ? " (the video shows only the window)" : ""),
             "notes": info.notes,
             "actions": steps.map { entry($0, redactAll: info.redactAll) },
@@ -283,7 +318,7 @@ public enum ActionList {
 
     public static func markdown(_ steps: [RecordedStep], info: Info) -> String {
         let all = StepLog.flatten(steps)
-        let failed = all.filter(\.isError).count
+        let failed = steps.filter(\.isError).count
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd HH:mm:ss"
         var out = ["# What the agent did", ""]

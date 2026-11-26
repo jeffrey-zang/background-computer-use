@@ -166,7 +166,54 @@ final class AgentRecordingTests: XCTestCase {
         log.end(b, result: "", isError: true)
         let flat = StepLog.flatten(log.all)
         XCTAssertEqual(flat.map(\.t), [0, 100, 200, 300])
-        XCTAssertTrue(RecordingOverlay.captionStep(flat, at: 400) === b2)
+        XCTAssertTrue(RecordingOverlay.captionStep(flat, at: 10_000) === b2)
+        XCTAssertTrue(RecordingOverlay.captionStep(flat, at: 400) === b, "each caption is held a moment, so none is skipped")
+    }
+
+    /// Steps closer together than a caption's hold, or between two frames,
+    /// each get their caption, one after another.
+    func testFastStepsEachGetACaption() {
+        let (now, set) = clock()
+        let log = StepLog(redactAll: false, clock: now)
+        let a = log.begin(tool: "click", args: ["element": 9999]); set(5); log.end(a, result: "isn't there", isError: true)
+        set(50); let b = log.begin(tool: "status", args: [:]); set(60); log.end(b, result: "ok", isError: false)
+        let flat = StepLog.flatten(log.all)
+        XCTAssertEqual(RecordingOverlay.captionTimes(flat), [0, 800])
+        XCTAssertTrue(RecordingOverlay.captionStep(flat, at: 400) === a, "the failed click isn't covered by the status right after it")
+        XCTAssertTrue(RecordingOverlay.captionStep(flat, at: 900) === b)
+        XCTAssertEqual(RecordingOverlay.renderTimes(flat), [0, 50, 800], "frames are drawn for each caption even with no capture then")
+    }
+
+    /// A batch that stopped on a step is one failed tool call, not two.
+    func testAFailedBatchCountsOnce() throws {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let b = log.begin(tool: "batch", args: [:])
+        let c = log.begin(tool: "click", args: ["element": 9], inBatch: true)
+        log.end(c, result: "gone", isError: true)
+        log.end(b, result: "1. click FAILED: gone", isError: true)
+        let info = ActionList.Info(started: Date(), durationMs: 1000, source: "display", windowID: nil, fps: 12, frames: 12,
+                                   size: CGSize(width: 1600, height: 1000), label: "Agent", redactAll: false, video: "recording.mp4")
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: ActionList.json(log.all, info: info)) as? [String: Any])
+        XCTAssertEqual(obj["failed"] as? Int, 1)
+        XCTAssertEqual(obj["failed_actions"] as? Int, 1)
+        XCTAssertTrue(ActionList.markdown(log.all, info: info).contains("1 tool call, 1 failed"))
+    }
+
+    /// With all typed text hidden, the field it went into is covered in the video.
+    func testHiddenTypingCoversTheField() throws {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let s = log.begin(tool: "type_text", args: ["text": "dear Ada", "element": 3])
+        log.setTarget(StepTarget(element: 3, role: "AXTextField", label: "Note", frame: CGRect(x: 100, y: 100, width: 200, height: 40), secure: false))
+        log.end(s, result: "Typed 8 characters.", isError: false)
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
+        RecordingOverlay.draw(in: ctx, size: CGSize(width: 800, height: 500), t: 60_000, flat: log.all, total: 1,
+                              mapping: FrameMapping(scale: 1, offset: .zero), label: "Agent", redactAll: true)
+        let image = try XCTUnwrap(ctx.makeImage())
+        let data = try XCTUnwrap(image.dataProvider?.data) as Data
+        let i = 135 * image.bytesPerRow + 290 * 4  // inside the field, right of the label, long after the step
+        XCTAssertGreaterThan(data[i + 1], 100, "covered")
     }
 
     func testPruningSparesRecordingsUnderWay() {
