@@ -141,6 +141,10 @@ final class SelfActivationTests: XCTestCase {
         // The menu bar, a notification: above ordinary windows.
         XCTAssertNil(ClickTarget.gateOwner([(pid: 7, dock: false, layer: 25, coversDisplay: false), (pid: user, dock: false, layer: 0, coversDisplay: false)]))
         XCTAssertNil(ClickTarget.gateOwner([]))
+        // Notification Center's window over the whole screen, which clicks pass through.
+        XCTAssertEqual(ClickTarget.gateOwner([(pid: 8, dock: false, layer: 25, coversDisplay: true), (pid: user, dock: false, layer: 0, coversDisplay: false)]), user)
+        // A full-screen app's own window is ordinary.
+        XCTAssertEqual(ClickTarget.gateOwner([(pid: agent, dock: false, layer: 0, coversDisplay: true)]), agent)
         XCTAssertEqual(ClickTarget.gateOwner([(pid: agent, dock: false, layer: 0, coversDisplay: false)]), agent)
     }
 

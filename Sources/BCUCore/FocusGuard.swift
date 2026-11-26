@@ -743,6 +743,11 @@ public final class FocusGuard {
         guard !acting.isEmpty else { return }
         guard let on = lookedOwner(at: p) else { return }
         DispatchQueue.global(qos: .userInitiated).async {
+            let kept = acting.subtracting([on]).sorted()
+            if !kept.isEmpty {
+                let name = { (p: pid_t) in NSRunningApplication(processIdentifier: p)?.localizedName ?? "pid \(p)" }
+                Log.info("gate: your click was in \(name(on))'s window; kept \(kept.map(name).joined(separator: ", ")) back, where an agent is acting")
+            }
             self.lock.lock(); let c = self.lastClick; self.lock.unlock()
             guard c.point == p else { return }
             for pid in acting where pid != on && pid != self.userFront { self.lookLate(at: pid, click: c, putBackMs: c.ms) }

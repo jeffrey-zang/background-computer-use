@@ -181,14 +181,16 @@ enum ClickTarget: Equatable {
     /// The app a click is surely in, for the gate (`FrontGate.pointer`): the
     /// owner of the topmost ordinary (layer 0) window under it. `windows`
     /// are those under the click, top first; `dock` marks the Dock's and
-    /// `coversDisplay` a window as big as its display (on macOS 26 and later
-    /// the Dock keeps one over the whole screen that clicks pass through).
+    /// `coversDisplay` a window as big as its display: on macOS 26 and later
+    /// the Dock and Notification Center each keep one above everything,
+    /// over the whole screen, that clicks pass through. (An app's own window
+    /// that fills the screen is an ordinary one, at layer 0.)
     /// nil when it may be on anything that brings an app forward: a Dock
     /// icon, the menu bar or a menu, a notification, a panel above ordinary
     /// windows, the desktop, nothing.
     static func gateOwner(_ windows: [(pid: pid_t, dock: Bool, layer: Int, coversDisplay: Bool)]) -> pid_t? {
         for w in windows {
-            if w.dock && w.coversDisplay { continue }
+            if w.coversDisplay && (w.dock || w.layer != 0) { continue }
             if w.dock || w.layer != 0 { return nil }
             return w.pid
         }
