@@ -62,6 +62,8 @@ public final class AgentRecording {
     private let captureQueue = DispatchQueue(label: "bcu.agent-recording.capture", qos: .userInitiated, attributes: .concurrent)
     private var _capturing = true
     private var capped = false
+    /// When capture stopped at `maxMs`: the video ends there.
+    private var cutoffMs: Double?
     private var windowGone = false
     public var rawURL: URL { dir.appendingPathComponent("raw.mp4") }
 
@@ -179,7 +181,7 @@ public final class AgentRecording {
     private func tick() {
         guard isCapturing else { return }
         if elapsedMs > Self.maxMs {
-            lock.lock(); capped = true; _capturing = false; lock.unlock()
+            lock.lock(); capped = true; cutoffMs = elapsedMs; _capturing = false; lock.unlock()
             timer?.cancel()
             return
         }
@@ -288,7 +290,9 @@ public final class AgentRecording {
             throw ToolError(message)
         }
         do {
-            try render(raw: rawURL, to: video, maps: maps, steps: all, endMs: durationMs)
+            // Past the cap, steps are in the lists only.
+            lock.lock(); let cutoff = cutoffMs; lock.unlock()
+            try render(raw: rawURL, to: video, maps: maps, steps: all, endMs: min(durationMs, cutoff ?? .infinity), cutoff: cutoff)
         } catch {
             let message = "\(error), so there's no video. The action list is saved: \(md.path) and \(js.lastPathComponent) beside it."
             failing?(message)
@@ -314,7 +318,9 @@ public final class AgentRecording {
     }
 
     /// Reads `raw` back frame by frame, draws the steps over each and writes `out`.
-    private func render(raw: URL, to out: URL, maps: [(t: Int64, map: FrameMapping)], steps all: [RecordedStep], endMs: Double) throws {
+    /// `cutoff`: capture stopped there (at `maxMs`); nothing after it is drawn.
+    private func render(raw: URL, to out: URL, maps: [(t: Int64, map: FrameMapping)], steps all: [RecordedStep], endMs: Double,
+                        cutoff: Double? = nil) throws {
         let asset = AVURLAsset(url: raw)
         guard let track = try Capture.blocking(timeoutMs: 30_000, { try await asset.loadTracks(withMediaType: .video) }).first else {
             throw ToolError("the raw video has no frames")
@@ -338,11 +344,12 @@ public final class AgentRecording {
         w.add(inp)
         guard reader.startReading(), w.startWriting() else { throw ToolError("couldn't render the video: \(reader.error ?? w.error.map { $0 as Error } ?? ToolError("?"))") }
         w.startSession(atSourceTime: .zero)
-        let flat = StepLog.flatten(all)
+        let limit = cutoff ?? .infinity
+        let flat = StepLog.flatten(all).filter { $0.t <= limit }
         // Frames are drawn at the captured times and, from the last frame
         // captured before, at each `renderTimes`: a step that came and went
         // between two captures still gets its caption and marks.
-        var extra = RecordingOverlay.renderTimes(flat).map { Int64($0.rounded()) }[...]
+        var extra = RecordingOverlay.renderTimes(flat).filter { $0 <= limit }.map { Int64($0.rounded()) }[...]
         var mi = 0
         var last: CMTime = .zero
         var lastMs: Int64 = -1

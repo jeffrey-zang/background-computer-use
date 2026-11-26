@@ -56,6 +56,8 @@ public final class Engine {
     /// A recording that ended without `stop_recording` (its display went
     /// away), for the next `stop_recording` to hand over.
     private var endedRecording: Result<AgentRecording.Output, Error>?
+    /// A recording being saved by stop_recording; shutdown waits for it.
+    private let exporting = DispatchGroup()
     var currentRecording: AgentRecording? { stateLock.lock(); defer { stateLock.unlock() }; return _recording }
     /// Test support: a list of steps kept as a recording would, with no video.
     var testStepLog: StepLog?
@@ -355,6 +357,9 @@ public final class Engine {
     /// Main thread, after the windows are released, so nothing lands on the
     /// user's screen when the display goes away.
     public func finishShutdown() {
+        // A stop_recording still saving its video gets to finish it (a
+        // killed writer leaves an MP4 that won't play).
+        _ = exporting.wait(timeout: .now() + 30)
         endRecordingForTeardown()
         recorder.stop()
         windows.stopWatchdog()
@@ -3121,6 +3126,8 @@ public final class Engine {
             let last = rec.steps.all.last.flatMap { $0.tool == "stop_recording" ? $0 : nil }
             if let last { rec.steps.end(last, result: "Stopped the recording and saved it.", isError: false) }
             // If saving fails, the list says so for this call too.
+            exporting.enter()
+            defer { exporting.leave() }
             out = try rec.finish(audio: withAudio ? audio.url : nil, failing: { message in
                 if let last { rec.steps.amend(last, result: message, isError: true) }
             })
