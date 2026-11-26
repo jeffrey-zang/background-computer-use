@@ -1212,6 +1212,7 @@ public final class Engine {
         }
         if let rec = recordingSteps {
             let b = display.bounds
+            rec.setField(n.element)
             rec.setTarget(StepTarget(element: n.index, role: n.role, label: n.label,
                                            // Secure now, or when it was read (a "show password" toggle can change it).
                                            frame: liveFrame(n).offsetBy(dx: -b.minX, dy: -b.minY), secure: n.secure || Self.isSecureField(n.element)))
@@ -3144,6 +3145,7 @@ public final class Engine {
     /// hide_typing: the focused field, else (not known) the whole window.
     private func recordFocusTarget(_ w: AgentWindow, _ field: AXUIElement?, _ rec: StepLog) {
         let b = display.bounds
+        if let field { rec.setField(field) }
         guard let frame = field.flatMap(AX.frame) ?? WindowList.info(w.id)?.bounds else { return }
         rec.setTarget(StepTarget(element: 0, role: field.flatMap { AX.string($0, "AXRole") } ?? "AXWindow", label: "focused field",
                                  frame: frame.offsetBy(dx: -b.minX, dy: -b.minY), secure: Self.isSecureField(field)))

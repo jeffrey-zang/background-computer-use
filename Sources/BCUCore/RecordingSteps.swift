@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 import BCUShared
 
 /// What a recorded step acted on: an element of the agent's window, as the
@@ -64,6 +65,8 @@ public final class RecordedStep {
     /// A press_key of one character (no modifier but shift), from its
     /// arguments as given (the stored ones can be redacted).
     var typesCharacter = false
+    /// The field it acted on, to follow in the video (a page can scroll).
+    var field: AXUIElement?
     /// Its text holds a Tab: it can reach more than one field.
     public internal(set) var multiField = false
     /// Its window_id, for keeping key runs per window.
@@ -559,8 +562,8 @@ public final class StepLog {
         // A text field's name can be its (edited) contents, once typing was hidden.
         let textInput = ["TextField", "TextArea", "SearchField", "ComboBox"].contains(target.role)
         // Once typing is hidden, no name at all: any element's can echo it.
-        _ = textInput
-        let label = hidValues && !target.label.isEmpty && target.label != "focused field"
+        // After a password write, a text field's name can be an edited copy of it too.
+        let label = (hidValues || (hideFieldValues && textInput)) && !target.label.isEmpty && target.label != "focused field"
             ? "(hidden)" : RecordingText.redact(redactRunStarts(target.label), secrets: hiddenTexts)
         current?.target = StepTarget(element: target.element, role: target.role, label: label, frame: target.frame, secure: target.secure)
     }
@@ -576,6 +579,19 @@ public final class StepLog {
     }
 
     /// Where typing without `element` goes was looked at: `secure` if a password field.
+    public func setField(_ element: AXUIElement) {
+        lock.lock(); defer { lock.unlock() }
+        current?.field = element
+    }
+
+    /// Password fields hidden typing went into (without hide_typing), by
+    /// step number, to cover where each is in every frame.
+    public func coverFields() -> [(String, AXUIElement)] {
+        lock.lock(); defer { lock.unlock() }
+        guard !redactAll else { return [] }
+        return Self.flatten(steps).compactMap { s in s.textHidden && !s.multiField ? s.field.map { (s.number, $0) } : nil }
+    }
+
     public func setCover(_ rect: CGRect, window: CGWindowID? = nil) {
         lock.lock(); defer { lock.unlock() }
         current?.cover = rect

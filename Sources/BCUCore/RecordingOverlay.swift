@@ -62,7 +62,8 @@ public enum RecordingOverlay {
     /// Draws over `ctx`, a `size` frame (bottom-left origin, as CoreGraphics
     /// has it), at `t` ms into the video. `total`: tool calls in the recording.
     public static func draw(in ctx: CGContext, size: CGSize, t: Double, flat: [RecordedStep], total: Int,
-                            mapping: FrameMapping, label: String, redactAll: Bool, covers: [CGWindowID: CGRect] = [:]) {
+                            mapping: FrameMapping, label: String, redactAll: Bool, covers: [CGWindowID: CGRect] = [:],
+                            fields: [String: CGRect] = [:]) {
         let W = size.width, H = size.height
         let u = max(0.55, min(1.4, W / 1600))
         func flip(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: H - r.maxY, width: r.width, height: r.height) }
@@ -87,6 +88,9 @@ public enum RecordingOverlay {
                     let live = s.coverWindow.flatMap { covers[$0] }
                     if s.multiField {
                         area = live ?? s.cover ?? s.target?.frame
+                    } else if let now = fields[s.number] {
+                        // The field where it is in this frame (scrolled, moved).
+                        area = now
                     } else if let field = s.target?.frame, let live, let then = s.cover {
                         // The field where its window is now.
                         area = field.offsetBy(dx: live.minX - then.minX, dy: live.minY - then.minY)

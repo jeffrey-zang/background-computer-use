@@ -699,6 +699,21 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertGreaterThan(data[170 * image.bytesPerRow + 590 * 4 + 1], 100, "the field where its window moved to")
     }
 
+    func testAPasswordCoverFollowsItsFieldWhenThePageScrolls() throws {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let s = log.begin(tool: "set_value", args: ["value": "hunter2", "element": 5])
+        log.setTarget(StepTarget(element: 5, role: "AXTextField", label: "Password", frame: CGRect(x: 100, y: 300, width: 200, height: 40), secure: true))
+        log.end(s, result: "Set.", isError: false)
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
+        RecordingOverlay.draw(in: ctx, size: CGSize(width: 800, height: 500), t: 1000, flat: log.all, total: 1, mapping: FrameMapping(scale: 1, offset: .zero),
+                              label: "A", redactAll: false, fields: [s.number: CGRect(x: 100, y: 150, width: 200, height: 40)])
+        let image = try XCTUnwrap(ctx.makeImage())
+        let data = try XCTUnwrap(image.dataProvider?.data) as Data
+        XCTAssertGreaterThan(data[170 * image.bytesPerRow + 290 * 4 + 1], 100, "covered where the field scrolled to")
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))
