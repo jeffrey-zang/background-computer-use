@@ -1595,8 +1595,9 @@ public final class WindowManager {
         // it's on the agent display. Catching or moving windows then only
         // moves the user's own: both times a user's full-screen app lost
         // its Space in testing (#98), this sweep was moving the user's
-        // windows during such an overlap. Nothing to do until it's over.
-        guard !display.overlapsUser else { return }
+        // windows during such an overlap. Nothing to move until it's over
+        // (windows that are gone are still forgotten).
+        guard !display.overlapsUser else { pruneVanished(); return }
 
         let onScreen = WindowList.all(onScreenOnly: true)
 
@@ -1742,11 +1743,23 @@ public final class WindowManager {
             focusGuard.record("caught a new \(app?.localizedName ?? info.owner) \(dialog ? "dialog" : "window") on your display and moved it to the agent display")
         }
 
+        pruneVanished()
+    }
+
+    /// Forget windows that are gone (closed in the app, or the app quit).
+    /// Not a move: done even while the sweep leaves windows alone, or an
+    /// idle session would keep its display for a window that's gone.
+    private func pruneVanished() {
         lock.lock()
-        let now = nowMs()
-        let ids = registry.keys.filter { now - (registeredAt[$0] ?? 0) >= Self.newWindowGraceMs }
+        let since = Dictionary(uniqueKeysWithValues: registry.keys.map { ($0, registeredAt[$0] ?? 0) })
         lock.unlock()
-        for id in ids where WindowList.info(id) == nil { unregister(id) }
+        for id in Self.vanished(since, now: nowMs(), graceMs: Self.newWindowGraceMs, exists: { WindowList.info($0) != nil }) { unregister(id) }
+    }
+
+    /// Registered windows (with when they were registered) that are gone,
+    /// past the grace a new window gets to show up.
+    static func vanished(_ registeredAt: [CGWindowID: Double], now: Double, graceMs: Double, exists: (CGWindowID) -> Bool) -> [CGWindowID] {
+        registeredAt.filter { now - $0.value >= graceMs && !exists($0.key) }.map(\.key).sorted()
     }
 }
 
