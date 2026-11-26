@@ -1759,10 +1759,15 @@ public final class Engine {
         // A tab still muted from the window's opening: the element it named
         // (its tab toggle, say) would unmute it if pressed now. It's armed
         // once the tab is unmuted for the recording (`unmuteForRecording`).
-        let armLater = mute != nil && mutedTabs.contains(w.id)
-        audioClaims.add(AudioClaims.Claim(window: w.id, pid: w.pid, appName: w.appName, mute: armLater ? nil : mute?.element,
-                                          muteName: armLater ? "" : muteName,
-                                          muteLook: armLater ? nil : mute.map { AudioClaims.look($0.element) }))
+        // Only while the selected tab may be that muted one: a tab read as
+        // unmuted (another one, playing) is armed at once.
+        let armLater = mute != nil && mutedTabs.contains(w.id) && tabMuted(w) != false
+        // A renewal never disarms a claim that has its silence action.
+        if !(armLater && audioClaims.isArmed(w.id)) {
+            audioClaims.add(AudioClaims.Claim(window: w.id, pid: w.pid, appName: w.appName, mute: armLater ? nil : mute?.element,
+                                              muteName: armLater ? "" : muteName,
+                                              muteLook: armLater ? nil : mute.map { AudioClaims.look($0.element) }))
+        }
         focusGuard.onUserInput(for: "audio-\(sessionID)") { [weak self] input in
             self?.audioClaims.userInput(input) { hit, why in self?.giveSoundBack(hit, why: why) }
         }
