@@ -129,9 +129,15 @@ public final class BeepWatch {
     private func pruneRecent() {
         let cutoff = Date().addingTimeInterval(-60)
         guard recent.count > 256 || recent.first.map({ $0.at < cutoff }) == true else { return }
-        let pending = { (b: Beep) in self.assigned[b.seq].map { self.calls[$0.owner] != nil } == true }
+        let pending = { (b: Beep) in self.assigned[b.seq].map(self.pendingStep) == true }
         let others = recent.filter { !pending($0) && $0.at >= cutoff }.suffix(256)
         recent = (recent.filter(pending) + others).sorted { $0.seq < $1.seq }
+    }
+
+    /// Under `lock`. Input of a call still under way: its beeps haven't
+    /// been looked at yet. An earlier call of the same session has.
+    private func pendingStep(_ step: Step) -> Bool {
+        calls[step.owner].map { step.call >= $0 } == true
     }
 
     /// Calls under way, by session: when each began.
@@ -250,7 +256,7 @@ public final class BeepWatch {
             steps = steps.filter { $0.end >= cutoff }.suffix(200)
         }
         // The last 200, and any for a call still under way (it hasn't looked).
-        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 || calls[$0.value.owner] != nil } }
+        if assigned.count > 200 { assigned = assigned.filter { $0.key > nextSeq - 200 || pendingStep($0.value) } }
     }
 
     /// Which input each beep was put down to, once some session has: later

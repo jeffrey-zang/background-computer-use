@@ -175,6 +175,23 @@ final class BeepWatchTests: XCTestCase {
         XCTAssertEqual(w.attribute(w.beeps(after: start), owner: "a").count, 1)
     }
 
+    /// Beeps of calls already done aren't kept as pending by the next call
+    /// of the same session.
+    func testOnlyTheCallUnderWayKeepsItsBeeps() {
+        let w = BeepWatch()
+        for i in 0..<400 {
+            let call = Date()
+            w.beginCall("a", at: call)
+            let id = w.begin(BeepWatch.Step(start: call, end: .distantFuture, key: "escape", pids: [62902], owner: "a", call: call))
+            w.inject((Date(), 62902, "TextEdit", 4096))
+            w.finish(id)
+            _ = w.attribute(w.beeps(after: w.lastSeq - 1), owner: "a")
+            w.endCall("a")
+            _ = i
+        }
+        XCTAssertLessThanOrEqual(w.beeps(after: 0).count, 257)
+    }
+
     /// Completed input is pruned on the begin/finish path too.
     func testFinishPrunes() {
         let w = BeepWatch()
