@@ -187,6 +187,12 @@ public enum RecordingText {
         return out
     }
 
+    /// Whether hidden text is also taken out of later results: not a key or
+    /// two ("\n", "a"), which would blank half of every read.
+    static func redactsLater(_ secret: String) -> Bool {
+        secret.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3
+    }
+
     /// `text` with every occurrence of each secret (of at least 1 character) taken out.
     public static func redact(_ text: String, secrets: [String]) -> String {
         var out = text
@@ -208,6 +214,10 @@ public final class StepLog {
     private var steps: [RecordedStep] = []
     /// Steps begun and not yet ended, innermost last.
     private var open: [RecordedStep] = []
+    /// Text that was hidden where it was typed, taken out of every later
+    /// result too (a read of the window shows what's in its fields). Never
+    /// written anywhere.
+    private var hiddenTexts: [String] = []
     public let redactAll: Bool
     private let clock: () -> Double
 
@@ -275,13 +285,15 @@ public final class StepLog {
         guard s.end == nil else { return }
         s.end = clock()
         s.isError = isError
-        var result = result
+        // Text hidden in an earlier step, wherever it shows up again.
+        var result = RecordingText.redact(result, secrets: hiddenTexts)
         if s.hidesText(redactAll: redactAll) {
             let key = s.tool == "type_text" ? "text" : "value"
             if let secret = s.args[key] as? String {
                 result = RecordingText.hideQuoted(RecordingText.redact(result, secrets: [secret]))
                 s.args[key] = "(hidden, \(secret.count) characters)"
                 s.secret = secret
+                if RecordingText.redactsLater(secret) { hiddenTexts.append(secret) }
             }
         }
         if s.tool == "batch" {
@@ -304,7 +316,10 @@ public final class StepLog {
     }
 
     /// Every step, batch steps after their batch, in the order they started.
+    /// In the order they started: a call answered off the session's queue
+    /// (status) can start while a batch's steps are running.
     public static func flatten(_ steps: [RecordedStep]) -> [RecordedStep] {
-        steps.flatMap { [$0] + $0.steps }
+        steps.flatMap { [$0] + $0.steps }.enumerated()
+            .sorted { ($0.element.t, $0.offset) < ($1.element.t, $1.offset) }.map(\.element)
     }
 }

@@ -335,7 +335,15 @@ public final class AgentRecording {
                                       label: label, redactAll: steps.redactAll)
             }
             CVPixelBufferUnlockBaseAddress(px, [])
-            while !inp.isReadyForMoreMediaData { usleep(2000) }
+            // A writer that failed (a full disk, the encoder) never gets
+            // ready again: stop instead of waiting for it.
+            while !inp.isReadyForMoreMediaData {
+                if w.status == .failed || w.status == .cancelled {
+                    reader.cancelReading()
+                    throw ToolError("couldn't write the video: \(w.error.map { "\($0)" } ?? "the writer stopped")")
+                }
+                usleep(2000)
+            }
             if ad.append(px, withPresentationTime: pts) { last = pts }
         }
         inp.markAsFinished()

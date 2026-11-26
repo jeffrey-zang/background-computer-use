@@ -139,6 +139,36 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(a.args["text"] as? String, "(hidden, 2 characters)")
     }
 
+    /// Hidden text stays hidden in later reads of the window, which show its fields' values.
+    func testHiddenTextIsTakenOutOfLaterReads() {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let t = log.begin(tool: "type_text", args: ["text": "dear Ada", "element": 3])
+        log.end(t, result: "Typed 8 characters.", isError: false)
+        let r = log.begin(tool: "get_window_state", args: [:])
+        log.end(r, result: "[3] TextArea value=\"dear Ada, hello\" @(0,0 10x10)", isError: false)
+        XCTAssertFalse(r.result.contains("dear Ada"), r.result)
+        // A key or two isn't taken out of everything after it.
+        let k = log.begin(tool: "type_text", args: ["text": "\n"])
+        log.end(k, result: "Typed 1 characters.", isError: false)
+        let r2 = log.begin(tool: "get_window_state", args: [:])
+        log.end(r2, result: "line one\nline two", isError: false)
+        XCTAssertEqual(r2.result, "line one\nline two")
+    }
+
+    /// A status answered while a batch runs doesn't hide the batch's later steps' captions.
+    func testStepsAreDrawnInTheOrderTheyStarted() {
+        let (now, set) = clock()
+        let log = StepLog(redactAll: false, clock: now)
+        let b = log.begin(tool: "batch", args: [:])
+        set(100); let b1 = log.begin(tool: "click", args: [:], inBatch: true); log.end(b1, result: "ok", isError: false)
+        set(200); let st = log.begin(tool: "status", args: [:], tracked: false); log.end(st, result: "ok", isError: false)
+        set(300); let b2 = log.begin(tool: "click", args: ["element": 9], inBatch: true); log.end(b2, result: "gone", isError: true)
+        log.end(b, result: "", isError: true)
+        let flat = StepLog.flatten(log.all)
+        XCTAssertEqual(flat.map(\.t), [0, 100, 200, 300])
+        XCTAssertTrue(RecordingOverlay.captionStep(flat, at: 400) === b2)
+    }
+
     func testPruningSparesRecordingsUnderWay() {
         let dirs = (1...25).reversed().map { URL(fileURLWithPath: "/r/\(String(format: "%02d", $0))", isDirectory: true) }
         let gone = AgentRecording.prunable(dirs, keep: 20, protected: ["/r/02"])
