@@ -3184,7 +3184,11 @@ public final class Engine {
         let candidates = [live, cached].compactMap { $0 }
         let secure = candidates.isEmpty || candidates.contains(where: { isSecure($0) }) || passwordFieldFocused(w)
         if let live, let cached, live != cached, secure { return (nil, true) }
-        return (live ?? cached, secure)
+        let field = live ?? cached
+        // A secret going somewhere other than the field picked (another
+        // password field is focused in the window): the whole window.
+        if secure, let field, !isSecure(field) { return (nil, true) }
+        return (field, secure)
     }
 
     /// Where keys without an element go, for the video's cover under
