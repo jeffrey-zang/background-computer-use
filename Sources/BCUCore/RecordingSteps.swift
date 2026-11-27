@@ -643,7 +643,8 @@ public final class StepLog {
     /// step number, to cover where each is in every frame.
     /// Hidden typing (default mode), or typing into a password field still running.
     static func secureWrite(_ s: RecordedStep) -> Bool {
-        s.textHidden || (s.end == nil && (s.target?.secure == true || s.focusSecure))
+        // And a running one that can reach more fields (a Tab): any of them can be one.
+        s.textHidden || (s.end == nil && (s.target?.secure == true || s.focusSecure || s.multiField))
     }
 
     public func coverFields() -> [(String, AXUIElement)] {
@@ -655,7 +656,8 @@ public final class StepLog {
 
     public func setCover(_ rect: CGRect, window: CGWindowID? = nil) {
         lock.lock(); defer { lock.unlock() }
-        current?.cover = rect
+        // The same window again (where it ended up): both places.
+        if let c = current, let old = c.cover, window == nil || window == c.coverWindow { c.cover = old.union(rect) } else { current?.cover = rect }
         if let window { current?.coverWindow = window }
     }
 

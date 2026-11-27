@@ -36,6 +36,9 @@ public struct AXSnapshotResult {
     let nextIndex: Int
     /// True when numbering restarted at 1, so numbers from the last read mean nothing.
     public let renumbered: Bool
+    /// Elements seen as password fields in this read or any before it
+    /// (listed or not: a reveal changes the role, the field can scroll away).
+    var secureElements: Set<AXUIElement> = []
 }
 
 /// Walks a window's accessibility tree and lists the elements worth acting on.
@@ -215,7 +218,7 @@ public enum AXSnapshot {
             if !renumber, let old = previous!.indexByElement[el], !used.contains(old) {
                 idx = old
                 // Once a password field, still one (a "show password" reveal changes its role).
-                wasSecure = previous!.nodes[old]?.secure == true
+                wasSecure = previous!.nodes[old]?.secure == true || previous!.secureElements.contains(el)
             } else {
                 idx = next
                 next += 1
@@ -244,7 +247,7 @@ public enum AXSnapshot {
                     hiddenLines[old] = prev.lines[old] ?? prev.hiddenLines[old]
                     nodes[old] = AXNode(index: old, element: o.element, role: o.role, frame: o.frame,
                                         actions: AX.actions(o.element), valueSettable: AX.isSettable(o.element, "AXValue"),
-                                        label: prev.nodes[old]?.label ?? "", secure: prev.nodes[old]?.secure ?? false)
+                                        label: prev.nodes[old]?.label ?? "", secure: prev.nodes[old]?.secure == true || prev.secureElements.contains(o.element))
                 }
             }
             for el in outOfView {
@@ -263,8 +266,12 @@ public enum AXSnapshot {
         if truncated { footer.append("(more elements not listed; raise max_elements or scroll)") }
         if skippedOffscreen > 0 { footer.append("(\(skippedOffscreen) elements scrolled out of view not listed)") }
         let text = ([header] + listing + footer).joined(separator: "\n")
+        var secureElements = Set(nodes.values.filter(\.secure).map(\.element))
+        // Still in the window, only not listed now.
+        if let prev = previous { secureElements.formUnion(prev.secureElements.filter { indexByElement[$0] != nil }) }
         return AXSnapshotResult(windowID: windowID, nodes: nodes, text: text, visited: visited, header: header, footer: footer,
-                                lines: lineByIndex, indexByElement: indexByElement, unlisted: unlisted, scrolledOut: scrolledOut, hiddenLines: hiddenLines, nextIndex: next, renumbered: renumber && previous != nil)
+                                lines: lineByIndex, indexByElement: indexByElement, unlisted: unlisted, scrolledOut: scrolledOut, hiddenLines: hiddenLines, nextIndex: next, renumbered: renumber && previous != nil,
+                                secureElements: secureElements)
     }
 
     /// Numbering restarts only when most listed elements are new and most

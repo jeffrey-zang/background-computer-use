@@ -82,7 +82,13 @@ public enum RecordingOverlay {
                 if redactAll, s.hidesText(redactAll: true) {
                     // The window it went into, where that window is in this frame
                     // (the field can scroll, the window can move), else where it was.
-                    area = s.coverWindow.flatMap { covers[$0] } ?? s.cover ?? s.target?.frame
+                    let win = s.coverWindow.flatMap { covers[$0] } ?? s.cover
+                    area = win ?? s.target?.frame
+                    // A field can stick out of its window (a sheet wider than it): that too.
+                    if let w = win, let field = s.target?.frame, field.width > 0 {
+                        let moved = s.cover.map { field.offsetBy(dx: w.minX - $0.minX, dy: w.minY - $0.minY) } ?? field
+                        area = w.union(moved)
+                    }
                 } else if !redactAll, s.textHidden || s.target?.secure == true || s.focusSecure {
                     // Typing with a Tab can have filled more fields: its window.
                     let live = s.coverWindow.flatMap { covers[$0] }

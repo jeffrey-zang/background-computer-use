@@ -845,6 +845,31 @@ final class AgentRecordingTests: XCTestCase {
         XCTAssertEqual(log.coverWindows(), [7])
     }
 
+    func testARunningTabbedWriteIsFollowedAndKeepsWhereItStarted() {
+        let log = StepLog(redactAll: false, clock: { 0 })
+        let s = log.begin(tool: "type_text", args: ["text": "name\tpassword"])
+        log.setCover(CGRect(x: 0, y: 0, width: 400, height: 300), window: 7)
+        XCTAssertEqual(log.coverWindows(), [7])
+        log.setCover(CGRect(x: 500, y: 0, width: 400, height: 300), window: 7)
+        XCTAssertEqual(s.cover, CGRect(x: 0, y: 0, width: 900, height: 300))
+    }
+
+    func testAHiddenFieldOutsideItsWindowIsCoveredToo() throws {
+        let log = StepLog(redactAll: true, clock: { 0 })
+        let s = log.begin(tool: "type_text", args: ["text": "hunter2", "element": 5])
+        log.setCover(CGRect(x: 100, y: 100, width: 200, height: 200), window: 7)
+        log.setTarget(StepTarget(element: 5, role: "TextField", label: "Code", frame: CGRect(x: 50, y: 150, width: 300, height: 30), secure: false))
+        log.end(s, result: "Typed.", isError: false)
+        let ctx = try XCTUnwrap(CGContext(data: nil, width: 800, height: 500, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue))
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 800, height: 500))
+        RecordingOverlay.draw(in: ctx, size: CGSize(width: 800, height: 500), t: 1000, flat: log.all, total: 1, mapping: FrameMapping(scale: 1, offset: .zero),
+                              label: "A", redactAll: true, covers: [7: CGRect(x: 100, y: 100, width: 200, height: 200)])
+        let image = try XCTUnwrap(ctx.makeImage())
+        let data = try XCTUnwrap(image.dataProvider?.data) as Data
+        XCTAssertGreaterThan(data[165 * image.bytesPerRow + 330 * 4 + 1], 100, "the part of the field outside the window")
+    }
+
     func testOptionCharactersAreTyping() {
         XCTAssertTrue(RecordedStep.typesACharacter(["key": "s", "modifiers": ["option"]]))
         XCTAssertFalse(RecordedStep.typesACharacter(["key": "s", "modifiers": ["ctrl"]]))
