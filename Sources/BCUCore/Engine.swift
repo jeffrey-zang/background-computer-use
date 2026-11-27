@@ -821,7 +821,7 @@ public final class Engine {
             let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
             let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
             // Not knowing the field it goes to counts as secret, as for type_text.
-            if mine == nil || Self.isSecureField(mine) || passwordFieldFocused(w) { rec.setFocusSecure() }
+            if mine == nil || isSecure(mine) || passwordFieldFocused(w) { rec.setFocusSecure() }
             recordFocusTarget(w, mine, rec)
         }
         return try dispatch(tool: tool, args: args)
@@ -1250,7 +1250,7 @@ public final class Engine {
             rec.setField(n.element)
             rec.setTarget(StepTarget(element: n.index, role: n.role, label: n.label,
                                            // Secure now, or when it was read (a "show password" toggle can change it).
-                                           frame: liveFrame(n).offsetBy(dx: -b.minX, dy: -b.minY), secure: n.secure || Self.isSecureField(n.element)))
+                                           frame: liveFrame(n).offsetBy(dx: -b.minX, dy: -b.minY), secure: n.secure || isSecure(n.element)))
         }
         return n
     }
@@ -2167,6 +2167,7 @@ public final class Engine {
             lastActionMs[w.id] = nil
         }
         snapshots[w.id] = snap
+        knownSecure.formUnion(snap.secureElements)
         var images: [ToolImage] = []
         if args.bool("screenshot") ?? true, let raw = try? Capture.window(w.id) {
             recorder.windowShot(w.id, raw)
@@ -2483,7 +2484,7 @@ public final class Engine {
             let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
             // Not knowing the field it goes to (a window borrowed and never
             // read, the user's focus elsewhere in the app) counts as secret.
-            rec.setFocus(secure: mine == nil || Self.isSecureField(mine) || passwordFieldFocused(w))
+            rec.setFocus(secure: mine == nil || isSecure(mine) || passwordFieldFocused(w))
             recordFocusTarget(w, mine, rec)
         }
 
@@ -3172,7 +3173,7 @@ public final class Engine {
     /// last read says it's focused (a window that isn't key may not say what
     /// has focus in it).
     private func passwordFieldFocused(_ w: AgentWindow) -> Bool {
-        if Self.isSecureField(AX.element(AX.app(w.pid), "AXFocusedUIElement")) { return true }
+        if isSecure(AX.element(AX.app(w.pid), "AXFocusedUIElement")) { return true }
         return snapshots[w.id]?.nodes.values.contains { $0.secure && AX.bool($0.element, "AXFocused") == true } ?? false
     }
 
@@ -3183,7 +3184,7 @@ public final class Engine {
         if let field { rec.setField(field) }
         guard let frame = field.flatMap(AX.frame) ?? WindowList.info(w.id)?.bounds else { return }
         rec.setTarget(StepTarget(element: 0, role: field.flatMap { AX.string($0, "AXRole") } ?? "AXWindow", label: "focused field",
-                                 frame: frame.offsetBy(dx: -b.minX, dy: -b.minY), secure: Self.isSecureField(field)))
+                                 frame: frame.offsetBy(dx: -b.minX, dy: -b.minY), secure: isSecure(field)))
     }
 
     /// The folder a start_recording result names (it ends "… into <folder>.").
@@ -3194,6 +3195,16 @@ public final class Engine {
         var dir = String(text[text.index(after: r.lowerBound)...].dropFirst(5))
         if dir.hasSuffix(".") { dir.removeLast() }
         return dir.isEmpty ? nil : dir
+    }
+
+    /// Every element any read of this session saw as a password field: a
+    /// "show password" reveal changes its role, not what it holds.
+    private var knownSecure = Set<AXUIElement>()
+
+    /// A password field now, or seen as one before.
+    private func isSecure(_ el: AXUIElement?) -> Bool {
+        guard let el else { return false }
+        return Self.isSecureField(el) || knownSecure.contains(el)
     }
 
     static func isSecureField(_ el: AXUIElement?) -> Bool {

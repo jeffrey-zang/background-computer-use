@@ -109,6 +109,7 @@ public enum AXSnapshot {
         var entries: [Entry] = []
         var overflow: [(element: AXUIElement, role: String, frame: CGRect)] = []
         var outOfView: [AXUIElement] = []
+        var visitedSecure = Set<AXUIElement>()
         var visited = 0
         var listed = 0
         var skippedOffscreen = 0
@@ -129,6 +130,8 @@ public enum AXSnapshot {
             guard visited < 6000, depth < 60, !walkedApart.contains(el) else { return }
             visited += 1
             let raw = read(el)
+            // A password field, listed or not (past max_elements, scrolled out).
+            if raw.role == "AXSecureTextField" || raw.subrole == "AXSecureTextField" { visitedSecure.insert(el) }
             var childIndent = indent
             let label = [raw.title, raw.desc].first { !$0.isEmpty } ?? ""
             let hasText = !label.isEmpty || !raw.value.isEmpty || !raw.placeholder.isEmpty
@@ -267,7 +270,7 @@ public enum AXSnapshot {
         if truncated { footer.append("(more elements not listed; raise max_elements or scroll)") }
         if skippedOffscreen > 0 { footer.append("(\(skippedOffscreen) elements scrolled out of view not listed)") }
         let text = ([header] + listing + footer).joined(separator: "\n")
-        var secureElements = Set(nodes.values.filter(\.secure).map(\.element))
+        var secureElements = Set(nodes.values.filter(\.secure).map(\.element)).union(visitedSecure)
         // Still in the window, only not listed now.
         if let prev = previous { secureElements.formUnion(prev.secureElements.filter { indexByElement[$0] != nil }) }
         // Renumbered, the off-screen ones get no number: kept while still in the window.
