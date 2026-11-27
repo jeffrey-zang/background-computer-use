@@ -818,11 +818,9 @@ public final class Engine {
         // it moves focus away (a PIN field that submits itself).
         if tool == "press_key", RecordedStep.typesACharacter(args.raw), let rec = recordingSteps,
            let id = windowID, let w = windows.window(id) {
-            let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
-            let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
-            // Not knowing the field it goes to counts as secret, as for type_text.
-            if mine == nil || isSecure(mine) || passwordFieldFocused(w) { rec.setFocusSecure() }
-            recordFocusTarget(w, mine, rec)
+            let d = keyDestination(w)
+            if d.secure { rec.setFocusSecure() }
+            recordFocusTarget(w, d.field, rec)
         }
         return try dispatch(tool: tool, args: args)
     }
@@ -2480,12 +2478,9 @@ public final class Engine {
         // agent's window (the user may be in another window of the app, with
         // its own focus); either one being a password field hides them.
         if target == nil, let rec = recordingSteps {
-            let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
-            let mine = focusedText[w.id]?.element ?? (AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil)
-            // Not knowing the field it goes to (a window borrowed and never
-            // read, the user's focus elsewhere in the app) counts as secret.
-            rec.setFocus(secure: mine == nil || isSecure(mine) || passwordFieldFocused(w))
-            recordFocusTarget(w, mine, rec)
+            let d = keyDestination(w)
+            rec.setFocus(secure: d.secure)
+            recordFocusTarget(w, d.field, rec)
         }
 
         // An open or save panel takes keys in its own process, without the
@@ -3177,6 +3172,21 @@ public final class Engine {
         return snapshots[w.id]?.nodes.values.contains { $0.secure && AX.bool($0.element, "AXFocused") == true } ?? false
     }
 
+    /// Where keys without an element go in the agent's window: its live
+    /// focus there (an app can move it on its own), else the field it last
+    /// focused. Not knowing (a window borrowed and never read, the user's
+    /// focus elsewhere in the app) counts as secret. When the two disagree
+    /// and either is a password field, no single field: the whole window.
+    private func keyDestination(_ w: AgentWindow) -> (field: AXUIElement?, secure: Bool) {
+        let appFocus = AX.element(AX.app(w.pid), "AXFocusedUIElement")
+        let live = AX.focusedElementWindowID(w.pid) == w.id ? appFocus : nil
+        let cached = focusedText[w.id]?.element
+        let candidates = [live, cached].compactMap { $0 }
+        let secure = candidates.isEmpty || candidates.contains(where: { isSecure($0) }) || passwordFieldFocused(w)
+        if let live, let cached, live != cached, secure { return (nil, true) }
+        return (live ?? cached, secure)
+    }
+
     /// Where keys without an element go, for the video's cover under
     /// hide_typing: the focused field, else (not known) the whole window.
     private func recordFocusTarget(_ w: AgentWindow, _ field: AXUIElement?, _ rec: StepLog) {
@@ -3204,7 +3214,9 @@ public final class Engine {
     /// A password field now, or seen as one before.
     private func isSecure(_ el: AXUIElement?) -> Bool {
         guard let el else { return false }
-        return Self.isSecureField(el) || knownSecure.contains(el)
+        // Seen live as one: remembered too (it can be revealed later).
+        if Self.isSecureField(el) { knownSecure.insert(el); return true }
+        return knownSecure.contains(el)
     }
 
     static func isSecureField(_ el: AXUIElement?) -> Bool {
