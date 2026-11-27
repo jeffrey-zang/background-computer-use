@@ -56,6 +56,14 @@ public final class Engine {
     private var releasing: Set<CGWindowID> = []
     /// All of them (quitting).
     private var releasingAll = false
+    /// Where a window is on screen, with any sheet over it that reaches past
+    /// its edges (a field typed into there sits outside the window).
+    func coverArea(_ id: CGWindowID) -> CGRect? {
+        guard let bounds = WindowList.info(id)?.bounds else { return nil }
+        guard let w = windows.window(id), let ax = AX.window(pid: w.pid, id: id) else { return bounds }
+        return AX.children(ax).filter { AX.string($0, "AXRole") == "AXSheet" }.compactMap { AX.frame($0) }.reduce(bounds) { $0.union($1) }
+    }
+
     /// `windows.release`, with the window no longer the recording's to film from the start.
     private func releaseFilmed(_ id: CGWindowID, keepOpen: Bool) throws -> String {
         stateLock.lock(); releasing.insert(id); stateLock.unlock()
@@ -774,7 +782,7 @@ public final class Engine {
                 // can pass through one on the way: tabbed typing is hidden.
                 rec.setFocusSecure()
                 // It may have filled other fields: the video covers the window.
-                if let bounds = WindowList.info(w.id)?.bounds {
+                if let bounds = coverArea(w.id) {
                     let b = display.bounds
                     rec.setCover(bounds.offsetBy(dx: -b.minX, dy: -b.minY), window: id)
                 }
@@ -802,7 +810,7 @@ public final class Engine {
         // whole window from then on, following it (a field can scroll, the
         // window can move).
         if ["type_text", "set_value"].contains(tool) || (tool == "press_key" && RecordedStep.typesACharacter(args.raw)),
-           let rec = recordingSteps, let id = windowID, let bounds = WindowList.info(id)?.bounds {
+           let rec = recordingSteps, let id = windowID, let bounds = coverArea(id) {
             let b = display.bounds
             rec.setCover(bounds.offsetBy(dx: -b.minX, dy: -b.minY), window: id)
         }
@@ -3210,6 +3218,7 @@ public final class Engine {
                                          stateLock.lock(); let going = releasingAll || releasing.contains(id); stateLock.unlock()
                                          return !going && (windows.window(id).map { !$0.handedOff && !$0.withUser } ?? false)
                                      },
+                                     area: { [weak self] in self?.coverArea($0) },
                                      onWindowFrame: { [weak self] in self?.recorder.windowShot($0, $1) },
                                      onDisplayFrame: { [weak self] in self?.recordPreview($0) })
         let what = windowID.map { "window \($0)" } ?? "your display"

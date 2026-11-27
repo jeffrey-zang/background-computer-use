@@ -51,6 +51,8 @@ public final class AgentRecording {
     /// Whether the session still has a window (a recording of one stops
     /// showing it once it's released: it may be the user's again).
     private let owns: (CGWindowID) -> Bool
+    /// A covered window's place on screen, with any sheet reaching past it.
+    private let area: (CGWindowID) -> CGRect?
     private var windowReleased = false
     private let queue = DispatchQueue(label: "bcu.agent-recording", qos: .userInitiated)
     private var timer: DispatchSourceTimer?
@@ -111,6 +113,7 @@ public final class AgentRecording {
     /// then needs no captures of its own meanwhile).
     init(display: AgentDisplay, windowID: CGWindowID?, fps: Int, label: String, redactAll: Bool,
          owns: @escaping (CGWindowID) -> Bool = { _ in true },
+         area: @escaping (CGWindowID) -> CGRect? = { WindowList.info($0)?.bounds },
          onWindowFrame: @escaping (CGWindowID, CGImage) -> Void = { _, _ in },
          onDisplayFrame: @escaping (CGImage) -> Void) throws {
         self.display = display
@@ -120,6 +123,7 @@ public final class AgentRecording {
         self.onDisplayFrame = onDisplayFrame
         self.onWindowFrame = onWindowFrame
         self.owns = owns
+        self.area = area
         let fm = FileManager.default
         try fm.createDirectory(at: Self.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         // Made without intermediates, so it fails if it's there already: two
@@ -221,7 +225,7 @@ public final class AgentRecording {
         // Covered windows' places before the capture (see `write`).
         var before: [CGWindowID: CGRect] = [:]
         for id in steps.coverWindows() where id != windowID {
-            if let wb = WindowList.info(id)?.bounds { before[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
+            if let wb = area(id) { before[id] = wb.offsetBy(dx: -b.minX, dy: -b.minY) }
         }
         var fieldsBefore: [String: CGRect] = [:]
         for (key, el) in steps.coverFields() {
@@ -289,7 +293,7 @@ public final class AgentRecording {
                 if id == windowID { covers[id] = source; continue }
                 // Where it was when the capture started and where it is now,
                 // together: it may have moved while the screenshot was taken.
-                if let wb = WindowList.info(id)?.bounds {
+                if let wb = area(id) {
                     let now = wb.offsetBy(dx: -b.minX, dy: -b.minY)
                     // Newly covered while it was taken: where the typing started, too.
                     covers[id] = (coversBefore[id] ?? first[id]).map { $0.union(now) } ?? now

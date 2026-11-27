@@ -214,11 +214,12 @@ public enum AXSnapshot {
         for e in entries {
             guard let el = e.element, let n = e.node else { listing.append(e.indent + e.body); continue }
             var idx: Int
-            var wasSecure = false
+            // Once a password field, still one (a "show password" reveal changes
+            // its role), whether or not its number changes.
+            var wasSecure = previous?.secureElements.contains(el) == true
             if !renumber, let old = previous!.indexByElement[el], !used.contains(old) {
                 idx = old
-                // Once a password field, still one (a "show password" reveal changes its role).
-                wasSecure = previous!.nodes[old]?.secure == true || previous!.secureElements.contains(el)
+                wasSecure = wasSecure || previous!.nodes[old]?.secure == true
             } else {
                 idx = next
                 next += 1
@@ -269,6 +270,8 @@ public enum AXSnapshot {
         var secureElements = Set(nodes.values.filter(\.secure).map(\.element))
         // Still in the window, only not listed now.
         if let prev = previous { secureElements.formUnion(prev.secureElements.filter { indexByElement[$0] != nil }) }
+        // Renumbered, the off-screen ones get no number: kept while still in the window.
+        if let prev = previous, renumber { let still = Set(outOfView + overflow.map(\.element)); secureElements.formUnion(prev.secureElements.filter { still.contains($0) }) }
         return AXSnapshotResult(windowID: windowID, nodes: nodes, text: text, visited: visited, header: header, footer: footer,
                                 lines: lineByIndex, indexByElement: indexByElement, unlisted: unlisted, scrolledOut: scrolledOut, hiddenLines: hiddenLines, nextIndex: next, renumbered: renumber && previous != nil,
                                 secureElements: secureElements)
